@@ -12,6 +12,7 @@ import (
 )
 
 type Exchange struct {
+	client *Client
 }
 
 var _ exchange.Exchange = &Exchange{}
@@ -24,11 +25,26 @@ func NewExchange(ctx context.Context, key, secret string, paperTrading bool, opt
 	if err := opts.Check(); err != nil {
 		return nil, err
 	}
-	return &Exchange{}, nil
+
+	client, err := NewClient(ctx, key, secret, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if status != nil {
+			client.Close()
+		}
+	}()
+
+	return &Exchange{
+		client: client,
+	}, nil
 }
 
 func (e *Exchange) Close() error {
-	// TODO: Implement this
+	if e.client != nil {
+		return e.client.Close()
+	}
 	return nil
 }
 
