@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bvk/tradebot/alpaca"
 	"github.com/bvk/tradebot/api"
 	"github.com/bvk/tradebot/coinbase"
 	"github.com/bvk/tradebot/coinex"
@@ -116,6 +117,15 @@ func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options
 			return nil, fmt.Errorf("could not create coinex exchange: %w", err)
 		}
 		exchangeMap["coinex"] = exchange
+	}
+
+	if secrets.Alpaca != nil {
+		alpacaopts := &alpaca.Options{}
+		exchange, err := alpaca.NewExchange(newctx, secrets.Alpaca.Key, secrets.Alpaca.Secret, alpacaopts)
+		if err != nil {
+			return nil, fmt.Errorf("could not create alpaca exchange: %w", err)
+		}
+		exchangeMap["alpaca"] = exchange
 	}
 
 	if len(exchangeMap) == 0 {

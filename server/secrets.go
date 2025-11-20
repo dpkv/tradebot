@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 
+	"github.com/bvk/tradebot/alpaca"
 	"github.com/bvk/tradebot/coinbase"
 	"github.com/bvk/tradebot/coinex"
 	"github.com/bvk/tradebot/pushover"
@@ -15,6 +16,7 @@ import (
 type Secrets struct {
 	Coinbase *coinbase.Credentials `json:"coinbase"`
 	CoinEx   *coinex.Credentials   `json:"coinex"`
+	Alpaca   *alpaca.Credentials   `json:"alpaca"`
 	Pushover *pushover.Keys        `json:"pushover"`
 	Telegram *telegram.Secrets     `json:"telegram"`
 }
