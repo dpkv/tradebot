@@ -44,8 +44,40 @@ const (
 
 	NamesKeyspace = "/names/"
 
-	serverStateKey = "/server/state"
+	ServerStateKey = "/server/state"
 )
+
+var initServerState = &gobs.ServerState{
+	ExchangeMap: map[string]*gobs.ServerExchangeState{
+		"coinbase": {
+			EnabledProductIDs: []string{
+				"BCH-USD",
+				"BTC-USD",
+				"ETH-USD",
+				"AVAX-USD",
+				"DOGE-USD",
+				"SHIB-USD",
+
+				"BCH-USDC",
+				"BTC-USDC",
+				"ETH-USDC",
+				"AVAX-USDC",
+				"DOGE-USDC",
+				"SHIB-USDC",
+			},
+		},
+		"coinex": {
+			EnabledProductIDs: []string{
+				"BCHUSDT",
+				"BTCUSDT",
+				"ETHUSDT",
+				"AVAXUSDT",
+				"DOGEUSDT",
+				"SHIBUSDT",
+			},
+		},
+	},
+}
 
 type Server struct {
 	cg ctxutil.CloseGroup
@@ -73,6 +105,11 @@ type Server struct {
 	pushoverClient *pushover.Client
 
 	telegramClient *telegram.Client
+
+	// alertFreezeDeadlineMap holds unique alert key representing an alert to an
+	// expiry timestamp before which that specific alert must be suppressed
+	// because it was already sent to the user.
+	alertFreezeDeadlineMap map[string]time.Time
 }
 
 func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options) (_ *Server, status error) {
@@ -150,47 +187,30 @@ func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options
 		telegramClient = client
 	}
 
-	state, err := kvutil.GetDB[gobs.ServerState](newctx, db, serverStateKey)
+	state, err := kvutil.GetDB[gobs.ServerState](newctx, db, ServerStateKey)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("could not load trader state: %w", err)
 		}
+		state = initServerState
+		if err := kvutil.SetDB(newctx, db, ServerStateKey, state); err != nil {
+			return nil, err
+		}
 	}
 
 	t := &Server{
-		db:             db,
-		opts:           *opts,
-		secrets:        secrets,
-		state:          state,
-		exchangeMap:    exchangeMap,
-		handlerMap:     make(map[string]http.Handler),
-		runner:         job.NewRunner(),
-		pushoverClient: pushoverClient,
-		telegramClient: telegramClient,
+		db:                     db,
+		opts:                   *opts,
+		secrets:                secrets,
+		state:                  state,
+		exchangeMap:            exchangeMap,
+		handlerMap:             make(map[string]http.Handler),
+		runner:                 job.NewRunner(),
+		pushoverClient:         pushoverClient,
+		telegramClient:         telegramClient,
+		alertFreezeDeadlineMap: make(map[string]time.Time),
 	}
 
-	if t.state == nil {
-		t.state = &gobs.ServerState{
-			ExchangeMap: make(map[string]*gobs.ServerExchangeState),
-		}
-		t.state.ExchangeMap["coinbase"] = &gobs.ServerExchangeState{
-			EnabledProductIDs: []string{
-				"BCH-USD",
-				"BTC-USD",
-				"ETH-USD",
-				"AVAX-USD",
-				"DOGE-USD",
-				"SHIB-USD",
-
-				"BCH-USDC",
-				"BTC-USDC",
-				"ETH-USDC",
-				"AVAX-USDC",
-				"DOGE-USDC",
-				"SHIB-USDC",
-			},
-		}
-	}
 	if err := t.loadProducts(newctx); err != nil {
 		return nil, fmt.Errorf("could not load default products: %w", err)
 	}
@@ -229,6 +249,16 @@ func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options
 
 	for _, ex := range t.exchangeMap {
 		limiter.RunBackgroundTasks(&t.cg, t.db, ex)
+	}
+
+	// Configure background watchers for alerts.
+	for _, exchange := range t.exchangeMap {
+		exchange := exchange
+		t.cg.Go(func(ctx context.Context) {
+			if err := t.watchForLowBalance(ctx, exchange); err != nil {
+				slog.Error("could not alert on low asset balance (check stopped)", "exchange", exchange.ExchangeName())
+			}
+		})
 	}
 	return t, nil
 }
