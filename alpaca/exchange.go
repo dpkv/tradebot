@@ -8,6 +8,7 @@ import (
 
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
+	"github.com/visvasity/topic"
 )
 
 type Exchange struct {
@@ -38,6 +39,10 @@ func (e *Exchange) ExchangeName() string {
 func (e *Exchange) CanDedupOnClientUUID() bool {
 	// TODO: Implement this
 	return false
+}
+
+func (e *Exchange) GetBalanceUpdates() (*topic.Receiver[exchange.BalanceUpdate], error) {
+	return nil, errors.New("not implemented")
 }
 
 func (e *Exchange) OpenSpotProduct(ctx context.Context, productID string) (exchange.Product, error) {
