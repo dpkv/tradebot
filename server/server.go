@@ -158,7 +158,7 @@ func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options
 
 	if secrets.Alpaca != nil {
 		alpacaopts := &alpaca.Options{}
-		exchange, err := alpaca.NewExchange(newctx, secrets.Alpaca.Key, secrets.Alpaca.Secret, alpacaopts)
+		exchange, err := alpaca.NewExchange(newctx, secrets.Alpaca.Key, secrets.Alpaca.Secret, secrets.Alpaca.PaperTrading, alpacaopts)
 		if err != nil {
 			return nil, fmt.Errorf("could not create alpaca exchange: %w", err)
 		}

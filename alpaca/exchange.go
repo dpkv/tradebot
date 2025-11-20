@@ -15,7 +15,14 @@ type Exchange struct {
 
 var _ exchange.Exchange = &Exchange{}
 
-func NewExchange(ctx context.Context, key, secret string, opts *Options) (_ *Exchange, status error) {
+func NewExchange(ctx context.Context, key, secret string, paperTrading bool, opts *Options) (_ *Exchange, status error) {
+	if opts == nil {
+		opts = new(Options)
+	}
+	opts.setDefaults(paperTrading)
+	if err := opts.Check(); err != nil {
+		return nil, err
+	}
 	return &Exchange{}, nil
 }
 

@@ -3,6 +3,7 @@
 package alpaca
 
 type Credentials struct {
-	Key    string `json:"key"`
-	Secret string `json:"secret"`
+	Key          string `json:"key"`
+	Secret       string `json:"secret"`
+	PaperTrading bool   `json:"paper_trading"`
 }
