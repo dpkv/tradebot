@@ -280,3 +280,51 @@ func TestClientGetSnapshot(t *testing.T) {
 	jsdata, _ := json.MarshalIndent(snapshot, "", "  ")
 	t.Logf("Full snapshot: %s", jsdata)
 }
+
+func TestClientGetAccount(t *testing.T) {
+	if !checkCredentials() {
+		t.Skip("no credentials")
+		return
+	}
+
+	ctx := context.Background()
+
+	opts := &Options{}
+	opts.setDefaults(testingPaper)
+	c, err := NewClient(ctx, testingKey, testingSecret, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// Test GetAccount
+	account, err := c.GetAccount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if account == nil {
+		t.Fatal("account is nil")
+	}
+
+	t.Logf("Account ID: %s", account.ID)
+	t.Logf("Account Number: %s", account.AccountNumber)
+	t.Logf("Status: %s", account.Status)
+	t.Logf("Currency: %s", account.Currency)
+	t.Logf("Cash: %s", account.Cash.String())
+	t.Logf("Buying Power: %s", account.BuyingPower.String())
+	t.Logf("Portfolio Value: %s", account.PortfolioValue.String())
+	t.Logf("Equity: %s", account.Equity.String())
+	t.Logf("Pattern Day Trader: %v", account.PatternDayTrader)
+	t.Logf("Trading Blocked: %v", account.TradingBlocked)
+	t.Logf("Account Blocked: %v", account.AccountBlocked)
+	t.Logf("Shorting Enabled: %v", account.ShortingEnabled)
+	t.Logf("Created At: %v", account.CreatedAt)
+
+	jsdata, _ := json.MarshalIndent(account, "", "  ")
+	t.Logf("Full account: %s", jsdata)
+}

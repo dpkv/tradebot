@@ -78,3 +78,8 @@ func (c *Client) GetSnapshot(ctx context.Context, symbol string) (*marketdata.Sn
 	req := marketdata.GetSnapshotRequest{}
 	return c.marketdataClient.GetSnapshot(symbol, req)
 }
+
+// GetAccount returns the account information, including cash balance, buying power, and portfolio value.
+func (c *Client) GetAccount(ctx context.Context) (*alpacaclient.Account, error) {
+	return c.alpacaClient.GetAccount()
+}
