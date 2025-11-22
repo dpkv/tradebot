@@ -33,35 +33,54 @@ import (
 	"github.com/visvasity/topic"
 )
 
+// websocketNoticeHandler is a function type for handling websocket notices from CoinEx.
 type websocketNoticeHandler func(context.Context, *internal.WebsocketNotice) error
 
+// Client represents a CoinEx API client that handles REST API calls and websocket connections.
+// It manages authentication, time synchronization, order updates, and market data subscriptions.
 type Client struct {
+	// lifeCtx and lifeCancel manage the client's lifecycle and allow graceful shutdown.
 	lifeCtx    context.Context
 	lifeCancel context.CancelCauseFunc
 
+	// wg tracks all goroutines started by the client for proper cleanup.
 	wg sync.WaitGroup
 
+	// opts contains configuration options for the client.
 	opts Options
 
+	// client is the HTTP client used for making REST API requests.
 	client http.Client
 
+	// key and secret are the API credentials for authenticating requests.
 	key, secret string
 
+	// timeOffsetMillis stores the time difference between local time and CoinEx server time
+	// in milliseconds. This is used to adjust timestamps for accurate time synchronization.
 	timeOffsetMillis atomic.Int64
 
-	refreshOrdersTopic  *topic.Topic[*internal.Order]
+	// refreshOrdersTopic publishes order updates that need to be refreshed from the server.
+	refreshOrdersTopic *topic.Topic[*internal.Order]
+	// balanceUpdatesTopic publishes balance update events from websocket messages.
 	balanceUpdatesTopic *topic.Topic[*internal.BalanceUpdate]
 
+	// marketOrderUpdateMap holds per-market topics for order update subscriptions.
 	marketOrderUpdateMap syncmap.Map[string, *topic.Topic[*internal.Order]]
-	marketBBOUpdateMap   syncmap.Map[string, *topic.Topic[*internal.BBOUpdate]]
+	// marketBBOUpdateMap holds per-market topics for best bid/offer (BBO) price update subscriptions.
+	marketBBOUpdateMap syncmap.Map[string, *topic.Topic[*internal.BBOUpdate]]
 
+	// websocketHandlerMap maps websocket notice types to their handler functions.
 	websocketHandlerMap map[string]websocketNoticeHandler
 
-	websocketCallCh  chan *internal.WebsocketCall
+	// websocketCallCh is a channel for sending websocket call requests.
+	websocketCallCh chan *internal.WebsocketCall
+	// websocketCallMap tracks pending websocket calls by their call ID.
 	websocketCallMap syncmap.Map[int64, *internal.WebsocketCall]
 }
 
-// New returns a new client instance.
+// New creates and initializes a new CoinEx client instance.
+// It validates credentials, sets up time synchronization, and starts background goroutines
+// for websocket message handling and order refresh operations.
 func New(ctx context.Context, key, secret string, opts *Options) (*Client, error) {
 	if opts == nil {
 		opts = new(Options)
@@ -119,6 +138,9 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// goUpdateTimeAdjustment runs in a background goroutine to periodically update
+// the time offset between local time and CoinEx server time. This ensures accurate
+// timestamp generation for API requests.
 func (c *Client) goUpdateTimeAdjustment(ctx context.Context) {
 	defer c.wg.Done()
 
@@ -139,6 +161,9 @@ func (c *Client) goUpdateTimeAdjustment(ctx context.Context) {
 	}
 }
 
+// updateTimeAdjustment fetches the CoinEx server time and calculates the offset
+// between local time and server time. It retries with exponential backoff on failure
+// and validates that the time difference is within acceptable limits.
 func (c *Client) updateTimeAdjustment(ctx context.Context) error {
 	for i := 0; ctx.Err() == nil; i = min(5, i+1) {
 		s := time.Now()
@@ -168,10 +193,13 @@ func (c *Client) updateTimeAdjustment(ctx context.Context) error {
 	return context.Cause(ctx)
 }
 
+// now returns the current time adjusted by the time offset to match CoinEx server time.
 func (c *Client) now() gobs.RemoteTime {
 	return gobs.RemoteTime{Time: time.Now().Add(time.Millisecond * time.Duration(c.timeOffsetMillis.Load()))}
 }
 
+// getMarketOrdersTopic returns or creates a topic for order updates for the given market.
+// This allows multiple subscribers to receive order updates for a specific market.
 func (c *Client) getMarketOrdersTopic(market string) *topic.Topic[*internal.Order] {
 	tp, ok := c.marketOrderUpdateMap.Load(market)
 	if !ok {
@@ -180,6 +208,8 @@ func (c *Client) getMarketOrdersTopic(market string) *topic.Topic[*internal.Orde
 	return tp
 }
 
+// getMarketPricesTopic returns or creates a topic for best bid/offer (BBO) price updates
+// for the given market. This allows subscribers to receive real-time price updates.
 func (c *Client) getMarketPricesTopic(market string) *topic.Topic[*internal.BBOUpdate] {
 	tp, ok := c.marketBBOUpdateMap.Load(market)
 	if !ok {
@@ -188,6 +218,8 @@ func (c *Client) getMarketPricesTopic(market string) *topic.Topic[*internal.BBOU
 	return tp
 }
 
+// GetSystemTime retrieves the current system time from CoinEx servers.
+// This is used for time synchronization to ensure accurate timestamps.
 func (c *Client) GetSystemTime(ctx context.Context) (*internal.CoinExTime, error) {
 	addrURL := &url.URL{
 		Scheme: RestURL.Scheme,
@@ -204,6 +236,7 @@ func (c *Client) GetSystemTime(ctx context.Context) (*internal.CoinExTime, error
 	return resp.Data, nil
 }
 
+// GetMarkets retrieves a list of all available spot markets and their status information.
 func (c *Client) GetMarkets(ctx context.Context) ([]*internal.MarketStatus, error) {
 	addrURL := &url.URL{
 		Scheme: RestURL.Scheme,
@@ -220,6 +253,7 @@ func (c *Client) GetMarkets(ctx context.Context) ([]*internal.MarketStatus, erro
 	return resp.Data, nil
 }
 
+// GetMarket retrieves the status information for a specific market.
 func (c *Client) GetMarket(ctx context.Context, market string) (*internal.MarketStatus, error) {
 	values := make(url.Values)
 	values.Set("market", market)
@@ -240,6 +274,7 @@ func (c *Client) GetMarket(ctx context.Context, market string) (*internal.Market
 	return resp.Data[0], nil
 }
 
+// GetMarketInfo retrieves ticker information (last price, 24h volume, etc.) for a specific market.
 func (c *Client) GetMarketInfo(ctx context.Context, market string) (*internal.MarketInfo, error) {
 	values := make(url.Values)
 	values.Set("market", market)
@@ -277,6 +312,8 @@ func (c *Client) GetBalances(ctx context.Context) ([]*internal.Balance, error) {
 	return resp.Data, nil
 }
 
+// ListFilledOrders returns an iterator over all filled orders, optionally filtered by market and side.
+// The iterator handles pagination automatically. Orders are also published to the market's order topic.
 func (c *Client) ListFilledOrders(ctx context.Context, market, side string, errp *error) iter.Seq[*internal.Order] {
 	addrURL := &url.URL{
 		Scheme: RestURL.Scheme,
@@ -321,6 +358,8 @@ func (c *Client) ListFilledOrders(ctx context.Context, market, side string, errp
 	}
 }
 
+// ListUnfilledOrders returns an iterator over all pending/unfilled orders, optionally filtered by market and side.
+// The iterator handles pagination automatically. Orders are also published to the market's order topic.
 func (c *Client) ListUnfilledOrders(ctx context.Context, market, side string, errp *error) iter.Seq[*internal.Order] {
 	addrURL := &url.URL{
 		Scheme: RestURL.Scheme,
@@ -365,6 +404,8 @@ func (c *Client) ListUnfilledOrders(ctx context.Context, market, side string, er
 	}
 }
 
+// CreateOrder creates a new spot order on CoinEx. The created order is published
+// to the market's order topic for subscribers to receive updates.
 func (c *Client) CreateOrder(ctx context.Context, req *internal.CreateOrderRequest) (*internal.Order, error) {
 	if req.MarketType != "SPOT" {
 		return nil, fmt.Errorf("market type must be SPOT: %w", os.ErrInvalid)
@@ -385,6 +426,8 @@ func (c *Client) CreateOrder(ctx context.Context, req *internal.CreateOrderReque
 	return resp.Data, nil
 }
 
+// GetOrder retrieves the current status of an order by its order ID and market.
+// The order is also published to the market's order topic.
 func (c *Client) GetOrder(ctx context.Context, market string, orderID int64) (*internal.Order, error) {
 	values := make(url.Values)
 	values.Set("market", market)
@@ -407,6 +450,9 @@ func (c *Client) GetOrder(ctx context.Context, market string, orderID int64) (*i
 	return resp.Data, nil
 }
 
+// BatchQueryOrders retrieves the status of multiple orders in a single API call.
+// This is more efficient than calling GetOrder multiple times. Orders are published
+// to the market's order topic if the query is successful.
 func (c *Client) BatchQueryOrders(ctx context.Context, market string, ids []int64) ([]*internal.GetOrderResponse, error) {
 	var sb strings.Builder
 	for i, id := range ids {
@@ -443,6 +489,9 @@ func (c *Client) BatchQueryOrders(ctx context.Context, market string, ids []int6
 	return resp.Data, nil
 }
 
+// CancelOrder cancels an existing order by its order ID. CoinEx does not save
+// zero-filled canceled orders, so os.ErrNotExist is treated as success in that case.
+// The canceled order is published to the market's order topic.
 func (c *Client) CancelOrder(ctx context.Context, market string, orderID int64) (*internal.Order, error) {
 	req := internal.CancelOrderRequest{
 		Market:     market,
@@ -476,6 +525,8 @@ func (c *Client) CancelOrder(ctx context.Context, market string, orderID int64) 
 	return resp.Data, nil
 }
 
+// CancelOrderByClientID cancels an order using the client-provided order ID instead of
+// the server-assigned order ID. This is useful when you only have the client ID.
 func (c *Client) CancelOrderByClientID(ctx context.Context, market string, clientOrderID string) (*internal.Order, error) {
 	req := internal.CancelOrderByClientIDRequest{
 		Market:     market,
@@ -540,6 +591,8 @@ func (c *Client) UnwatchMarket(ctx context.Context, market string) error {
 	return nil
 }
 
+// do performs an authenticated HTTP request to CoinEx API. It constructs the request signature
+// using HMAC-SHA256 with the API secret, and includes the API key and timestamp in headers.
 func (c *Client) do(ctx context.Context, method string, addrURL *url.URL, body, contentType string) (*http.Response, error) {
 	var sb strings.Builder
 	sb.WriteString(method)
@@ -575,6 +628,8 @@ func (c *Client) do(ctx context.Context, method string, addrURL *url.URL, body, 
 	return c.client.Do(req)
 }
 
+// httpGetJSON performs a public (unauthenticated) HTTP GET request and unmarshals
+// the JSON response. It handles retries for rate limiting and bad gateway errors.
 func httpGetJSON[PT *T, T any](ctx context.Context, client *http.Client, addrURL *url.URL, response PT, opts *Options) error {
 	if opts == nil {
 		opts = new(Options)
@@ -662,6 +717,7 @@ func httpGetJSON[PT *T, T any](ctx context.Context, client *http.Client, addrURL
 	return nil
 }
 
+// sleep sleeps for the specified duration while respecting context cancellation.
 func sleep(ctx context.Context, d time.Duration) error {
 	sctx, scancel := context.WithTimeout(ctx, d)
 	<-sctx.Done()
@@ -672,6 +728,9 @@ func sleep(ctx context.Context, d time.Duration) error {
 	return nil
 }
 
+// privateGetJSON performs an authenticated HTTP GET request and unmarshals the JSON response.
+// It handles retries for rate limiting and bad gateway errors, and maps CoinEx error codes
+// to standard Go errors (e.g., OrderNotFound -> os.ErrNotExist).
 func privateGetJSON[PT *T, T any](ctx context.Context, c *Client, addrURL *url.URL, request any, response PT) error {
 	var sb strings.Builder
 	contentType := ""
@@ -747,6 +806,9 @@ func privateGetJSON[PT *T, T any](ctx context.Context, c *Client, addrURL *url.U
 	return nil
 }
 
+// privatePostJSON performs an authenticated HTTP POST request and unmarshals the JSON response.
+// It handles retries for rate limiting and bad gateway errors, and maps CoinEx error codes
+// to standard Go errors (e.g., InsufficientFunds -> exchange.ErrNoFund, OrderNotFound -> os.ErrNotExist).
 func privatePostJSON[PT *T, T any](ctx context.Context, c *Client, addrURL *url.URL, request any, response PT) error {
 	var sb strings.Builder
 	if request != nil {
@@ -826,6 +888,9 @@ func privatePostJSON[PT *T, T any](ctx context.Context, c *Client, addrURL *url.
 	return nil
 }
 
+// goRefreshOrders runs in a background goroutine to periodically refresh order statuses
+// from the server. It subscribes to the refreshOrdersTopic and queries the server for
+// fresh order data when updates are requested, then publishes the results to market-specific topics.
 func (c *Client) goRefreshOrders(ctx context.Context) {
 	defer c.wg.Done()
 
