@@ -185,3 +185,98 @@ func TestClientGetAssets(t *testing.T) {
 		t.Logf("First active equity NYSE asset: %s", jsdata)
 	}
 }
+
+func TestClientGetSnapshot(t *testing.T) {
+	if !checkCredentials() {
+		t.Skip("no credentials")
+		return
+	}
+
+	ctx := context.Background()
+
+	opts := &Options{}
+	opts.setDefaults(testingPaper)
+	c, err := NewClient(ctx, testingKey, testingSecret, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// Test GetSnapshot with a common symbol (AAPL)
+	snapshot, err := c.GetSnapshot(ctx, "AAPL")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+
+	// Log latest trade information
+	if snapshot.LatestTrade != nil {
+		t.Logf("Latest Trade - Price: %.2f, Size: %d, Timestamp: %v",
+			snapshot.LatestTrade.Price,
+			snapshot.LatestTrade.Size,
+			snapshot.LatestTrade.Timestamp)
+	} else {
+		t.Log("Latest Trade: nil")
+	}
+
+	// Log latest quote information
+	if snapshot.LatestQuote != nil {
+		t.Logf("Latest Quote - Bid: %.2f (Size: %d), Ask: %.2f (Size: %d), Timestamp: %v",
+			snapshot.LatestQuote.BidPrice,
+			snapshot.LatestQuote.BidSize,
+			snapshot.LatestQuote.AskPrice,
+			snapshot.LatestQuote.AskSize,
+			snapshot.LatestQuote.Timestamp)
+	} else {
+		t.Log("Latest Quote: nil")
+	}
+
+	// Log daily bar information
+	if snapshot.DailyBar != nil {
+		t.Logf("Daily Bar - Open: %.2f, High: %.2f, Low: %.2f, Close: %.2f, Volume: %d, Timestamp: %v",
+			snapshot.DailyBar.Open,
+			snapshot.DailyBar.High,
+			snapshot.DailyBar.Low,
+			snapshot.DailyBar.Close,
+			snapshot.DailyBar.Volume,
+			snapshot.DailyBar.Timestamp)
+	} else {
+		t.Log("Daily Bar: nil")
+	}
+
+	// Log minute bar information
+	if snapshot.MinuteBar != nil {
+		t.Logf("Minute Bar - Open: %.2f, High: %.2f, Low: %.2f, Close: %.2f, Volume: %d, Timestamp: %v",
+			snapshot.MinuteBar.Open,
+			snapshot.MinuteBar.High,
+			snapshot.MinuteBar.Low,
+			snapshot.MinuteBar.Close,
+			snapshot.MinuteBar.Volume,
+			snapshot.MinuteBar.Timestamp)
+	} else {
+		t.Log("Minute Bar: nil")
+	}
+
+	// Log previous daily bar information
+	if snapshot.PrevDailyBar != nil {
+		t.Logf("Previous Daily Bar - Open: %.2f, High: %.2f, Low: %.2f, Close: %.2f, Volume: %d, Timestamp: %v",
+			snapshot.PrevDailyBar.Open,
+			snapshot.PrevDailyBar.High,
+			snapshot.PrevDailyBar.Low,
+			snapshot.PrevDailyBar.Close,
+			snapshot.PrevDailyBar.Volume,
+			snapshot.PrevDailyBar.Timestamp)
+	} else {
+		t.Log("Previous Daily Bar: nil")
+	}
+
+	jsdata, _ := json.MarshalIndent(snapshot, "", "  ")
+	t.Logf("Full snapshot: %s", jsdata)
+}

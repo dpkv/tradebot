@@ -6,11 +6,13 @@ import (
 	"context"
 
 	alpacaclient "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 )
 
 type Client struct {
-	opts         Options
-	alpacaClient *alpacaclient.Client
+	opts             Options
+	alpacaClient     *alpacaclient.Client
+	marketdataClient *marketdata.Client
 }
 
 func NewClient(ctx context.Context, key, secret string, opts *Options) (*Client, error) {
@@ -31,9 +33,18 @@ func NewClient(ctx context.Context, key, secret string, opts *Options) (*Client,
 
 	alpacaClient := alpacaclient.NewClient(clientOpts)
 
+	// Create marketdata client options
+	marketdataOpts := marketdata.ClientOpts{
+		APIKey:    key,
+		APISecret: secret,
+		BaseURL:   opts.DataURL,
+	}
+	marketdataClient := marketdata.NewClient(marketdataOpts)
+
 	return &Client{
-		opts:         *opts,
-		alpacaClient: alpacaClient,
+		opts:             *opts,
+		alpacaClient:     alpacaClient,
+		marketdataClient: marketdataClient,
 	}, nil
 }
 
@@ -59,4 +70,11 @@ func (c *Client) GetAssets(ctx context.Context, status *string, assetClass *stri
 		req.Exchange = *exchange
 	}
 	return c.alpacaClient.GetAssets(req)
+}
+
+// GetSnapshot returns a snapshot of market data for the given symbol, including
+// the latest trade, quote, and bar data.
+func (c *Client) GetSnapshot(ctx context.Context, symbol string) (*marketdata.Snapshot, error) {
+	req := marketdata.GetSnapshotRequest{}
+	return c.marketdataClient.GetSnapshot(symbol, req)
 }
