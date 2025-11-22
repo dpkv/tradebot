@@ -11,7 +11,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/go-telegram/bot v1.15.0
 	github.com/google/uuid v1.4.0
-	github.com/gorilla/websocket v1.4.0
+	github.com/gorilla/websocket v1.4.1
 	github.com/nightlyone/lockfile v1.0.0
 	github.com/shirou/gopsutil/v4 v4.25.6
 	github.com/shopspring/decimal v1.3.1
@@ -25,6 +25,7 @@ require (
 )
 
 require (
+	github.com/alpacahq/alpaca-trade-api-go v1.9.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
