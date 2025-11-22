@@ -76,3 +76,112 @@ func TestClientGetAsset(t *testing.T) {
 	jsdata, _ := json.MarshalIndent(asset, "", "  ")
 	t.Logf("%s", jsdata)
 }
+
+func TestClientGetAssets(t *testing.T) {
+	if !checkCredentials() {
+		t.Skip("no credentials")
+		return
+	}
+
+	ctx := context.Background()
+
+	opts := &Options{}
+	opts.setDefaults(testingPaper)
+	c, err := NewClient(ctx, testingKey, testingSecret, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// Test GetAssets without filters (get all assets)
+	assets, err := c.GetAssets(ctx, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if assets == nil {
+		t.Fatal("assets is nil")
+	}
+
+	if len(assets) == 0 {
+		t.Log("Warning: no assets returned")
+	} else {
+		t.Logf("Retrieved %d assets", len(assets))
+		// Log first few assets
+		for i, asset := range assets {
+			if i >= 5 {
+				break
+			}
+			t.Logf("Asset %d: Symbol=%s, Name=%s, Status=%s, Class=%s, Exchange=%s, Tradable=%v", i+1, asset.Symbol, asset.Name, asset.Status, asset.Class, asset.Exchange, asset.Tradable)
+		}
+	}
+
+	// Test GetAssets with status filter (active assets only)
+	status := "active"
+	activeAssets, err := c.GetAssets(ctx, &status, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if activeAssets == nil {
+		t.Fatal("activeAssets is nil")
+	}
+
+	t.Logf("Retrieved %d active assets", len(activeAssets))
+	if len(activeAssets) > 0 {
+		jsdata, _ := json.MarshalIndent(activeAssets[0], "", "  ")
+		t.Logf("First active asset: %s", jsdata)
+	}
+
+	// Test GetAssets with asset class filter (us_equity)
+	assetClass := "us_equity"
+	equityAssets, err := c.GetAssets(ctx, nil, &assetClass, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if equityAssets == nil {
+		t.Fatal("equityAssets is nil")
+	}
+
+	t.Logf("Retrieved %d equity assets", len(equityAssets))
+	if len(equityAssets) > 0 {
+		t.Logf("First equity asset: Symbol=%s, Class=%s", equityAssets[0].Symbol, equityAssets[0].Class)
+	}
+
+	// Test GetAssets with exchange filter (NYSE)
+	exchange := "NYSE"
+	nyseAssets, err := c.GetAssets(ctx, nil, nil, &exchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if nyseAssets == nil {
+		t.Fatal("nyseAssets is nil")
+	}
+
+	t.Logf("Retrieved %d NYSE assets", len(nyseAssets))
+	if len(nyseAssets) > 0 {
+		t.Logf("First NYSE asset: Symbol=%s, Exchange=%s", nyseAssets[0].Symbol, nyseAssets[0].Exchange)
+	}
+
+	// Test GetAssets with multiple filters (active, equity, NYSE)
+	activeEquityNyse, err := c.GetAssets(ctx, &status, &assetClass, &exchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if activeEquityNyse == nil {
+		t.Fatal("activeEquityNyse is nil")
+	}
+
+	t.Logf("Retrieved %d active equity assets on NYSE", len(activeEquityNyse))
+	if len(activeEquityNyse) > 0 {
+		jsdata, _ := json.MarshalIndent(activeEquityNyse[0], "", "  ")
+		t.Logf("First active equity NYSE asset: %s", jsdata)
+	}
+}

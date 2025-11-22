@@ -5,8 +5,7 @@ package alpaca
 import (
 	"context"
 
-	alpacaclient "github.com/alpacahq/alpaca-trade-api-go/alpaca"
-	"github.com/alpacahq/alpaca-trade-api-go/common"
+	alpacaclient "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 )
 
 type Client struct {
@@ -23,16 +22,14 @@ func NewClient(ctx context.Context, key, secret string, opts *Options) (*Client,
 		return nil, err
 	}
 
-	// Set the base URL for the alpaca client
-	alpacaclient.SetBaseUrl(opts.TradeURL)
-
-	// Create credentials
-	credentials := &common.APIKey{
-		ID:     key,
-		Secret: secret,
+	// Create client options for v3 API
+	clientOpts := alpacaclient.ClientOpts{
+		APIKey:    key,
+		APISecret: secret,
+		BaseURL:   opts.TradeURL,
 	}
 
-	alpacaClient := alpacaclient.NewClient(credentials)
+	alpacaClient := alpacaclient.NewClient(clientOpts)
 
 	return &Client{
 		opts:         *opts,
@@ -47,4 +44,19 @@ func (c *Client) Close() error {
 // GetAsset returns an asset for the given symbol.
 func (c *Client) GetAsset(ctx context.Context, symbol string) (*alpacaclient.Asset, error) {
 	return c.alpacaClient.GetAsset(symbol)
+}
+
+// GetAssets returns the list of assets, optionally filtered by status, asset class, or exchange.
+func (c *Client) GetAssets(ctx context.Context, status *string, assetClass *string, exchange *string) ([]alpacaclient.Asset, error) {
+	req := alpacaclient.GetAssetsRequest{}
+	if status != nil {
+		req.Status = *status
+	}
+	if assetClass != nil {
+		req.AssetClass = *assetClass
+	}
+	if exchange != nil {
+		req.Exchange = *exchange
+	}
+	return c.alpacaClient.GetAssets(req)
 }
