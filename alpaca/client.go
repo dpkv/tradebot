@@ -7,6 +7,7 @@ import (
 
 	alpacaclient "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+	"github.com/bvk/tradebot/alpaca/internal"
 )
 
 type Client struct {
@@ -82,4 +83,36 @@ func (c *Client) GetSnapshot(ctx context.Context, symbol string) (*marketdata.Sn
 // GetAccount returns the account information, including cash balance, buying power, and portfolio value.
 func (c *Client) GetAccount(ctx context.Context) (*alpacaclient.Account, error) {
 	return c.alpacaClient.GetAccount()
+}
+
+// PlaceOrder places a new order with the given request.
+func (c *Client) PlaceOrder(ctx context.Context, req alpacaclient.PlaceOrderRequest) (*internal.Order, error) {
+	order, err := c.alpacaClient.PlaceOrder(req)
+	if err != nil {
+		return nil, err
+	}
+	return &internal.Order{Order: order}, nil
+}
+
+// GetOrder retrieves an order by its server order ID.
+func (c *Client) GetOrder(ctx context.Context, orderID string) (*internal.Order, error) {
+	order, err := c.alpacaClient.GetOrder(orderID)
+	if err != nil {
+		return nil, err
+	}
+	return &internal.Order{Order: order}, nil
+}
+
+// GetOrderByClientOrderID retrieves an order by its client order ID.
+func (c *Client) GetOrderByClientOrderID(ctx context.Context, clientOrderID string) (*internal.Order, error) {
+	order, err := c.alpacaClient.GetOrderByClientOrderID(clientOrderID)
+	if err != nil {
+		return nil, err
+	}
+	return &internal.Order{Order: order}, nil
+}
+
+// CancelOrder cancels an order by its server order ID.
+func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
+	return c.alpacaClient.CancelOrder(orderID)
 }
