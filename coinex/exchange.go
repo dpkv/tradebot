@@ -14,6 +14,7 @@ import (
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/syncmap"
+	"github.com/visvasity/topic"
 )
 
 type Exchange struct {
@@ -62,6 +63,11 @@ func (v *Exchange) ExchangeName() string {
 
 func (v *Exchange) CanDedupOnClientUUID() bool {
 	return false
+}
+
+func (v *Exchange) GetBalanceUpdates() (*topic.Receiver[exchange.BalanceUpdate], error) {
+	fn := func(x *internal.BalanceUpdate) exchange.BalanceUpdate { return x }
+	return topic.SubscribeFunc(v.client.balanceUpdatesTopic, fn, 0, true)
 }
 
 func (v *Exchange) OpenSpotProduct(ctx context.Context, productID string) (exchange.Product, error) {
