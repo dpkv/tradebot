@@ -35,3 +35,11 @@ go-test: go-all
 go-test-long: go-all
 	$(GO) test -fullpath -failfast -count=1 -coverprofile=coverage.out $(GOTESTFLAGS) ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+.PHONY: docker-test-build
+docker-test-build:
+	docker build -f Dockerfile.test -t tradebot-test .
+
+.PHONY: docker-test-run
+docker-test-run:
+	docker run --rm tradebot-test
