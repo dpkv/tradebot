@@ -5,6 +5,7 @@ package alpaca
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
 	alpacaclient "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
@@ -50,13 +51,17 @@ func (p *Product) BaseMinSize() decimal.Decimal {
 }
 
 func (p *Product) GetPriceUpdates() (*topic.Receiver[exchange.PriceUpdate], error) {
+	slog.Info("GetPriceUpdates called", "symbol", p.symbol, "hasPriceTopic", p.priceTopic != nil)
 	// Subscribe to trades for this symbol if not already subscribed
 	if p.priceTopic == nil {
+		slog.Info("subscribing to trades for price updates", "symbol", p.symbol)
 		priceTopic, err := p.client.SubscribeToTrades(context.Background(), p.symbol)
 		if err != nil {
+			slog.Error("failed to subscribe to trades for price updates", "symbol", p.symbol, "err", err)
 			return nil, fmt.Errorf("could not subscribe to trades for %s: %w", p.symbol, err)
 		}
 		p.priceTopic = priceTopic
+		slog.Info("successfully subscribed to trades for price updates", "symbol", p.symbol)
 	}
 	return topic.Subscribe(p.priceTopic, 1, true /* includeLast */)
 }

@@ -94,50 +94,73 @@ func (c *Client) ensureStreamConnected(ctx context.Context) error {
 	defer c.streamMu.Unlock()
 
 	if c.streamClient != nil {
+		slog.Debug("alpaca stream client already connected")
 		return nil
 	}
+
+	slog.Info("connecting to alpaca stream", "feed", c.opts.StreamFeed, "url", c.opts.StreamURL)
 
 	// Create stream client with credentials
 	c.streamClient = stream.NewStocksClient(
 		c.opts.StreamFeed,
 		stream.WithCredentials(c.key, c.secret),
 		stream.WithBaseURL(c.opts.StreamURL),
+		stream.WithConnectCallback(func() {
+			slog.Info("alpaca stream connection established")
+		}),
+		stream.WithDisconnectCallback(func() {
+			slog.Warn("alpaca stream connection lost")
+		}),
 	)
 
 	// Create a context for the stream
 	c.streamCtx, c.streamCancel = context.WithCancel(context.Background())
 
 	// Connect to the stream
+	slog.Info("attempting to connect to alpaca stream...")
 	if err := c.streamClient.Connect(c.streamCtx); err != nil {
+		slog.Error("failed to connect to alpaca stream", "err", err)
 		c.streamClient = nil
 		c.streamCancel()
 		return err
 	}
 
-	slog.Info("alpaca stream client connected", "feed", c.opts.StreamFeed)
+	slog.Info("alpaca stream client connected successfully", "feed", c.opts.StreamFeed)
 	return nil
 }
 
 // SubscribeToTrades subscribes to trade updates for a symbol
 func (c *Client) SubscribeToTrades(ctx context.Context, symbol string) (*topic.Topic[exchange.PriceUpdate], error) {
 	if err := c.ensureStreamConnected(ctx); err != nil {
+		slog.Error("failed to connect to alpaca stream", "symbol", symbol, "err", err)
 		return nil, err
 	}
 
 	priceTopic := c.getOrCreatePriceTopic(symbol)
 
+	tradeCount := 0
 	// Subscribe to trades for this symbol
 	err := c.streamClient.SubscribeToTrades(func(trade stream.Trade) {
+		tradeCount++
+		if tradeCount <= 5 || tradeCount%100 == 0 {
+			slog.Info("alpaca trade received",
+				"symbol", trade.Symbol,
+				"price", trade.Price,
+				"size", trade.Size,
+				"timestamp", trade.Timestamp,
+				"tradeCount", tradeCount)
+		}
 		if trade.Symbol == symbol {
 			update := &internal.TradeUpdate{Trade: trade}
 			priceTopic.Send(update)
 		}
 	}, symbol)
 	if err != nil {
+		slog.Error("failed to subscribe to alpaca trades", "symbol", symbol, "err", err)
 		return nil, err
 	}
 
-	slog.Info("subscribed to alpaca trades", "symbol", symbol)
+	slog.Info("subscribed to alpaca trades", "symbol", symbol, "feed", c.opts.StreamFeed)
 	return priceTopic, nil
 }
 
