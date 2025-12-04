@@ -35,8 +35,7 @@ func checkCredentials() bool {
 
 func TestClientGetAsset(t *testing.T) {
 	if !checkCredentials() {
-		t.Skip("no credentials")
-		return
+		t.Fatal("no credentials: create alpaca-creds.json with key, secret, and paper_trading fields")
 	}
 
 	ctx := context.Background()
@@ -79,8 +78,7 @@ func TestClientGetAsset(t *testing.T) {
 
 func TestClientGetAssets(t *testing.T) {
 	if !checkCredentials() {
-		t.Skip("no credentials")
-		return
+		t.Fatal("no credentials: create alpaca-creds.json with key, secret, and paper_trading fields")
 	}
 
 	ctx := context.Background()
@@ -188,8 +186,7 @@ func TestClientGetAssets(t *testing.T) {
 
 func TestClientGetSnapshot(t *testing.T) {
 	if !checkCredentials() {
-		t.Skip("no credentials")
-		return
+		t.Fatal("no credentials: create alpaca-creds.json with key, secret, and paper_trading fields")
 	}
 
 	ctx := context.Background()
@@ -283,8 +280,7 @@ func TestClientGetSnapshot(t *testing.T) {
 
 func TestClientGetAccount(t *testing.T) {
 	if !checkCredentials() {
-		t.Skip("no credentials")
-		return
+		t.Fatal("no credentials: create alpaca-creds.json with key, secret, and paper_trading fields")
 	}
 
 	ctx := context.Background()

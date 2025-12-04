@@ -76,6 +76,11 @@ var initServerState = &gobs.ServerState{
 				"SHIBUSDT",
 			},
 		},
+		"alpaca": {
+			EnabledProductIDs: []string{
+				"AAPL",
+			},
+		},
 	},
 }
 

@@ -55,9 +55,7 @@ func (p *Product) GetPriceUpdates() (*topic.Receiver[exchange.PriceUpdate], erro
 }
 
 func (p *Product) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], error) {
-	// TODO: Revisit this
-	convert := func(x *internal.Order) exchange.OrderUpdate { return x }
-	return topic.SubscribeFunc(p.orderTopic, convert, 1, true /* includeLast */)
+	return topic.Subscribe(p.orderTopic, 1, true /* includeLast */)
 }
 
 func (p *Product) LimitBuy(ctx context.Context, clientOrderID uuid.UUID, size, price decimal.Decimal) (exchange.Order, error) {
