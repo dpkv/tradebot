@@ -4,16 +4,33 @@ package alpaca
 
 import (
 	"context"
+	"log/slog"
+	"sync"
 
 	alpacaclient "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/bvk/tradebot/alpaca/internal"
+	"github.com/bvk/tradebot/exchange"
+	"github.com/bvk/tradebot/syncmap"
+	"github.com/visvasity/topic"
 )
 
 type Client struct {
 	opts             Options
+	key              string
+	secret           string
 	alpacaClient     *alpacaclient.Client
 	marketdataClient *marketdata.Client
+
+	// Streaming client for real-time data
+	streamClient *stream.StocksClient
+	streamMu     sync.Mutex
+	streamCtx    context.Context
+	streamCancel context.CancelFunc
+
+	// Map of symbol to price topic for streaming price updates
+	priceTopicMap syncmap.Map[string, *topic.Topic[exchange.PriceUpdate]]
 }
 
 func NewClient(ctx context.Context, key, secret string, opts *Options) (*Client, error) {
@@ -44,13 +61,96 @@ func NewClient(ctx context.Context, key, secret string, opts *Options) (*Client,
 
 	return &Client{
 		opts:             *opts,
+		key:              key,
+		secret:           secret,
 		alpacaClient:     alpacaClient,
 		marketdataClient: marketdataClient,
 	}, nil
 }
 
 func (c *Client) Close() error {
+	c.streamMu.Lock()
+	defer c.streamMu.Unlock()
+
+	if c.streamCancel != nil {
+		c.streamCancel()
+	}
 	return nil
+}
+
+// getOrCreatePriceTopic returns the price topic for a symbol, creating it if necessary
+func (c *Client) getOrCreatePriceTopic(symbol string) *topic.Topic[exchange.PriceUpdate] {
+	if t, ok := c.priceTopicMap.Load(symbol); ok {
+		return t
+	}
+	t := topic.New[exchange.PriceUpdate]()
+	c.priceTopicMap.Store(symbol, t)
+	return t
+}
+
+// ensureStreamConnected ensures the stream client is connected
+func (c *Client) ensureStreamConnected(ctx context.Context) error {
+	c.streamMu.Lock()
+	defer c.streamMu.Unlock()
+
+	if c.streamClient != nil {
+		return nil
+	}
+
+	// Create stream client with credentials
+	c.streamClient = stream.NewStocksClient(
+		c.opts.StreamFeed,
+		stream.WithCredentials(c.key, c.secret),
+		stream.WithBaseURL(c.opts.StreamURL),
+	)
+
+	// Create a context for the stream
+	c.streamCtx, c.streamCancel = context.WithCancel(context.Background())
+
+	// Connect to the stream
+	if err := c.streamClient.Connect(c.streamCtx); err != nil {
+		c.streamClient = nil
+		c.streamCancel()
+		return err
+	}
+
+	slog.Info("alpaca stream client connected", "feed", c.opts.StreamFeed)
+	return nil
+}
+
+// SubscribeToTrades subscribes to trade updates for a symbol
+func (c *Client) SubscribeToTrades(ctx context.Context, symbol string) (*topic.Topic[exchange.PriceUpdate], error) {
+	if err := c.ensureStreamConnected(ctx); err != nil {
+		return nil, err
+	}
+
+	priceTopic := c.getOrCreatePriceTopic(symbol)
+
+	// Subscribe to trades for this symbol
+	err := c.streamClient.SubscribeToTrades(func(trade stream.Trade) {
+		if trade.Symbol == symbol {
+			update := &internal.TradeUpdate{Trade: trade}
+			priceTopic.Send(update)
+		}
+	}, symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("subscribed to alpaca trades", "symbol", symbol)
+	return priceTopic, nil
+}
+
+// UnsubscribeFromTrades unsubscribes from trade updates for a symbol
+func (c *Client) UnsubscribeFromTrades(ctx context.Context, symbol string) error {
+	c.streamMu.Lock()
+	defer c.streamMu.Unlock()
+
+	if c.streamClient == nil {
+		return nil
+	}
+
+	return c.streamClient.UnsubscribeFromTrades(symbol)
 }
 
 // GetAsset returns an asset for the given symbol.

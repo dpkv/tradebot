@@ -4,7 +4,6 @@ package alpaca
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 
@@ -22,6 +21,7 @@ type Product struct {
 	symbol     string
 	asset      *alpacaclient.Asset
 	orderTopic *topic.Topic[exchange.OrderUpdate]
+	priceTopic *topic.Topic[exchange.PriceUpdate]
 }
 
 var _ exchange.Product = &Product{}
@@ -50,8 +50,15 @@ func (p *Product) BaseMinSize() decimal.Decimal {
 }
 
 func (p *Product) GetPriceUpdates() (*topic.Receiver[exchange.PriceUpdate], error) {
-	// TODO: Implement price updates via websocket or polling
-	return nil, errors.New("not implemented")
+	// Subscribe to trades for this symbol if not already subscribed
+	if p.priceTopic == nil {
+		priceTopic, err := p.client.SubscribeToTrades(context.Background(), p.symbol)
+		if err != nil {
+			return nil, fmt.Errorf("could not subscribe to trades for %s: %w", p.symbol, err)
+		}
+		p.priceTopic = priceTopic
+	}
+	return topic.Subscribe(p.priceTopic, 1, true /* includeLast */)
 }
 
 func (p *Product) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], error) {
