@@ -298,9 +298,10 @@ type CancelOrderResultResponse struct {
 }
 
 type EditOrderRequest struct {
-	OrderID string               `json:"order_id"`
-	Price   exchange.NullDecimal `json:"price"`
-	Size    exchange.NullDecimal `json:"size"`
+	OrderID   string               `json:"order_id"`
+	Price     exchange.NullDecimal `json:"price"`
+	Size      exchange.NullDecimal `json:"size"`
+	StopPrice exchange.NullDecimal `json:"stop_price,omitempty"`
 }
 
 type EditOrderResponse struct {
