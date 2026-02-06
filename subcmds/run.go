@@ -28,6 +28,7 @@ import (
 	"github.com/bvk/tradebot/server"
 	"github.com/bvk/tradebot/subcmds/cmdutil"
 	"github.com/bvk/tradebot/subcmds/defaults"
+	"github.com/bvk/tradebot/ui"
 	"github.com/bvkgo/kv/kvhttp"
 	"github.com/bvkgo/kvbadger"
 	"github.com/dgraph-io/badger/v4"
@@ -363,6 +364,9 @@ func (c *Run) run(ctx context.Context, args []string) error {
 	s.AddHandler("/pid", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, fmt.Sprintf("%d", os.Getpid()))
 	}))
+
+	// Register UI handlers that serve the home page and static assets.
+	ui.RegisterHandlers(s)
 
 	for {
 		if err := trader.Start(ctx); err != nil {

@@ -1,0 +1,165 @@
+.tb-header {
+  padding: 1.5rem 1.5rem 0.5rem;
+  text-align: center;
+  background: #0f172a;
+  color: #e5e7eb;
+}
+
+.tb-header h1 {
+  margin: 0;
+  font-size: 1.75rem;
+}
+
+.tb-subtitle {
+  margin: 0.5rem 0 0;
+  color: #9ca3af;
+  font-size: 0.9rem;
+}
+
+.tb-main {
+  padding: 1.5rem;
+  background: #020617;
+  min-height: calc(100vh - 80px);
+  box-sizing: border-box;
+}
+
+.tb-card {
+  max-width: 960px;
+  margin: 0 auto;
+  background: #020617;
+  border-radius: 0.75rem;
+  border: 1px solid #1f2937;
+  box-shadow: 0 20px 30px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.tb-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #1f2937;
+  background: radial-gradient(circle at top left, #1e293b, #020617);
+  color: #e5e7eb;
+}
+
+.tb-card-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.tb-button {
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: white;
+  box-shadow: 0 8px 16px rgba(34, 197, 94, 0.35);
+  transition: transform 0.1s ease, box-shadow 0.1s ease, opacity 0.1s ease;
+}
+
+.tb-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 22px rgba(34, 197, 94, 0.4);
+}
+
+.tb-button:active {
+  transform: translateY(1px);
+  box-shadow: 0 4px 10px rgba(34, 197, 94, 0.35);
+  opacity: 0.9;
+}
+
+.tb-status {
+  padding: 0.6rem 1.25rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #111827;
+}
+
+.tb-status-info {
+  color: #e5e7eb;
+}
+
+.tb-status-success {
+  color: #4ade80;
+}
+
+.tb-status-error {
+  color: #f97373;
+}
+
+.tb-table-wrapper {
+  overflow-x: auto;
+}
+
+.tb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  background: #020617;
+  color: #e5e7eb;
+}
+
+.tb-table thead {
+  background: #020617;
+}
+
+.tb-table th,
+.tb-table td {
+  padding: 0.6rem 0.75rem;
+  white-space: nowrap;
+}
+
+.tb-table th {
+  text-align: left;
+  font-weight: 600;
+  color: #9ca3af;
+  border-bottom: 1px solid #111827;
+}
+
+.tb-table tbody tr:nth-child(even) {
+  background: #020617;
+}
+
+.tb-table tbody tr:nth-child(odd) {
+  background: #020617;
+}
+
+.tb-table tbody tr:hover {
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.tb-table code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  background: #030712;
+  padding: 0.15rem 0.35rem;
+  border-radius: 999px;
+  font-size: 0.8em;
+  border: 1px solid #111827;
+}
+
+/* State-based row highlighting */
+.tb-state-running td {
+  border-left: 3px solid #22c55e;
+}
+
+.tb-state-paused td {
+  border-left: 3px solid #eab308;
+}
+
+.tb-state-completed td {
+  border-left: 3px solid #6366f1;
+}
+
+.tb-state-canceled td,
+.tb-state-failed td {
+  border-left: 3px solid #f97373;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #020617;
+}
+

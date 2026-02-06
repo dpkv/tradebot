@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tradebot Jobs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="tb-header">
+    <h1>Tradebot Jobs</h1>
+    <p class="tb-subtitle">Overview of all jobs in the running daemon</p>
+  </header>
+
+  <main class="tb-main">
+    <section class="tb-card">
+      <div class="tb-card-header">
+        <h2>Jobs</h2>
+        <button id="tb-refresh" class="tb-button">Refresh</button>
+      </div>
+      <div id="tb-status" class="tb-status"></div>
+      <div class="tb-table-wrapper">
+        <table class="tb-table" id="tb-jobs-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>UID</th>
+              <th>Type</th>
+              <th>State</th>
+              <th>Manual</th>
+            </tr>
+          </thead>
+          <tbody>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/main.js"></script>
+</body>
+</html>
+
