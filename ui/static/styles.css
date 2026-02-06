@@ -118,6 +118,27 @@
   border-bottom: 1px solid #111827;
 }
 
+.tb-table th.tb-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.tb-table th.tb-sort-asc::after,
+.tb-table th.tb-sort-desc::after {
+  display: inline-block;
+  margin-left: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.8;
+}
+
+.tb-table th.tb-sort-asc::after {
+  content: "▲";
+}
+
+.tb-table th.tb-sort-desc::after {
+  content: "▼";
+}
+
 .tb-table tbody tr:nth-child(even) {
   background: #020617;
 }
