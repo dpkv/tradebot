@@ -184,3 +184,223 @@ body {
   background: #020617;
 }
 
+/* Settings button in header */
+.tb-settings-btn {
+  position: absolute;
+  top: 1rem;
+  right: 1.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  border-radius: 999px;
+  border: 1px solid #475569;
+  background: #1e293b;
+  color: #e5e7eb;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.tb-settings-btn:hover {
+  background: #334155;
+  border-color: #64748b;
+}
+
+.tb-header {
+  position: relative;
+}
+
+/* Modal backdrop - hidden by default, only shown when [hidden] is removed */
+.tb-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.tb-modal-backdrop[hidden] {
+  display: none !important;
+}
+
+.tb-modal {
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  border-radius: 0.75rem;
+  max-width: 520px;
+  width: 100%;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+}
+
+.tb-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #1f2937;
+  background: #1e293b;
+  color: #e5e7eb;
+}
+
+.tb-modal-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.tb-modal-close {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  border-radius: 0.25rem;
+}
+
+.tb-modal-close:hover {
+  color: #e5e7eb;
+  background: #334155;
+}
+
+.tb-modal-body {
+  padding: 1.25rem;
+  overflow-y: auto;
+  color: #e5e7eb;
+}
+
+.tb-saved-message {
+  margin: 0;
+  font-size: 1rem;
+  color: #e5e7eb;
+}
+
+.tb-modal-footer {
+  padding: 1rem 1.25rem;
+  border-top: 1px solid #1f2937;
+  background: #020617;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+/* Settings form */
+.tb-settings-section {
+  margin-bottom: 1.5rem;
+}
+
+.tb-settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.tb-settings-section h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  color: #94a3b8;
+}
+
+.tb-settings-block {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid #1f2937;
+  background: #020617;
+}
+
+.tb-settings-block.tb-enabled {
+  border-color: #334155;
+}
+
+.tb-settings-enable {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tb-settings-enable input {
+  margin-right: 0.5rem;
+}
+
+.tb-settings-fields {
+  margin-left: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tb-settings-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.tb-settings-fields input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #334155;
+  border-radius: 0.375rem;
+  background: #0f172a;
+  color: #e5e7eb;
+  font-size: 0.85rem;
+  font-family: ui-monospace, monospace;
+}
+
+.tb-settings-fields input:focus {
+  outline: none;
+  border-color: #22c55e;
+}
+
+/* Confirmation dialog */
+.tb-confirm-hint {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+.tb-confirm-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tb-confirm-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 1rem;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.tb-confirm-label {
+  color: #94a3b8;
+  word-break: break-all;
+}
+
+.tb-old-value {
+  text-decoration: line-through;
+  color: #f97373;
+}
+
+.tb-new-value {
+  color: #22c55e;
+  font-weight: 500;
+}
+
+.tb-button-secondary {
+  background: #334155;
+  box-shadow: none;
+}
+
+.tb-button-secondary:hover {
+  background: #475569;
+  box-shadow: none;
+}
+

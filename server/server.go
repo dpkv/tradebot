@@ -163,6 +163,8 @@ func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options
 	t.handlerMap[api.ExchangeGetProductPath] = httpPostJSONHandler(t.doGetProduct)
 	t.handlerMap[api.ExchangeUpdateProductPath] = httpPostJSONHandler(t.doExchangeUpdateProduct)
 
+	t.handlerMap[api.SettingsPath] = httpGetPostJSONHandler(t.doSettingsGet, t.doSettingsPost)
+
 	return t, nil
 }
 
@@ -505,6 +507,60 @@ func httpPostJSONHandler[T1 any, T2 any](fun func(context.Context, *T1) (*T2, er
 			return
 		}
 		w.Write(jsbytes)
+	})
+}
+
+func httpGetPostJSONHandler[TGet, TPostReq, TPostResp any](
+	getFunc func(context.Context) (*TGet, error),
+	postFunc func(context.Context, *TPostReq) (*TPostResp, error),
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			resp, err := getFunc(r.Context())
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			jsbytes, err := json.Marshal(resp)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Write(jsbytes)
+		case http.MethodPost:
+			if v := r.Header.Get("content-type"); v != "" && !strings.EqualFold(v, "application/json") {
+				http.Error(w, "unsupported content type", http.StatusBadRequest)
+				return
+			}
+			req := new(TPostReq)
+			if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			resp, err := postFunc(r.Context(), req)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			jsbytes, err := json.Marshal(resp)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Write(jsbytes)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 }
 

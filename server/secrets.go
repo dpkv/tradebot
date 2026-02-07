@@ -31,6 +31,18 @@ func SecretsFromFile(fpath string) (*Secrets, error) {
 	return s, nil
 }
 
+// SecretsToFile writes secrets to the given path as formatted JSON (mode 0600).
+func SecretsToFile(fpath string, s *Secrets) error {
+	if s == nil {
+		s = new(Secrets)
+	}
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(fpath, data, 0600)
+}
+
 func (v *Secrets) Check() error {
 	if v.Telegram != nil {
 		if err := v.Telegram.Check(); err != nil {

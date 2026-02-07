@@ -10,7 +10,86 @@
   <header class="tb-header">
     <h1>Tradebot Jobs</h1>
     <p class="tb-subtitle">Overview of all jobs in the running daemon</p>
+    <button id="tb-settings-btn" class="tb-settings-btn" type="button" title="Settings">⚙ Settings</button>
   </header>
+
+  <div id="tb-settings-backdrop" class="tb-modal-backdrop" hidden>
+    <div class="tb-modal tb-settings-modal" id="tb-settings-modal">
+      <div class="tb-modal-header">
+        <h2>Settings</h2>
+        <button id="tb-settings-close" class="tb-modal-close" type="button" aria-label="Close">×</button>
+      </div>
+      <div class="tb-modal-body">
+        <section class="tb-settings-section">
+          <h3>Exchanges</h3>
+          <div class="tb-settings-block" data-key="coinbase" data-type="exchange">
+            <label class="tb-settings-enable"><input type="checkbox" data-enable="coinbase"> Coinbase</label>
+            <div class="tb-settings-fields">
+              <label>Key ID <input type="text" data-config="coinbase" data-field="kid" placeholder="organizations/.../apiKeys/..."></label>
+              <label>PEM <input type="text" data-config="coinbase" data-field="pem" placeholder="-----BEGIN EC PRIVATE KEY-----..."></label>
+            </div>
+          </div>
+          <div class="tb-settings-block" data-key="coinex" data-type="exchange">
+            <label class="tb-settings-enable"><input type="checkbox" data-enable="coinex"> CoinEx</label>
+            <div class="tb-settings-fields">
+              <label>Key <input type="text" data-config="coinex" data-field="key"></label>
+              <label>Secret <input type="text" data-config="coinex" data-field="secret"></label>
+            </div>
+          </div>
+        </section>
+        <section class="tb-settings-section">
+          <h3>Notifications</h3>
+          <div class="tb-settings-block" data-key="telegram" data-type="notification">
+            <label class="tb-settings-enable"><input type="checkbox" data-enable="telegram"> Telegram</label>
+            <div class="tb-settings-fields">
+              <label>Bot token <input type="text" data-config="telegram" data-field="token"></label>
+              <label>Owner ID <input type="text" data-config="telegram" data-field="owner"></label>
+              <label>Admin ID <input type="text" data-config="telegram" data-field="admin"></label>
+              <label>Other IDs (comma-separated) <input type="text" data-config="telegram" data-field="others"></label>
+            </div>
+          </div>
+          <div class="tb-settings-block" data-key="pushover" data-type="notification">
+            <label class="tb-settings-enable"><input type="checkbox" data-enable="pushover"> Pushover</label>
+            <div class="tb-settings-fields">
+              <label>Application key <input type="text" data-config="pushover" data-field="application_key"></label>
+              <label>User key <input type="text" data-config="pushover" data-field="user_key"></label>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="tb-modal-footer">
+        <button id="tb-settings-save" type="button" class="tb-button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tb-saved-backdrop" class="tb-modal-backdrop" hidden>
+    <div class="tb-modal tb-saved-modal" id="tb-saved-modal">
+      <div class="tb-modal-body">
+        <p class="tb-saved-message">Settings saved.</p>
+      </div>
+      <div class="tb-modal-footer">
+        <button id="tb-saved-ok" type="button" class="tb-button">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tb-confirm-backdrop" class="tb-modal-backdrop" hidden>
+    <div class="tb-modal tb-confirm-modal" id="tb-confirm-modal">
+      <div class="tb-modal-header">
+        <h2>Confirm changes</h2>
+        <button id="tb-confirm-cancel" class="tb-modal-close" type="button" aria-label="Cancel">×</button>
+      </div>
+      <div class="tb-modal-body">
+        <p class="tb-confirm-hint">Review changes before saving. Old values are <span class="tb-old-value">struck in red</span>, new values are <span class="tb-new-value">in green</span>.</p>
+        <div id="tb-confirm-diff" class="tb-confirm-diff"></div>
+      </div>
+      <div class="tb-modal-footer">
+        <button id="tb-confirm-save" type="button" class="tb-button">Confirm &amp; save</button>
+        <button id="tb-confirm-cancel-btn" type="button" class="tb-button tb-button-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <main class="tb-main">
     <section class="tb-card">
