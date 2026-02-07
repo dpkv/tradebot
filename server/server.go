@@ -91,7 +91,7 @@ type Server struct {
 
 	db kv.Database
 
-	secrets *Secrets
+	secretsFilePath string
 
 	exchangeMap map[string]exchange.Exchange
 
@@ -117,7 +117,7 @@ type Server struct {
 	alertFreezeDeadlineMap map[string]time.Time
 }
 
-func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options) (_ *Server, status error) {
+func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *Options) (_ *Server, status error) {
 	if opts == nil {
 		opts = new(Options)
 	}
@@ -140,7 +140,7 @@ func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options
 	t := &Server{
 		db:                     db,
 		opts:                   *opts,
-		secrets:                secrets,
+		secretsFilePath:        secretsFilePath,
 		state:                  state,
 		handlerMap:             make(map[string]http.Handler),
 		runner:                 job.NewRunner(db),
@@ -164,6 +164,23 @@ func New(newctx context.Context, secrets *Secrets, db kv.Database, opts *Options
 	t.handlerMap[api.ExchangeUpdateProductPath] = httpPostJSONHandler(t.doExchangeUpdateProduct)
 
 	return t, nil
+}
+
+// loadSecrets loads secrets from the secrets file path. If the file doesn't exist,
+// it returns an empty Secrets object.
+func (s *Server) loadSecrets(ctx context.Context) (*Secrets, error) {
+	secrets, err := SecretsFromFile(s.secretsFilePath)
+	if err != nil {
+		return nil, err
+	}
+	// Check that secrets exist for at least one exchange and one messaging service..
+	if secrets.Coinbase == nil && secrets.CoinEx == nil {
+		return nil, fmt.Errorf("no exchange secrets are configured")
+	}
+	if secrets.Pushover == nil && secrets.Telegram == nil {
+		return nil, fmt.Errorf("no messaging service secrets are configured")
+	}
+	return secrets, nil
 }
 
 func (s *Server) Close() error {
@@ -231,6 +248,12 @@ func (s *Server) Start(ctx context.Context) (status error) {
 		}
 	}()
 
+	// Load secrets from file
+	secrets, err := s.loadSecrets(ctx)
+	if err != nil {
+		return fmt.Errorf("could not load secrets: %w", err)
+	}
+
 	// Create exchange objects.
 	if len(s.exchangeMap) == 0 {
 		exchangeMap := make(map[string]exchange.Exchange)
@@ -242,25 +265,25 @@ func (s *Server) Start(ctx context.Context) (status error) {
 			}
 		}()
 
-		if s.secrets.Coinbase != nil {
+		if secrets.Coinbase != nil {
 			cbopts := &coinbase.Options{
 				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
 			}
 			if s.opts.NoFetchCandles {
 				cbopts.FetchCandlesInterval = -1
 			}
-			client, err := coinbase.New(ctx, s.db, s.secrets.Coinbase.KID, s.secrets.Coinbase.PEM, cbopts)
+			client, err := coinbase.New(ctx, s.db, secrets.Coinbase.KID, secrets.Coinbase.PEM, cbopts)
 			if err != nil {
 				return fmt.Errorf("could not create coinbase client: %w", err)
 			}
 			exchangeMap["coinbase"] = client
 		}
 
-		if s.secrets.CoinEx != nil {
+		if secrets.CoinEx != nil {
 			opts := &coinex.Options{
 				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
 			}
-			exchange, err := coinex.NewExchange(ctx, s.secrets.CoinEx.Key, s.secrets.CoinEx.Secret, opts)
+			exchange, err := coinex.NewExchange(ctx, secrets.CoinEx.Key, secrets.CoinEx.Secret, opts)
 			if err != nil {
 				return fmt.Errorf("could not create coinex exchange: %w", err)
 			}
@@ -292,16 +315,16 @@ func (s *Server) Start(ctx context.Context) (status error) {
 		return fmt.Errorf("could not load default products: %w", err)
 	}
 
-	if s.pushoverClient == nil && s.secrets.Pushover != nil {
-		client, err := pushover.New(s.secrets.Pushover)
+	if s.pushoverClient == nil && secrets.Pushover != nil {
+		client, err := pushover.New(secrets.Pushover)
 		if err != nil {
 			return fmt.Errorf("could not create pushover client: %w", err)
 		}
 		s.pushoverClient = client
 	}
 
-	if s.telegramClient == nil && s.secrets.Telegram != nil {
-		client, err := telegram.New(ctx, s.db, s.secrets.Telegram)
+	if s.telegramClient == nil && secrets.Telegram != nil {
+		client, err := telegram.New(ctx, s.db, secrets.Telegram)
 		if err != nil {
 			return fmt.Errorf("could not create telegram client: %w", err)
 		}
