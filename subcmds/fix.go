@@ -52,10 +52,6 @@ func (c *Fix) run(ctx context.Context, args []string) error {
 	if len(c.secretsPath) == 0 {
 		c.secretsPath = filepath.Join(dataDir, "secrets.json")
 	}
-	secrets, err := server.SecretsFromFile(c.secretsPath)
-	if err != nil {
-		return err
-	}
 
 	lockPath := filepath.Join(dataDir, "tradebot.lock")
 	flock, err := lockfile.New(lockPath)
@@ -81,7 +77,7 @@ func (c *Fix) run(ctx context.Context, args []string) error {
 		NoResume: true,
 		RunFixes: true,
 	}
-	trader, err := server.New(ctx, secrets, db, topts)
+	trader, err := server.New(ctx, c.secretsPath, db, topts)
 	if err != nil {
 		return err
 	}

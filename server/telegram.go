@@ -112,6 +112,12 @@ func (s *Server) statsCmd(ctx context.Context, _ []string) error {
 		slog.Error("could not determine public ip (ignored)", "err", err)
 	}
 
+	// Load secrets from file for the telegram usernames.
+	secrets, err := s.loadSecrets(ctx)
+	if err != nil {
+		return fmt.Errorf("could not load secrets: %w", err)
+	}
+
 	stdout := cli.Stdout(ctx)
 	fmt.Fprintf(stdout, "System Stats\n")
 	fmt.Fprintf(stdout, "  Hostname: %s\n", hinfo.Hostname)
@@ -136,12 +142,10 @@ func (s *Server) statsCmd(ctx context.Context, _ []string) error {
 	fmt.Fprintf(stdout, "  Uptime: %s\n", durationWithDays(time.Since(start)))
 	fmt.Fprintf(stdout, "  Virtual Memory: %0.2fMB\n", float64(meminfo.VMS)/1024/1024)
 	fmt.Fprintf(stdout, "  Resident Memory: %0.2fMB\n", float64(meminfo.RSS)/1024/1024)
-	if s.secrets != nil {
-		if s.secrets.Telegram != nil {
-			fmt.Fprintf(stdout, "  OwnerID: https://t.me/%s\n", s.secrets.Telegram.OwnerID)
-			if len(s.secrets.Telegram.AdminID) != 0 {
-				fmt.Fprintf(stdout, "  AdminID: https://t.me/%s\n", s.secrets.Telegram.AdminID)
-			}
+	if secrets.Telegram != nil {
+		fmt.Fprintf(stdout, "  OwnerID: https://t.me/%s\n", secrets.Telegram.OwnerID)
+		if len(secrets.Telegram.AdminID) != 0 {
+			fmt.Fprintf(stdout, "  AdminID: https://t.me/%s\n", secrets.Telegram.AdminID)
 		}
 	}
 	return nil

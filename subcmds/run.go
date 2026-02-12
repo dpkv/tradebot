@@ -167,13 +167,6 @@ func (c *Run) run(ctx context.Context, args []string) error {
 	if len(c.secretsPath) == 0 {
 		c.secretsPath = filepath.Join(dataDir, "secrets.json")
 	}
-	secrets, err := server.SecretsFromFile(c.secretsPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		secrets = new(server.Secrets)
-	}
 
 	if ip := net.ParseIP(c.IP); ip == nil {
 		return fmt.Errorf("invalid ip address")
@@ -343,7 +336,7 @@ func (c *Run) run(ctx context.Context, args []string) error {
 		MaxHttpClientTimeout: c.maxHttpClientTimeout,
 		BinaryBackupPath:     c.binaryBackupPath(),
 	}
-	trader, err := server.New(ctx, secrets, db, topts)
+	trader, err := server.New(ctx, c.secretsPath, db, topts)
 	if err != nil {
 		return err
 	}
