@@ -25,12 +25,14 @@ func mask(s string) string {
 }
 
 func (s *Server) doSettingsGet(ctx context.Context) (*api.SettingsResponse, error) {
-	secrets := s.secrets
-	if secrets == nil {
-		secrets = new(Secrets)
+	secrets, err := s.LoadSecrets(ctx)
+	if err != nil {
+		// Propagate the error so that the HTTP wrapper can translate
+		// os.ErrNotExist into a 404 for the GET /api/settings API.
+		return nil, err
 	}
 	resp := &api.SettingsResponse{
-		Exchanges:    make(map[string]api.SettingsConfig),
+		Exchanges:     make(map[string]api.SettingsConfig),
 		Notifications: make(map[string]api.SettingsConfig),
 	}
 
@@ -103,8 +105,8 @@ func (s *Server) doSettingsPost(ctx context.Context, req *api.SettingsRequest) (
 		return nil, os.ErrNotExist
 	}
 
-	curSecrets := s.secrets
-	if curSecrets == nil {
+	curSecrets, err := s.LoadSecrets(ctx)
+	if err != nil {
 		curSecrets = new(Secrets)
 	}
 
@@ -174,6 +176,5 @@ func (s *Server) doSettingsPost(ctx context.Context, req *api.SettingsRequest) (
 	if err := SecretsToFile(s.opts.SecretsPath, out); err != nil {
 		return nil, err
 	}
-	s.secrets = out
 	return &api.SettingsPostResponse{OK: true}, nil
 }

@@ -168,9 +168,9 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 	return t, nil
 }
 
-// loadSecrets loads secrets from the secrets file path. If the file doesn't exist,
-// it returns an empty Secrets object.
-func (s *Server) loadSecrets(ctx context.Context) (*Secrets, error) {
+// LoadSecrets loads secrets from the secrets file path.
+// If the file doesn't exist, the underlying error (e.g. os.ErrNotExist) is returned.
+func (s *Server) LoadSecrets(ctx context.Context) (*Secrets, error) {
 	secrets, err := SecretsFromFile(s.secretsFilePath)
 	if err != nil {
 		return nil, err
@@ -251,9 +251,9 @@ func (s *Server) Start(ctx context.Context) (status error) {
 	}()
 
 	// Load secrets from file
-	secrets, err := s.loadSecrets(ctx)
+	secrets, err := s.LoadSecrets(ctx)
 	if err != nil {
-		return fmt.Errorf("could not load secrets: %w", err)
+		return fmt.Errorf("could not load secrets: %w", ErrUnconfigured)
 	}
 
 	// Create exchange objects.

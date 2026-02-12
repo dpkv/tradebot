@@ -197,9 +197,19 @@
     if (savedBackdrop) savedBackdrop.hidden = true;
   }
 
+  const emptySettings = () => ({
+    exchanges: { coinbase: { enabled: false, config: {} }, coinex: { enabled: false, config: {} } },
+    notifications: { telegram: { enabled: false, config: {} }, pushover: { enabled: false, config: {} } },
+  });
+
   async function loadSettings() {
     try {
       const resp = await fetch('/api/settings', { method: 'GET' });
+      if (resp.status === 404) {
+        currentSettings = emptySettings();
+        renderSettingsForm(currentSettings);
+        return;
+      }
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       currentSettings = data;
@@ -354,6 +364,17 @@
     div.textContent = s;
     return div.innerHTML;
   }
+
+  // On homepage load: if settings GET returns 404 (secrets not configured), open settings page.
+  (async function trySettingsGet() {
+    try {
+      const resp = await fetch('/api/settings', { method: 'GET' });
+      if (resp.status === 404 && settingsBackdrop) {
+        settingsBackdrop.hidden = false;
+        loadSettings();
+      }
+    } catch (_) { /* ignore */ }
+  })();
 
   if (settingsBtn) settingsBtn.addEventListener('click', showSettingsModal);
   if (settingsClose) settingsClose.addEventListener('click', hideSettingsModal);
