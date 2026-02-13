@@ -25,11 +25,15 @@ func mask(s string) string {
 }
 
 func (s *Server) doSettingsGet(ctx context.Context) (*api.SettingsResponse, error) {
-	secrets, err := s.LoadSecrets(ctx)
+	// Load raw secrets without validation so the settings UI can open even when
+	// the file is empty or only partially configured (LoadSecrets would return 500).
+	secrets, err := SecretsFromFile(s.secretsFilePath)
 	if err != nil {
-		// Propagate the error so that the HTTP wrapper can translate
-		// os.ErrNotExist into a 404 for the GET /api/settings API.
+		// Propagate so the HTTP wrapper can translate os.ErrNotExist into 404.
 		return nil, err
+	}
+	if secrets == nil {
+		secrets = new(Secrets)
 	}
 	resp := &api.SettingsResponse{
 		Exchanges:     make(map[string]api.SettingsConfig),

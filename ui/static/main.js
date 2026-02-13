@@ -220,37 +220,55 @@
     }
   }
 
+  function hasConfigData(block) {
+    if (!block || !block.config) return false;
+    return Object.values(block.config).some((v) => v != null && String(v).trim() !== '');
+  }
+
   function renderSettingsForm(data) {
     const exchanges = data.exchanges || {};
     const notifications = data.notifications || {};
     for (const [key, block] of Object.entries(exchanges)) {
+      const hasData = !!block.enabled || hasConfigData(block);
       const enableEl = document.querySelector(`input[data-enable="${key}"]`);
       if (enableEl) {
-        enableEl.checked = !!block.enabled;
+        enableEl.checked = hasData;
         const parentBlock = enableEl.closest('.tb-settings-block');
-        if (parentBlock) parentBlock.classList.toggle('tb-enabled', !!block.enabled);
+        if (parentBlock) parentBlock.classList.toggle('tb-enabled', hasData);
       }
       if (block.config) {
         for (const [field, value] of Object.entries(block.config)) {
           const input = document.querySelector(`input[data-config="${key}"][data-field="${field}"]`);
-          if (input) input.value = value || '';
+          if (input) input.value = value && String(value).trim() !== '' ? MASK : value || '';
         }
       }
     }
     for (const [key, block] of Object.entries(notifications)) {
+      const hasData = !!block.enabled || hasConfigData(block);
       const enableEl = document.querySelector(`input[data-enable="${key}"]`);
       if (enableEl) {
-        enableEl.checked = !!block.enabled;
+        enableEl.checked = hasData;
         const parentBlock = enableEl.closest('.tb-settings-block');
-        if (parentBlock) parentBlock.classList.toggle('tb-enabled', !!block.enabled);
+        if (parentBlock) parentBlock.classList.toggle('tb-enabled', hasData);
       }
       if (block.config) {
         for (const [field, value] of Object.entries(block.config)) {
           const input = document.querySelector(`input[data-config="${key}"][data-field="${field}"]`);
-          if (input) input.value = value || '';
+          if (input) input.value = value && String(value).trim() !== '' ? MASK : value || '';
         }
       }
     }
+  }
+
+  function getConfigValue(key, field, input) {
+    const raw = input ? input.value.trim() : '';
+    if (raw === MASK && currentSettings) {
+      const block = (currentSettings.exchanges && currentSettings.exchanges[key]) ||
+        (currentSettings.notifications && currentSettings.notifications[key]);
+      const stored = block && block.config && block.config[field];
+      return stored != null ? String(stored).trim() : '';
+    }
+    return raw;
   }
 
   function collectSettingsPayload() {
@@ -270,7 +288,7 @@
       const config = {};
       for (const field of fieldMap[key] || []) {
         const input = document.querySelector(`input[data-config="${key}"][data-field="${field}"]`);
-        config[field] = input ? input.value.trim() : '';
+        config[field] = getConfigValue(key, field, input);
       }
       exchanges[key] = { enabled, config };
     }
@@ -280,7 +298,7 @@
       const config = {};
       for (const field of fieldMap[key] || []) {
         const input = document.querySelector(`input[data-config="${key}"][data-field="${field}"]`);
-        config[field] = input ? input.value.trim() : '';
+        config[field] = getConfigValue(key, field, input);
       }
       notifications[key] = { enabled, config };
     }
