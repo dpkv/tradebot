@@ -178,9 +178,13 @@
 
   let currentSettings = null;
   let pendingSavePayload = null;
+  let settingsForceShown = false; // true when opened due to 404 (no secrets file)
 
   function showSettingsModal() {
+    settingsForceShown = false;
+    if (settingsClose) settingsClose.hidden = false;
     settingsBackdrop.hidden = false;
+    if (settingsSave) settingsSave.disabled = true;
     loadSettings();
   }
 
@@ -270,6 +274,7 @@
         }
       }
     }
+    updateSaveButtonState();
   }
 
   function getConfigValue(key, field, input) {
@@ -358,6 +363,17 @@
     return keyName + ' → ' + fieldLabel;
   }
 
+  function hasSettingsChanges() {
+    if (!currentSettings) return true;
+    const payload = collectSettingsPayload();
+    return buildDiffLines(currentSettings, payload).length > 0;
+  }
+
+  function updateSaveButtonState() {
+    if (!settingsSave) return;
+    settingsSave.disabled = !hasSettingsChanges();
+  }
+
   function buildDiffLines(oldData, newData) {
     const lines = [];
     const sectionLabels = { exchanges: 'Exchanges', notifications: 'Notifications' };
@@ -426,7 +442,10 @@
     try {
       const resp = await fetch('/api/settings', { method: 'GET' });
       if (resp.status === 404 && settingsBackdrop) {
+        settingsForceShown = true;
+        if (settingsClose) settingsClose.hidden = true;
         settingsBackdrop.hidden = false;
+        if (settingsSave) settingsSave.disabled = true;
         loadSettings();
       }
     } catch (_) { /* ignore */ }
@@ -437,6 +456,7 @@
   const settingsModal = document.getElementById('tb-settings-modal');
   if (settingsModal) settingsModal.addEventListener('click', (e) => e.stopPropagation());
   if (settingsSave) settingsSave.addEventListener('click', () => {
+    if (!hasSettingsChanges()) return;
     const payload = collectSettingsPayload();
     const validationErrors = validateSettingsPayload(payload);
     if (validationErrors.length > 0) {
@@ -492,6 +512,7 @@
     el.addEventListener('change', () => {
       const block = el.closest('.tb-settings-block');
       if (block) block.classList.toggle('tb-enabled', el.checked);
+      updateSaveButtonState();
     });
   });
 
@@ -518,8 +539,14 @@
   document.querySelectorAll('input[data-config]').forEach((input) => {
     const key = input.getAttribute('data-config');
     if (!key) return;
-    input.addEventListener('input', () => syncSectionEnable(key));
-    input.addEventListener('change', () => syncSectionEnable(key));
+    input.addEventListener('input', () => {
+      syncSectionEnable(key);
+      updateSaveButtonState();
+    });
+    input.addEventListener('change', () => {
+      syncSectionEnable(key);
+      updateSaveButtonState();
+    });
   });
 })();
 

@@ -71,6 +71,14 @@
   opacity: 0.9;
 }
 
+.tb-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: none;
+  box-shadow: none;
+}
+
 .tb-status {
   padding: 0.6rem 1.25rem;
   font-size: 0.85rem;
