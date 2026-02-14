@@ -171,6 +171,10 @@
   const confirmCancelX = document.getElementById('tb-confirm-cancel');
   const savedBackdrop = document.getElementById('tb-saved-backdrop');
   const savedOkBtn = document.getElementById('tb-saved-ok');
+  const errorBackdrop = document.getElementById('tb-error-backdrop');
+  const errorMessageEl = document.getElementById('tb-error-message');
+  const errorOkBtn = document.getElementById('tb-error-ok');
+  const errorCloseBtn = document.getElementById('tb-error-close');
 
   let currentSettings = null;
   let pendingSavePayload = null;
@@ -197,6 +201,15 @@
     if (savedBackdrop) savedBackdrop.hidden = true;
   }
 
+  function showSettingsError(message) {
+    if (errorMessageEl) errorMessageEl.textContent = message || 'Something went wrong.';
+    if (errorBackdrop) errorBackdrop.hidden = false;
+  }
+
+  function hideSettingsError() {
+    if (errorBackdrop) errorBackdrop.hidden = true;
+  }
+
   const emptySettings = () => ({
     exchanges: { coinbase: { enabled: false, config: {} }, coinex: { enabled: false, config: {} } },
     notifications: { telegram: { enabled: false, config: {} }, pushover: { enabled: false, config: {} } },
@@ -215,8 +228,7 @@
       currentSettings = data;
       renderSettingsForm(data);
     } catch (err) {
-      console.error('Failed to load settings', err);
-      if (statusEl) setStatus('Failed to load settings: ' + err.message, 'error');
+      showSettingsError('Failed to load settings: ' + err.message);
     }
   }
 
@@ -271,38 +283,58 @@
     return raw;
   }
 
+  const fieldMap = {
+    coinbase: ['kid', 'pem'],
+    coinex: ['key', 'secret'],
+    telegram: ['token', 'owner', 'admin', 'others'],
+    pushover: ['application_key', 'user_key'],
+  };
+
   function collectSettingsPayload() {
     const exchanges = {};
     const notifications = {};
     const exchangeKeys = ['coinbase', 'coinex'];
     const notificationKeys = ['telegram', 'pushover'];
-    const fieldMap = {
-      coinbase: ['kid', 'pem'],
-      coinex: ['key', 'secret'],
-      telegram: ['token', 'owner', 'admin', 'others'],
-      pushover: ['application_key', 'user_key'],
-    };
     for (const key of exchangeKeys) {
-      const enableEl = document.querySelector(`input[data-enable="${key}"]`);
-      const enabled = enableEl ? enableEl.checked : false;
       const config = {};
       for (const field of fieldMap[key] || []) {
         const input = document.querySelector(`input[data-config="${key}"][data-field="${field}"]`);
         config[field] = getConfigValue(key, field, input);
       }
+      const enableEl = document.querySelector(`input[data-enable="${key}"]`);
+      const enabled = enableEl ? enableEl.checked : false;
       exchanges[key] = { enabled, config };
     }
     for (const key of notificationKeys) {
-      const enableEl = document.querySelector(`input[data-enable="${key}"]`);
-      const enabled = enableEl ? enableEl.checked : false;
       const config = {};
       for (const field of fieldMap[key] || []) {
         const input = document.querySelector(`input[data-config="${key}"][data-field="${field}"]`);
         config[field] = getConfigValue(key, field, input);
       }
+      const enableEl = document.querySelector(`input[data-enable="${key}"]`);
+      const enabled = enableEl ? enableEl.checked : false;
       notifications[key] = { enabled, config };
     }
     return { exchanges, notifications };
+  }
+
+  function validateSettingsPayload(payload) {
+    const errors = [];
+    const keys = ['coinbase', 'coinex', 'telegram', 'pushover'];
+    for (const key of keys) {
+      const block = (payload.exchanges && payload.exchanges[key]) || (payload.notifications && payload.notifications[key]);
+      if (!block || !block.enabled) continue;
+      const required = REQUIRED_FIELDS[key];
+      if (!required) continue;
+      for (const field of required) {
+        const value = (block.config && block.config[field]) ? String(block.config[field]).trim() : '';
+        if (value === '') {
+          const label = (FIELD_LABELS[key] && FIELD_LABELS[key][field]) || field;
+          errors.push((KEY_DISPLAY_NAMES[key] || key) + ': ' + label + ' is required');
+        }
+      }
+    }
+    return errors;
   }
 
   const KEY_DISPLAY_NAMES = { coinbase: 'Coinbase', coinex: 'CoinEx', telegram: 'Telegram', pushover: 'Pushover' };
@@ -311,6 +343,12 @@
     coinex: { key: 'Key', secret: 'Secret' },
     telegram: { token: 'Bot token', owner: 'Owner ID', admin: 'Admin ID', others: 'Other IDs (comma-separated)' },
     pushover: { application_key: 'Application key', user_key: 'User key' },
+  };
+  const REQUIRED_FIELDS = {
+    coinbase: ['kid', 'pem'],
+    coinex: ['key', 'secret'],
+    telegram: ['token', 'owner'],
+    pushover: ['application_key', 'user_key'],
   };
 
   function getDiffLabel(key, field) {
@@ -400,6 +438,11 @@
   if (settingsModal) settingsModal.addEventListener('click', (e) => e.stopPropagation());
   if (settingsSave) settingsSave.addEventListener('click', () => {
     const payload = collectSettingsPayload();
+    const validationErrors = validateSettingsPayload(payload);
+    if (validationErrors.length > 0) {
+      showSettingsError(validationErrors.join('\n'));
+      return;
+    }
     showConfirmDialog(currentSettings || { exchanges: {}, notifications: {} }, payload);
   });
 
@@ -416,6 +459,12 @@
   const savedModal = document.getElementById('tb-saved-modal');
   if (savedModal) savedModal.addEventListener('click', (e) => e.stopPropagation());
   if (savedOkBtn) savedOkBtn.addEventListener('click', hideSavedModal);
+
+  if (errorBackdrop) errorBackdrop.addEventListener('click', (e) => { if (e.target === errorBackdrop) hideSettingsError(); });
+  const errorModal = document.getElementById('tb-error-modal');
+  if (errorModal) errorModal.addEventListener('click', (e) => e.stopPropagation());
+  if (errorOkBtn) errorOkBtn.addEventListener('click', hideSettingsError);
+  if (errorCloseBtn) errorCloseBtn.addEventListener('click', hideSettingsError);
 
   if (confirmSaveBtn) confirmSaveBtn.addEventListener('click', async () => {
     if (!pendingSavePayload) return;
@@ -434,8 +483,8 @@
       loadSettings();
       showSavedModal();
     } catch (err) {
-      console.error('Failed to save settings', err);
-      if (statusEl) setStatus('Failed to save: ' + err.message, 'error');
+      hideConfirmModal();
+      showSettingsError('Failed to save: ' + err.message);
     }
   });
 
@@ -444,6 +493,33 @@
       const block = el.closest('.tb-settings-block');
       if (block) block.classList.toggle('tb-enabled', el.checked);
     });
+  });
+
+  function syncSectionEnable(key) {
+    const enableEl = document.querySelector(`input[data-enable="${key}"]`);
+    if (!enableEl) return;
+    const fields = fieldMap[key] || [];
+    let hasData = false;
+    for (const field of fields) {
+      const input = document.querySelector(`input[data-config="${key}"][data-field="${field}"]`);
+      const val = input ? getConfigValue(key, field, input) : '';
+      if (val && String(val).trim() !== '') {
+        hasData = true;
+        break;
+      }
+    }
+    if (hasData) {
+      enableEl.checked = true;
+      const parentBlock = enableEl.closest('.tb-settings-block');
+      if (parentBlock) parentBlock.classList.add('tb-enabled');
+    }
+  }
+
+  document.querySelectorAll('input[data-config]').forEach((input) => {
+    const key = input.getAttribute('data-config');
+    if (!key) return;
+    input.addEventListener('input', () => syncSectionEnable(key));
+    input.addEventListener('change', () => syncSectionEnable(key));
   });
 })();
 

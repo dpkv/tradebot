@@ -14,6 +14,16 @@ import (
 	"github.com/bvk/tradebot/telegram"
 )
 
+// SettingsValidationError is returned when settings POST has missing or invalid fields.
+// The HTTP layer returns 400 with the error message.
+type SettingsValidationError struct {
+	Message string
+}
+
+func (e *SettingsValidationError) Error() string {
+	return e.Message
+}
+
 // MaskPlaceholder is sent by the UI for "keep existing value"; backend does not overwrite.
 const MaskPlaceholder = "••••••••"
 
@@ -109,72 +119,97 @@ func (s *Server) doSettingsPost(ctx context.Context, req *api.SettingsRequest) (
 		return nil, os.ErrNotExist
 	}
 
-	curSecrets, err := s.LoadSecrets(ctx)
+	// Load existing secrets from file (no validation) so we merge on top of current state.
+	curSecrets, err := SecretsFromFile(s.secretsFilePath)
 	if err != nil {
 		curSecrets = new(Secrets)
 	}
+	if curSecrets == nil {
+		curSecrets = new(Secrets)
+	}
 
-	// Merge request into current secrets (keep existing when new is placeholder).
-	out := &Secrets{}
+	// Start with a copy of current secrets; we only overlay sections that appear in the request.
+	out := &Secrets{
+		Coinbase: curSecrets.Coinbase,
+		CoinEx:   curSecrets.CoinEx,
+		Telegram: curSecrets.Telegram,
+		Pushover: curSecrets.Pushover,
+	}
 
 	if req.Exchanges != nil {
-		if c, ok := req.Exchanges["coinbase"]; ok && c.Enabled && c.Config != nil {
-			cur := curSecrets.Coinbase
-			if cur == nil {
-				cur = &coinbase.Credentials{}
-			}
-			out.Coinbase = &coinbase.Credentials{
-				KID: keepOrNew(cur.KID, c.Config["kid"]),
-				PEM: keepOrNew(cur.PEM, c.Config["pem"]),
+		if c, ok := req.Exchanges["coinbase"]; ok && c.Config != nil {
+			if c.Enabled {
+				cur := curSecrets.Coinbase
+				if cur == nil {
+					cur = &coinbase.Credentials{}
+				}
+				out.Coinbase = &coinbase.Credentials{
+					KID: keepOrNew(cur.KID, c.Config["kid"]),
+					PEM: keepOrNew(cur.PEM, c.Config["pem"]),
+				}
+			} else {
+				out.Coinbase = nil
 			}
 		}
-		if c, ok := req.Exchanges["coinex"]; ok && c.Enabled && c.Config != nil {
-			cur := curSecrets.CoinEx
-			if cur == nil {
-				cur = &coinex.Credentials{}
-			}
-			out.CoinEx = &coinex.Credentials{
-				Key:    keepOrNew(cur.Key, c.Config["key"]),
-				Secret: keepOrNew(cur.Secret, c.Config["secret"]),
+		if c, ok := req.Exchanges["coinex"]; ok && c.Config != nil {
+			if c.Enabled {
+				cur := curSecrets.CoinEx
+				if cur == nil {
+					cur = &coinex.Credentials{}
+				}
+				out.CoinEx = &coinex.Credentials{
+					Key:    keepOrNew(cur.Key, c.Config["key"]),
+					Secret: keepOrNew(cur.Secret, c.Config["secret"]),
+				}
+			} else {
+				out.CoinEx = nil
 			}
 		}
 	}
 
 	if req.Notifications != nil {
-		if c, ok := req.Notifications["telegram"]; ok && c.Enabled && c.Config != nil {
-			cur := curSecrets.Telegram
-			if cur == nil {
-				cur = &telegram.Secrets{}
-			}
-			othersStr := keepOrNew(strings.Join(cur.OtherIDs, ","), c.Config["others"])
-			var others []string
-			if othersStr != "" {
-				others = strings.Split(othersStr, ",")
-				for i := range others {
-					others[i] = strings.TrimSpace(others[i])
+		if c, ok := req.Notifications["telegram"]; ok && c.Config != nil {
+			if c.Enabled {
+				cur := curSecrets.Telegram
+				if cur == nil {
+					cur = &telegram.Secrets{}
 				}
-			}
-			out.Telegram = &telegram.Secrets{
-				BotToken: keepOrNew(cur.BotToken, c.Config["token"]),
-				OwnerID:  keepOrNew(cur.OwnerID, c.Config["owner"]),
-				AdminID:  keepOrNew(cur.AdminID, c.Config["admin"]),
-				OtherIDs: others,
+				othersStr := keepOrNew(strings.Join(cur.OtherIDs, ","), c.Config["others"])
+				var others []string
+				if othersStr != "" {
+					others = strings.Split(othersStr, ",")
+					for i := range others {
+						others[i] = strings.TrimSpace(others[i])
+					}
+				}
+				out.Telegram = &telegram.Secrets{
+					BotToken: keepOrNew(cur.BotToken, c.Config["token"]),
+					OwnerID:  keepOrNew(cur.OwnerID, c.Config["owner"]),
+					AdminID:  keepOrNew(cur.AdminID, c.Config["admin"]),
+					OtherIDs: others,
+				}
+			} else {
+				out.Telegram = nil
 			}
 		}
-		if c, ok := req.Notifications["pushover"]; ok && c.Enabled && c.Config != nil {
-			cur := curSecrets.Pushover
-			if cur == nil {
-				cur = &pushover.Keys{}
-			}
-			out.Pushover = &pushover.Keys{
-				ApplicationKey: keepOrNew(cur.ApplicationKey, c.Config["application_key"]),
-				UserKey:        keepOrNew(cur.UserKey, c.Config["user_key"]),
+		if c, ok := req.Notifications["pushover"]; ok && c.Config != nil {
+			if c.Enabled {
+				cur := curSecrets.Pushover
+				if cur == nil {
+					cur = &pushover.Keys{}
+				}
+				out.Pushover = &pushover.Keys{
+					ApplicationKey: keepOrNew(cur.ApplicationKey, c.Config["application_key"]),
+					UserKey:        keepOrNew(cur.UserKey, c.Config["user_key"]),
+				}
+			} else {
+				out.Pushover = nil
 			}
 		}
 	}
 
 	if err := out.Check(); err != nil {
-		return nil, err
+		return nil, &SettingsValidationError{Message: err.Error()}
 	}
 
 	if err := SecretsToFile(s.opts.SecretsPath, out); err != nil {

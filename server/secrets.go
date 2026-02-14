@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 
 	"github.com/bvk/tradebot/coinbase"
@@ -44,9 +45,24 @@ func SecretsToFile(fpath string, s *Secrets) error {
 }
 
 func (v *Secrets) Check() error {
+	if v.Coinbase != nil {
+		if err := v.Coinbase.Check(); err != nil {
+			return fmt.Errorf("Coinbase: %w", err)
+		}
+	}
+	if v.CoinEx != nil {
+		if err := v.CoinEx.Check(); err != nil {
+			return fmt.Errorf("CoinEx: %w", err)
+		}
+	}
 	if v.Telegram != nil {
 		if err := v.Telegram.Check(); err != nil {
-			return err
+			return fmt.Errorf("Telegram: %w", err)
+		}
+	}
+	if v.Pushover != nil {
+		if err := v.Pushover.Check(); err != nil {
+			return fmt.Errorf("Pushover: %w", err)
 		}
 	}
 	return nil

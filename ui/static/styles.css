@@ -404,3 +404,11 @@ body {
   box-shadow: none;
 }
 
+/* Settings error popup */
+.tb-error-message {
+  margin: 0;
+  color: #f8fafc;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

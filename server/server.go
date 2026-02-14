@@ -572,6 +572,11 @@ func httpGetPostJSONHandler[TGet, TPostReq, TPostResp any](
 					http.Error(w, err.Error(), http.StatusNotFound)
 					return
 				}
+				var settingsErr *SettingsValidationError
+				if errors.As(err, &settingsErr) {
+					http.Error(w, settingsErr.Message, http.StatusBadRequest)
+					return
+				}
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
