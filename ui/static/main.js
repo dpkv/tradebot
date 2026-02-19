@@ -10,25 +10,32 @@
     key: 'Name',
     dir: 'asc', // 'asc' | 'desc'
   };
+
   const headerMapping = [
-    { index: 0, key: 'Name' },
-    { index: 1, key: 'Status' },
-    { index: 2, key: 'ProductID' },
-    { index: 3, key: 'Budget' },
-    { index: 4, key: 'Return' },
-    { index: 5, key: 'AnnualReturn' },
-    { index: 6, key: 'Days' },
-    { index: 7, key: 'Buys' },
-    { index: 8, key: 'Sells' },
-    { index: 9, key: 'Profit' },
-    { index: 10, key: 'Fees' },
-    { index: 11, key: 'BoughtValue' },
-    { index: 12, key: 'SoldValue' },
-    { index: 13, key: 'UnsoldValue' },
-    { index: 14, key: 'SoldSize' },
-    { index: 15, key: 'UnsoldSize' },
+    { index: 0,  key: 'Name',        filterType: 'string'  },
+    { index: 1,  key: 'Status',      filterType: 'enum'    },
+    { index: 2,  key: 'ProductID',   filterType: 'enum'    },
+    { index: 3,  key: 'Budget',      filterType: 'numeric' },
+    { index: 4,  key: 'Return',      filterType: 'numeric' },
+    { index: 5,  key: 'AnnualReturn',filterType: 'numeric' },
+    { index: 6,  key: 'Days',        filterType: 'numeric' },
+    { index: 7,  key: 'Buys',        filterType: 'numeric' },
+    { index: 8,  key: 'Sells',       filterType: 'numeric' },
+    { index: 9,  key: 'Profit',      filterType: 'numeric' },
+    { index: 10, key: 'Fees',        filterType: 'numeric' },
+    { index: 11, key: 'BoughtValue', filterType: 'numeric' },
+    { index: 12, key: 'SoldValue',   filterType: 'numeric' },
+    { index: 13, key: 'UnsoldValue', filterType: 'numeric' },
+    { index: 14, key: 'SoldSize',    filterType: 'numeric' },
+    { index: 15, key: 'UnsoldSize',  filterType: 'numeric' },
   ];
+
   let headerCells = [];
+
+  // --- Filter state ---
+  // filters[key] = { type: 'string', value } | { type: 'enum', included: Set } | { type: 'numeric', op, value }
+  let filters = {};
+  const filterControls = {}; // key -> { input?, numInput?, opSelect?, btn? }
 
   function setStatus(message, kind = 'info') {
     if (!statusEl) return;
@@ -41,6 +48,17 @@
     while (tableBody.firstChild) {
       tableBody.removeChild(tableBody.firstChild);
     }
+  }
+
+  const NUMERIC_KEYS = new Set([
+    'Budget', 'Return', 'AnnualReturn', 'Days', 'Buys', 'Sells',
+    'Profit', 'Fees', 'BoughtValue', 'SoldValue', 'UnsoldValue', 'SoldSize', 'UnsoldSize',
+  ]);
+
+  function parseNumeric(v) {
+    if (v == null || v === '' || v === '—') return -Infinity;
+    const n = parseFloat(String(v).replace(/[^0-9.+\-eE]/g, ''));
+    return isNaN(n) ? -Infinity : n;
   }
 
   function compareValues(a, b) {
@@ -58,11 +76,117 @@
     if (!currentJobs || currentJobs.length === 0) return;
     const { key, dir } = sortState;
     const factor = dir === 'asc' ? 1 : -1;
+    const isNumeric = NUMERIC_KEYS.has(key);
     currentJobs.sort((a, b) => {
       const av = a[key];
       const bv = b[key];
+      if (isNumeric) {
+        return (parseNumeric(av) - parseNumeric(bv)) * factor;
+      }
       return compareValues(av, bv) * factor;
     });
+  }
+
+  // --- Filtering ---
+
+  function getEnumValues(key) {
+    const vals = new Set();
+    for (const job of currentJobs) {
+      vals.add(String(job[key] != null ? job[key] : ''));
+    }
+    return vals;
+  }
+
+  function isFilterActive(key) {
+    const f = filters[key];
+    if (!f) return false;
+    if (f.type === 'string') return f.value !== '';
+    if (f.type === 'enum') {
+      const allVals = getEnumValues(key);
+      for (const v of allVals) {
+        if (!f.included.has(v)) return true;
+      }
+      return false;
+    }
+    if (f.type === 'numeric') return f.value !== null && !isNaN(f.value);
+    return false;
+  }
+
+  function applyFilters(jobs) {
+    return jobs.filter((job) => {
+      for (const entry of headerMapping) {
+        const { key } = entry;
+        if (!isFilterActive(key)) continue;
+        const f = filters[key];
+        if (f.type === 'string') {
+          const v = String(job[key] != null ? job[key] : '').toLowerCase();
+          if (!v.includes(f.value.toLowerCase())) return false;
+        } else if (f.type === 'enum') {
+          const v = String(job[key] != null ? job[key] : '');
+          if (!f.included.has(v)) return false;
+        } else if (f.type === 'numeric') {
+          const n = parseNumeric(job[key]);
+          const fv = f.value;
+          switch (f.op) {
+            case '>':  if (!(n >  fv)) return false; break;
+            case '>=': if (!(n >= fv)) return false; break;
+            case '<':  if (!(n <  fv)) return false; break;
+            case '<=': if (!(n <= fv)) return false; break;
+            case '=':  if (n !== fv)   return false; break;
+            case '!=': if (n === fv)   return false; break;
+          }
+        }
+      }
+      return true;
+    });
+  }
+
+  function removeFilter(key) {
+    delete filters[key];
+    const ctrl = filterControls[key];
+    if (ctrl) {
+      if (ctrl.input)    ctrl.input.value = '';
+      if (ctrl.numInput) ctrl.numInput.value = '';
+      if (ctrl.btn) {
+        ctrl.btn.textContent = 'All ▾';
+        ctrl.btn.classList.remove('tb-filter-active');
+      }
+    }
+    renderJobs();
+  }
+
+  function renderFilterChips() {
+    const chipsEl = document.getElementById('tb-filter-chips');
+    if (!chipsEl) return;
+    chipsEl.innerHTML = '';
+    let hasAny = false;
+    for (const entry of headerMapping) {
+      const { key } = entry;
+      if (!isFilterActive(key)) continue;
+      hasAny = true;
+      const f = filters[key];
+      let label = '';
+      if (f.type === 'string') {
+        label = `${key}: "${f.value}"`;
+      } else if (f.type === 'enum') {
+        label = `${key}: ${[...f.included].join(', ')}`;
+      } else if (f.type === 'numeric') {
+        label = `${key} ${f.op} ${f.value}`;
+      }
+      const chip = document.createElement('span');
+      chip.className = 'tb-filter-chip';
+      const text = document.createElement('span');
+      text.textContent = label;
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'tb-filter-chip-remove';
+      removeBtn.textContent = '×';
+      removeBtn.setAttribute('aria-label', `Remove ${key} filter`);
+      removeBtn.addEventListener('click', () => removeFilter(key));
+      chip.appendChild(text);
+      chip.appendChild(removeBtn);
+      chipsEl.appendChild(chip);
+    }
+    chipsEl.hidden = !hasAny;
   }
 
   function updateSortIndicators() {
@@ -83,14 +207,30 @@
   function renderJobs() {
     clearTable();
     if (!tableBody) return;
+
+    renderFilterChips();
+
     if (!currentJobs || currentJobs.length === 0) {
       setStatus('No jobs found.', 'info');
       return;
     }
 
     sortJobs();
+    const filtered = applyFilters(currentJobs);
 
-    for (const job of currentJobs) {
+    if (filtered.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = headerMapping.length;
+      td.className = 'tb-no-results';
+      td.textContent = 'No jobs match the current filters.';
+      tr.appendChild(td);
+      tableBody.appendChild(tr);
+      updateSortIndicators();
+      return;
+    }
+
+    for (const job of filtered) {
       const tr = document.createElement('tr');
 
       const name = job.Name || '(unnamed)';
@@ -155,10 +295,198 @@
       currentJobs = data.Jobs || data.jobs || [];
       renderJobs();
       setStatus(`Loaded ${currentJobs.length} job(s).`, 'success');
+      // Refresh enum button labels now that data is available
+      for (const entry of headerMapping) {
+        if (entry.filterType === 'enum') updateEnumBtn(entry.key);
+      }
     } catch (err) {
       console.error('Failed to load jobs', err);
       setStatus(`Failed to load jobs: ${err.message}`, 'error');
     }
+  }
+
+  // --- Enum dropdown ---
+  let activeEnumKey = null;
+
+  function toggleEnumDropdown(key, btn) {
+    const existing = document.getElementById('tb-enum-dropdown');
+    if (existing && activeEnumKey === key) {
+      existing.remove();
+      activeEnumKey = null;
+      return;
+    }
+    if (existing) existing.remove();
+    activeEnumKey = key;
+
+    const dropdown = document.createElement('div');
+    dropdown.id = 'tb-enum-dropdown';
+    dropdown.className = 'tb-enum-dropdown';
+
+    const allVals = getEnumValues(key);
+    const f = filters[key];
+    const included = f ? f.included : new Set(allVals);
+
+    const sorted = [...allVals].sort();
+    if (sorted.length === 0) {
+      const msg = document.createElement('span');
+      msg.className = 'tb-enum-empty';
+      msg.textContent = 'No values';
+      dropdown.appendChild(msg);
+    }
+    for (const val of sorted) {
+      const label = document.createElement('label');
+      label.className = 'tb-enum-option';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = val;
+      cb.checked = included.has(val);
+      cb.addEventListener('change', () => onEnumChange(key));
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + (val || '(empty)')));
+      dropdown.appendChild(label);
+    }
+
+    const rect = btn.getBoundingClientRect();
+    dropdown.style.top = `${rect.bottom + 4}px`;
+    dropdown.style.left = `${rect.left}px`;
+    document.body.appendChild(dropdown);
+
+    requestAnimationFrame(() => {
+      document.addEventListener('click', onOutsideEnumClick, { capture: true });
+    });
+  }
+
+  function onOutsideEnumClick(e) {
+    const dropdown = document.getElementById('tb-enum-dropdown');
+    if (!dropdown) {
+      document.removeEventListener('click', onOutsideEnumClick, { capture: true });
+      return;
+    }
+    if (dropdown.contains(e.target)) return;
+    dropdown.remove();
+    activeEnumKey = null;
+    document.removeEventListener('click', onOutsideEnumClick, { capture: true });
+  }
+
+  function onEnumChange(key) {
+    const dropdown = document.getElementById('tb-enum-dropdown');
+    if (!dropdown) return;
+    const checkboxes = dropdown.querySelectorAll('input[type="checkbox"]');
+    const included = new Set();
+    checkboxes.forEach((cb) => { if (cb.checked) included.add(cb.value); });
+
+    const allVals = getEnumValues(key);
+    let allIncluded = true;
+    for (const v of allVals) {
+      if (!included.has(v)) { allIncluded = false; break; }
+    }
+
+    if (allIncluded || included.size === 0) {
+      delete filters[key];
+    } else {
+      filters[key] = { type: 'enum', included };
+    }
+    updateEnumBtn(key);
+    renderJobs();
+  }
+
+  function updateEnumBtn(key) {
+    const ctrl = filterControls[key];
+    if (!ctrl || !ctrl.btn) return;
+    if (isFilterActive(key)) {
+      ctrl.btn.textContent = `${filters[key].included.size} ▾`;
+      ctrl.btn.classList.add('tb-filter-active');
+    } else {
+      ctrl.btn.textContent = 'All ▾';
+      ctrl.btn.classList.remove('tb-filter-active');
+    }
+  }
+
+  // --- Filter row ---
+  function initFilters() {
+    if (!table) return;
+    const thead = table.querySelector('thead');
+    if (!thead) return;
+    const filterRow = document.createElement('tr');
+    filterRow.className = 'tb-filter-row';
+
+    for (const entry of headerMapping) {
+      const td = document.createElement('td');
+      td.className = 'tb-filter-cell';
+
+      if (entry.filterType === 'string') {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'tb-filter-input';
+        input.placeholder = 'Search…';
+        input.addEventListener('input', () => {
+          const v = input.value;
+          if (v) {
+            filters[entry.key] = { type: 'string', value: v };
+          } else {
+            delete filters[entry.key];
+          }
+          renderJobs();
+        });
+        filterControls[entry.key] = { input };
+        td.appendChild(input);
+
+      } else if (entry.filterType === 'enum') {
+        const btn = document.createElement('button');
+        btn.className = 'tb-filter-enum-btn';
+        btn.textContent = 'All ▾';
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleEnumDropdown(entry.key, btn);
+        });
+        filterControls[entry.key] = { btn };
+        td.appendChild(btn);
+
+      } else if (entry.filterType === 'numeric') {
+        const wrap = document.createElement('div');
+        wrap.className = 'tb-filter-num-wrap';
+
+        const opSelect = document.createElement('select');
+        opSelect.className = 'tb-filter-select';
+        for (const op of ['>', '>=', '<', '<=', '=', '!=']) {
+          const opt = document.createElement('option');
+          opt.value = op;
+          opt.textContent = op;
+          opSelect.appendChild(opt);
+        }
+
+        const numInput = document.createElement('input');
+        numInput.type = 'number';
+        numInput.className = 'tb-filter-num';
+        numInput.placeholder = '#';
+
+        const onChange = () => {
+          const v = numInput.value;
+          if (v !== '') {
+            filters[entry.key] = { type: 'numeric', op: opSelect.value, value: parseFloat(v) };
+          } else {
+            delete filters[entry.key];
+          }
+          renderJobs();
+        };
+        numInput.addEventListener('input', onChange);
+        opSelect.addEventListener('change', () => {
+          if (filters[entry.key]) {
+            filters[entry.key].op = opSelect.value;
+            renderJobs();
+          }
+        });
+
+        filterControls[entry.key] = { numInput, opSelect };
+        wrap.appendChild(opSelect);
+        wrap.appendChild(numInput);
+        td.appendChild(wrap);
+      }
+
+      filterRow.appendChild(td);
+    }
+
+    thead.appendChild(filterRow);
   }
 
   function initSorting() {
@@ -190,6 +518,7 @@
   }
 
   initSorting();
+  initFilters();
   loadJobs();
 
   // --- Settings ---
@@ -583,4 +912,3 @@
     });
   });
 })();
-
