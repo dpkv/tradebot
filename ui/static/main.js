@@ -271,6 +271,10 @@
       `;
 
       tr.classList.add(`tb-state-${status.toLowerCase()}`);
+      tr.classList.add('tb-clickable');
+      tr.addEventListener('click', () => {
+        window.location.href = `/job?uid=${encodeURIComponent(job.UID)}`;
+      });
       tableBody.appendChild(tr);
     }
 

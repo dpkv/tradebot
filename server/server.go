@@ -149,6 +149,7 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 
 	t.handlerMap[api.JobListPath] = httpPostJSONHandler(t.doList)
 	t.handlerMap[api.JobStatusPath] = httpPostJSONHandler(t.doJobStatus)
+	t.handlerMap[api.WallerGetPath] = httpGetJSONHandler("uid", t.doWallerGet)
 	t.handlerMap[api.JobCancelPath] = httpPostJSONHandler(t.doCancel)
 	t.handlerMap[api.JobResumePath] = httpPostJSONHandler(t.doResume)
 	t.handlerMap[api.JobPausePath] = httpPostJSONHandler(t.doPause)
@@ -499,6 +500,33 @@ func (s *Server) loadProducts(ctx context.Context) (status error) {
 	}
 	s.exProductsMap = exProductsMap
 	return nil
+}
+
+// httpGetJSONHandler handles GET requests, extracting a single query parameter
+// (e.g. "uid") and passing its value to the handler function.
+func httpGetJSONHandler[T any](param string, fun func(context.Context, string) (*T, error)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		val := r.URL.Query().Get(param)
+		resp, err := fun(r.Context(), val)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsbytes, err := json.Marshal(resp)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write(jsbytes)
+	})
 }
 
 func httpPostJSONHandler[T1 any, T2 any](fun func(context.Context, *T1) (*T2, error)) http.Handler {

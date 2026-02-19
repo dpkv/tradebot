@@ -15,6 +15,7 @@ var staticFS embed.FS
 
 var (
 	indexTmpl = template.Must(template.ParseFS(staticFS, "static/index.html"))
+	jobTmpl   = template.Must(template.ParseFS(staticFS, "static/job.html"))
 )
 
 // RegisterHandlers registers HTTP handlers that serve the HTML UI and static
@@ -28,6 +29,18 @@ func RegisterHandlers(s *httputil.Server) {
 			return
 		}
 		if err := indexTmpl.Execute(w, nil); err != nil {
+			http.Error(w, fmt.Sprintf("could not render template: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}))
+
+	// Job detail page.
+	s.AddHandler("/job", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+		if err := jobTmpl.Execute(w, nil); err != nil {
 			http.Error(w, fmt.Sprintf("could not render template: %v", err), http.StatusInternalServerError)
 			return
 		}

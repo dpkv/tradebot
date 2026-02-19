@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Job — Tradebot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="tb-header">
+    <h1 id="tb-job-title">Job Details</h1>
+    <p class="tb-subtitle" id="tb-job-subtitle"></p>
+    <a href="/" class="tb-settings-btn tb-back-btn">&#8592; Jobs</a>
+  </header>
+
+  <main class="tb-main tb-job-main">
+    <div id="tb-status" class="tb-status"></div>
+
+    <div class="tb-job-layout">
+
+      <!-- Left column: summary + stats -->
+      <div class="tb-job-left">
+
+        <section class="tb-card tb-detail-card">
+          <div class="tb-card-header"><h2>Job</h2></div>
+          <dl class="tb-detail-grid" id="tb-summary-grid"></dl>
+        </section>
+
+        <section class="tb-card tb-detail-card" id="tb-stats-section" hidden>
+          <div class="tb-card-header"><h2>Statistics</h2></div>
+          <dl class="tb-detail-grid" id="tb-stats-grid"></dl>
+        </section>
+
+      </div>
+
+      <!-- Right column (full width on small): pairs table -->
+      <section class="tb-card tb-detail-card tb-pairs-card" id="tb-pairs-section" hidden>
+        <div class="tb-card-header"><h2>Pairs</h2></div>
+        <div class="tb-table-wrapper">
+          <table class="tb-table" id="tb-pairs-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Pair</th>
+                <th>Budget</th>
+                <th>Return</th>
+                <th>AnnualReturn</th>
+                <th>Days</th>
+                <th>Buys</th>
+                <th>Sells</th>
+                <th>Profit</th>
+                <th>Fees</th>
+                <th>BoughtValue</th>
+                <th>SoldValue</th>
+                <th>UnsoldValue</th>
+                <th>SoldSize</th>
+                <th>UnsoldSize</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script src="/static/job.js"></script>
+</body>
+</html>
