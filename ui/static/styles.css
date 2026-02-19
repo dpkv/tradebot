@@ -24,7 +24,7 @@
 }
 
 .tb-card {
-  max-width: 960px;
+  max-width: 1800px;
   margin: 0 auto;
   background: #020617;
   border-radius: 0.75rem;
@@ -103,6 +103,7 @@
 
 .tb-table {
   width: 100%;
+  min-width: 1400px;
   border-collapse: collapse;
   font-size: 0.85rem;
   background: #020617;

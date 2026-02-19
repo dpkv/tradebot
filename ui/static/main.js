@@ -12,10 +12,21 @@
   };
   const headerMapping = [
     { index: 0, key: 'Name' },
-    { index: 1, key: 'UID' },
-    { index: 2, key: 'Type' },
-    { index: 3, key: 'State' },
-    { index: 4, key: 'ManualFlag' },
+    { index: 1, key: 'Status' },
+    { index: 2, key: 'ProductID' },
+    { index: 3, key: 'Budget' },
+    { index: 4, key: 'Return' },
+    { index: 5, key: 'AnnualReturn' },
+    { index: 6, key: 'Days' },
+    { index: 7, key: 'Buys' },
+    { index: 8, key: 'Sells' },
+    { index: 9, key: 'Profit' },
+    { index: 10, key: 'Fees' },
+    { index: 11, key: 'BoughtValue' },
+    { index: 12, key: 'SoldValue' },
+    { index: 13, key: 'UnsoldValue' },
+    { index: 14, key: 'SoldSize' },
+    { index: 15, key: 'UnsoldSize' },
   ];
   let headerCells = [];
 
@@ -83,20 +94,43 @@
       const tr = document.createElement('tr');
 
       const name = job.Name || '(unnamed)';
-      const uid = job.UID || '';
-      const type = job.Type || '';
-      const state = job.State || '';
-      const manual = job.ManualFlag ? 'Yes' : 'No';
+      const nameTitle = job.UID ? `${name} / ${job.UID}` : name;
+      const product = job.ProductID || '';
+      const status = job.Status || '';
+      const budget = job.HasStatus ? (job.Budget || '') : '—';
+      const ret = job.HasStatus ? (job.Return || '') : '—';
+      const annualRet = job.HasStatus ? (job.AnnualReturn || '') : '—';
+      const days = job.HasStatus ? (job.Days || '') : '—';
+      const buys = job.HasStatus ? job.Buys : '—';
+      const sells = job.HasStatus ? job.Sells : '—';
+      const profit = job.HasStatus ? (job.Profit || '') : '—';
+      const fees = job.HasStatus ? (job.Fees || '') : '—';
+      const boughtValue = job.HasStatus ? (job.BoughtValue || '') : '—';
+      const soldValue = job.HasStatus ? (job.SoldValue || '') : '—';
+      const unsoldValue = job.HasStatus ? (job.UnsoldValue || '') : '—';
+      const soldSize = job.HasStatus ? (job.SoldSize || '') : '—';
+      const unsoldSize = job.HasStatus ? (job.UnsoldSize || '') : '—';
 
       tr.innerHTML = `
-        <td title="${name}">${name}</td>
-        <td><code title="${uid}">${uid}</code></td>
-        <td>${type}</td>
-        <td>${state}</td>
-        <td>${manual}</td>
+        <td title="${nameTitle}">${name}</td>
+        <td>${status}</td>
+        <td>${product}</td>
+        <td>${budget}</td>
+        <td>${ret}</td>
+        <td>${annualRet}</td>
+        <td>${days}</td>
+        <td>${buys}</td>
+        <td>${sells}</td>
+        <td>${profit}</td>
+        <td>${fees}</td>
+        <td>${boughtValue}</td>
+        <td>${soldValue}</td>
+        <td>${unsoldValue}</td>
+        <td>${soldSize}</td>
+        <td>${unsoldSize}</td>
       `;
 
-      tr.classList.add(`tb-state-${state.toLowerCase()}`);
+      tr.classList.add(`tb-state-${status.toLowerCase()}`);
       tableBody.appendChild(tr);
     }
 
@@ -106,7 +140,7 @@
   async function loadJobs() {
     setStatus('Loading jobs…', 'info');
     try {
-      const resp = await fetch('/trader/job/list', {
+      const resp = await fetch('/trader/job/status', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

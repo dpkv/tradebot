@@ -16,6 +16,7 @@ import (
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/job"
 	"github.com/bvk/tradebot/namer"
+	"github.com/bvk/tradebot/timerange"
 	"github.com/bvk/tradebot/trader"
 	"github.com/bvkgo/kv"
 	"github.com/google/uuid"
@@ -182,6 +183,53 @@ func (s *Server) doSetJobName(ctx context.Context, req *api.SetJobNameRequest) (
 	}
 
 	return &api.SetJobNameResponse{}, nil
+}
+
+func (s *Server) doJobStatus(ctx context.Context, req *api.JobStatusRequest) (*api.JobStatusResponse, error) {
+	resp := new(api.JobStatusResponse)
+	collect := func(ctx context.Context, r kv.Reader, jd *gobs.JobData) error {
+		name, _, _, err := namer.Resolve(ctx, r, jd.ID)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("could not resolve job id %q: %w", jd.ID, err)
+			}
+		}
+		item := &api.JobStatusItem{
+			UID:        jd.ID,
+			Type:       jd.Typename,
+			Status:     string(jd.State),
+			Name:       name,
+			ManualFlag: (jd.Flags & ManualFlag) != 0,
+		}
+		t, err := Load(ctx, r, jd.ID, jd.Typename)
+		if err == nil {
+			item.ProductID = t.ProductID()
+			if statuser, ok := t.(trader.Statuser); ok {
+				if st := statuser.Status(&timerange.Range{}); st != nil {
+					item.HasStatus = true
+					item.Budget = st.Budget.StringFixed(3)
+					item.Return = st.ReturnRate().StringFixed(3)
+					item.AnnualReturn = st.AnnualReturnRate().StringFixed(3)
+					item.Days = st.NumDays().StringFixed(2)
+					item.Buys = st.NumBuys
+					item.Sells = st.NumSells
+					item.Profit = st.Profit().StringFixed(3)
+					item.Fees = st.Fees().StringFixed(3)
+					item.BoughtValue = st.Bought().StringFixed(3)
+					item.SoldValue = st.Sold().StringFixed(3)
+					item.UnsoldValue = st.UnsoldValue.StringFixed(3)
+					item.SoldSize = st.SoldSize.Sub(st.OversoldSize).StringFixed(3)
+					item.UnsoldSize = st.UnsoldSize.StringFixed(3)
+				}
+			}
+		}
+		resp.Jobs = append(resp.Jobs, item)
+		return nil
+	}
+	if err := s.runner.Scan(ctx, nil, collect); err != nil {
+		return nil, fmt.Errorf("could not scan all jobs: %w", err)
+	}
+	return resp, nil
 }
 
 func (s *Server) doJobSetOption(ctx context.Context, req *api.JobSetOptionRequest) (*api.JobSetOptionResponse, error) {
