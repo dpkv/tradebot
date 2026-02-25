@@ -449,7 +449,7 @@
 
     if (addJobOverviewBody) {
       addJobOverviewBody.innerHTML = '';
-      addJobOverviewBody.appendChild(makeRow('Budget required', summary.Budget));
+      addJobOverviewBody.appendChild(makeRow('Budget required', fmtBudget(summary.Budget)));
       addJobOverviewBody.appendChild(makeRow('Fee %', summary.FeePct));
       addJobOverviewBody.appendChild(makeRow('Num pairs', summary.NumPairs));
     }
@@ -492,16 +492,55 @@
     }
   }
 
+  /** Buy/sell prices: min 2 decimals; show 3rd (4th, 5th) digit only if rounding to fewer would make buy and sell display the same. */
+  function fmtPricePair(buyPrice, sellPrice) {
+    const b = Number(buyPrice);
+    const s = Number(sellPrice);
+    if (Number.isNaN(b) || Number.isNaN(s)) {
+      return { buy: buyPrice == null || buyPrice === '' ? '—' : String(buyPrice), sell: sellPrice == null || sellPrice === '' ? '—' : String(sellPrice) };
+    }
+    const b5 = Math.round(b * 1e5) / 1e5;
+    const s5 = Math.round(s * 1e5) / 1e5;
+    let decimals = 5;
+    for (let d = 2; d <= 5; d++) {
+      if (b5.toFixed(d) !== s5.toFixed(d)) {
+        decimals = d;
+        break;
+      }
+    }
+    return { buy: b5.toFixed(decimals), sell: s5.toFixed(decimals) };
+  }
+
+  /** Budget: 2 decimals; extra digits (3–5) only if |value| < 0.01 (so 2 decimals would show 0.00). */
+  function fmtBudget(v) {
+    if (v == null || v === '') return '—';
+    const n = Number(v);
+    if (Number.isNaN(n)) return String(v);
+    const r = Math.round(n * 1e5) / 1e5;
+    if (r === 0) return '0.00';
+    let decimals = 2;
+    if (Math.abs(r) < 0.01) {
+      for (let d = 3; d <= 5; d++) {
+        if (Math.round(r * 10 ** d) / 10 ** d !== 0) {
+          decimals = d;
+          break;
+        }
+      }
+    }
+    return r.toFixed(decimals);
+  }
+
   function renderAddJobPairs(previewPairs) {
     if (!addJobPairsBody) return;
     addJobPairsBody.innerHTML = '';
     for (const p of previewPairs || []) {
+      const prices = fmtPricePair(p.BuyPrice, p.SellPrice);
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${p.BuySize}</td>
-        <td>${p.BuyPrice}</td>
+        <td>${prices.buy}</td>
         <td>${p.SellSize}</td>
-        <td>${p.SellPrice}</td>
+        <td>${prices.sell}</td>
         <td>${p.PriceMargin}</td>
         <td>${p.Profit}</td>
       `;

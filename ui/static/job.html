@@ -35,7 +35,13 @@
 
       <!-- Right column (full width on small): pairs table -->
       <section class="tb-card tb-detail-card tb-pairs-card" id="tb-pairs-section" hidden>
-        <div class="tb-card-header"><h2>Pairs</h2></div>
+        <div class="tb-card-header tb-pairs-header">
+          <h2>Pairs</h2>
+          <label class="tb-show-all-label">
+            <input type="checkbox" id="tb-show-all-zero-buys" title="Show rows with 0 buys">
+            Show All
+          </label>
+        </div>
         <div class="tb-table-wrapper">
           <table class="tb-table" id="tb-pairs-table">
             <thead>

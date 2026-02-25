@@ -48,6 +48,16 @@
   font-size: 1.1rem;
 }
 
+.tb-pairs-header .tb-show-all-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: normal;
+  cursor: pointer;
+  user-select: none;
+}
+
 .tb-button {
   border-radius: 999px;
   padding: 0.4rem 0.9rem;
@@ -762,6 +772,13 @@ body {
 .tb-pairs-card {
   flex: 1 1 0;
   min-width: 0;
+}
+
+.tb-pairs-ellipsis td {
+  text-align: center;
+  color: var(--tb-muted, #64748b);
+  font-style: italic;
+  padding: 0.25rem 0.5rem;
 }
 
 .tb-detail-grid {
