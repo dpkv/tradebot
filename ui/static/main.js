@@ -1027,6 +1027,34 @@
     });
   }
 
+  // --- Backup button ---
+  const backupBtn = document.getElementById('tb-backup-btn');
+  if (backupBtn) {
+    backupBtn.addEventListener('click', async () => {
+      setStatus('Preparing backup…', 'info');
+      try {
+        const resp = await fetch('/api/backup');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const cd = resp.headers.get('Content-Disposition');
+        let filename = 'tradebot-backup.gob';
+        if (cd) {
+          const m = cd.match(/filename="?([^";\n]+)"?/);
+          if (m) filename = m[1].trim();
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        setStatus('Backup downloaded.', 'success');
+      } catch (e) {
+        setStatus(e.message || 'Backup failed', 'error');
+      }
+    });
+  }
+
   // --- Alerts modal ---
   const alertsBtn = document.getElementById('tb-alerts-btn');
   const alertsBackdrop = document.getElementById('tb-alerts-backdrop');
