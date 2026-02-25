@@ -167,6 +167,7 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 	t.handlerMap[api.ExchangeUpdateProductPath] = httpPostJSONHandler(t.doExchangeUpdateProduct)
 
 	t.handlerMap[api.SettingsPath] = httpGetPostJSONHandler(t.doSettingsGet, t.doSettingsPost)
+	t.handlerMap[api.AlertsPath] = httpGetPostJSONHandler(t.doAlertsGet, t.doAlertsPost)
 
 	return t, nil
 }

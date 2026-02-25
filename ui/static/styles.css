@@ -203,11 +203,17 @@ body {
   background: #020617;
 }
 
-/* Settings button in header */
-.tb-settings-btn {
+/* Header actions (Alerts, Settings) */
+.tb-header-actions {
   position: absolute;
   top: 1rem;
   right: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tb-settings-btn {
   padding: 0.4rem 0.75rem;
   font-size: 0.85rem;
   border-radius: 999px;
@@ -806,6 +812,100 @@ body {
   border: 1px solid #334155;
   border-radius: 0.35rem;
   color: #e2e8f0;
+}
+
+.tb-alerts-modal {
+  max-width: 480px;
+}
+
+.tb-alerts-section-title {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.95rem;
+  color: #94a3b8;
+}
+
+.tb-alerts-section-title:first-child {
+  margin-top: 0;
+}
+
+.tb-alerts-empty {
+  color: #64748b;
+  margin: 0;
+  font-style: italic;
+}
+
+.tb-alerts-subtitle {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.tb-alerts-list {
+  margin: 0 0 0 1rem;
+  padding: 0;
+  list-style: disc;
+}
+
+.tb-alerts-list li {
+  margin: 0.15rem 0;
+}
+
+.tb-alerts-form {
+  margin-top: 0.5rem;
+}
+
+.tb-alerts-form-row {
+  margin-bottom: 0.75rem;
+}
+
+.tb-alerts-form-row label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+.tb-alerts-form-row input,
+.tb-alerts-form-row select {
+  width: 100%;
+  max-width: 12rem;
+  padding: 0.4rem 0.5rem;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 0.35rem;
+  color: #e2e8f0;
+}
+
+.tb-alerts-pending-list {
+  margin: 0.75rem 0;
+}
+
+.tb-alerts-pending-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.tb-alerts-remove {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.tb-alerts-remove:hover {
+  color: #f87171;
+}
+
+.tb-alerts-modal .tb-button {
+  margin-right: 0.5rem;
+  margin-top: 0.25rem;
 }
 
 .tb-job-layout {

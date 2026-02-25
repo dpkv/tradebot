@@ -10,7 +10,10 @@
   <header class="tb-header">
     <h1>Tradebot Jobs</h1>
     <p class="tb-subtitle">Overview of all jobs in the running daemon</p>
-    <button id="tb-settings-btn" class="tb-settings-btn" type="button" title="Settings">⚙ Settings</button>
+    <div class="tb-header-actions">
+      <button id="tb-alerts-btn" class="tb-settings-btn" type="button" title="Alerts">Alerts</button>
+      <button id="tb-settings-btn" class="tb-settings-btn" type="button" title="Settings">⚙ Settings</button>
+    </div>
   </header>
 
   <div id="tb-settings-backdrop" class="tb-modal-backdrop" hidden>
@@ -308,6 +311,41 @@
       </div>
     </section>
   </main>
+
+  <div id="tb-alerts-backdrop" class="tb-modal-backdrop" hidden>
+    <div id="tb-alerts-modal" class="tb-modal tb-alerts-modal">
+      <div class="tb-modal-header">
+        <h2>Alerts</h2>
+        <button type="button" id="tb-alerts-close" class="tb-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="tb-modal-body">
+        <h3 class="tb-alerts-section-title">Current low balance alerts</h3>
+        <div id="tb-alerts-current" class="tb-alerts-current"></div>
+        <h3 class="tb-alerts-section-title">Set low balance alert</h3>
+        <div class="tb-alerts-form">
+          <div class="tb-alerts-form-row">
+            <label for="tb-alerts-exchange">Exchange</label>
+            <select id="tb-alerts-exchange">
+              <option value="">Default (all exchanges)</option>
+              <option value="coinbase">coinbase</option>
+              <option value="coinex">coinex</option>
+            </select>
+          </div>
+          <div class="tb-alerts-form-row">
+            <label for="tb-alerts-currency">Currency</label>
+            <input type="text" id="tb-alerts-currency" placeholder="e.g. USD" maxlength="10">
+          </div>
+          <div class="tb-alerts-form-row">
+            <label for="tb-alerts-limit">Minimum amount</label>
+            <input type="text" id="tb-alerts-limit" placeholder="e.g. 200" inputmode="decimal">
+          </div>
+          <button type="button" id="tb-alerts-add-row" class="tb-button tb-button-secondary">Add limit</button>
+          <div id="tb-alerts-pending-list" class="tb-alerts-pending-list"></div>
+          <button type="button" id="tb-alerts-save" class="tb-button">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/main.js"></script>
 </body>

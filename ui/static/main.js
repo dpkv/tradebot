@@ -980,6 +980,160 @@
     });
   }
 
+  // --- Alerts modal ---
+  const alertsBtn = document.getElementById('tb-alerts-btn');
+  const alertsBackdrop = document.getElementById('tb-alerts-backdrop');
+  const alertsModal = document.getElementById('tb-alerts-modal');
+  const alertsCloseBtn = document.getElementById('tb-alerts-close');
+  const alertsCurrentEl = document.getElementById('tb-alerts-current');
+  const alertsExchangeSelect = document.getElementById('tb-alerts-exchange');
+  const alertsCurrencyInput = document.getElementById('tb-alerts-currency');
+  const alertsLimitInput = document.getElementById('tb-alerts-limit');
+  const alertsAddRowBtn = document.getElementById('tb-alerts-add-row');
+  const alertsPendingListEl = document.getElementById('tb-alerts-pending-list');
+  const alertsSaveBtn = document.getElementById('tb-alerts-save');
+
+  /** @type {Array<{ currency: string, limit: string }>} */
+  let alertsPendingRows = [];
+
+  async function loadAlertsData() {
+    const resp = await fetch('/api/alerts');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+  }
+
+  function renderAlertsCurrent(data) {
+    if (!alertsCurrentEl) return;
+    alertsCurrentEl.innerHTML = '';
+    const defaultLimits = data.lowBalanceLimits || {};
+    const perExchange = data.perExchange || {};
+    const defaultEntries = Object.entries(defaultLimits);
+    const hasAny = defaultEntries.length > 0 || Object.keys(perExchange).length > 0;
+    if (!hasAny) {
+      const p = document.createElement('p');
+      p.className = 'tb-alerts-empty';
+      p.textContent = 'No low balance alerts configured.';
+      alertsCurrentEl.appendChild(p);
+      return;
+    }
+    if (defaultEntries.length > 0) {
+      const h4 = document.createElement('h4');
+      h4.textContent = 'Default (all exchanges)';
+      h4.className = 'tb-alerts-subtitle';
+      alertsCurrentEl.appendChild(h4);
+      const ul = document.createElement('ul');
+      ul.className = 'tb-alerts-list';
+      for (const [ccy, lim] of defaultEntries) {
+        const li = document.createElement('li');
+        li.textContent = `${ccy}: ${lim}`;
+        ul.appendChild(li);
+      }
+      alertsCurrentEl.appendChild(ul);
+    }
+    for (const [ex, cfg] of Object.entries(perExchange)) {
+      const limits = (cfg && cfg.lowBalanceLimits) ? Object.entries(cfg.lowBalanceLimits) : [];
+      if (limits.length === 0) continue;
+      const h4 = document.createElement('h4');
+      h4.textContent = ex;
+      h4.className = 'tb-alerts-subtitle';
+      alertsCurrentEl.appendChild(h4);
+      const ul = document.createElement('ul');
+      ul.className = 'tb-alerts-list';
+      for (const [ccy, lim] of limits) {
+        const li = document.createElement('li');
+        li.textContent = `${ccy}: ${lim}`;
+        ul.appendChild(li);
+      }
+      alertsCurrentEl.appendChild(ul);
+    }
+  }
+
+  function renderAlertsPending() {
+    if (!alertsPendingListEl) return;
+    alertsPendingListEl.innerHTML = '';
+    for (let i = 0; i < alertsPendingRows.length; i++) {
+      const row = alertsPendingRows[i];
+      const div = document.createElement('div');
+      div.className = 'tb-alerts-pending-row';
+      div.innerHTML = `<span>${row.currency}: ${row.limit}</span> <button type="button" class="tb-alerts-remove" data-index="${i}" aria-label="Remove">×</button>`;
+      alertsPendingListEl.appendChild(div);
+    }
+    alertsPendingListEl.querySelectorAll('.tb-alerts-remove').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-index'), 10);
+        alertsPendingRows.splice(idx, 1);
+        renderAlertsPending();
+      });
+    });
+  }
+
+  async function openAlertsModal() {
+    if (!alertsBackdrop) return;
+    alertsPendingRows = [];
+    renderAlertsPending();
+    setStatus('Loading alerts…', 'info');
+    try {
+      const data = await loadAlertsData();
+      renderAlertsCurrent(data);
+      setStatus('', 'info');
+    } catch (err) {
+      setStatus(`Failed to load alerts: ${err.message}`, 'error');
+    }
+    alertsBackdrop.hidden = false;
+  }
+
+  function closeAlertsModal() {
+    if (alertsBackdrop) alertsBackdrop.hidden = true;
+  }
+
+  function addAlertsRow() {
+    const currency = (alertsCurrencyInput && alertsCurrencyInput.value.trim().toUpperCase()) || '';
+    const limit = (alertsLimitInput && alertsLimitInput.value.trim()) || '';
+    if (!currency || !limit) return;
+    alertsPendingRows.push({ currency, limit });
+    renderAlertsPending();
+    if (alertsCurrencyInput) alertsCurrencyInput.value = '';
+    if (alertsLimitInput) alertsLimitInput.value = '';
+  }
+
+  async function saveAlerts() {
+    if (alertsPendingRows.length === 0) {
+      setStatus('Add at least one currency limit before saving.', 'error');
+      return;
+    }
+    const lowBalanceLimits = {};
+    for (const row of alertsPendingRows) {
+      lowBalanceLimits[row.currency] = row.limit;
+    }
+    const exchange = (alertsExchangeSelect && alertsExchangeSelect.value) || '';
+    setStatus('Saving…', 'info');
+    try {
+      const resp = await fetch('/api/alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lowBalanceLimits, exchange }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      setStatus('Alerts saved.', 'success');
+      const data = await loadAlertsData();
+      renderAlertsCurrent(data);
+      alertsPendingRows = [];
+      renderAlertsPending();
+    } catch (err) {
+      setStatus(`Save failed: ${err.message}`, 'error');
+    }
+  }
+
+  if (alertsBtn) alertsBtn.addEventListener('click', openAlertsModal);
+  if (alertsCloseBtn) alertsCloseBtn.addEventListener('click', closeAlertsModal);
+  if (alertsBackdrop) alertsBackdrop.addEventListener('click', (e) => { if (e.target === alertsBackdrop) closeAlertsModal(); });
+  if (alertsModal) alertsModal.addEventListener('click', (e) => e.stopPropagation());
+  if (alertsAddRowBtn) alertsAddRowBtn.addEventListener('click', addAlertsRow);
+  if (alertsSaveBtn) alertsSaveBtn.addEventListener('click', saveAlerts);
+
   // Wire Add job dialog buttons.
   if (addJobBtn) {
     addJobBtn.addEventListener('click', openAddJobDialog);
