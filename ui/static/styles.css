@@ -748,6 +748,66 @@ body {
   padding: 1rem 1.5rem 2rem;
 }
 
+.tb-job-actions {
+  margin-bottom: 1rem;
+  max-width: 1800px;
+}
+
+.tb-job-actions-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.tb-job-action-btn {
+  min-width: 5rem;
+}
+
+.tb-job-cancel-btn {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+  box-shadow: 0 8px 16px rgba(220, 38, 38, 0.3);
+}
+
+.tb-job-cancel-btn:hover {
+  box-shadow: 0 12px 22px rgba(220, 38, 38, 0.4);
+}
+
+.tb-job-freeze-status {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  margin-left: 0.25rem;
+}
+
+.tb-job-freeze-status #tb-job-freeze-value {
+  font-weight: 500;
+  color: #e2e8f0;
+}
+
+.tb-set-option-paused-msg {
+  color: #f59e0b;
+  margin: 0 0 1rem;
+}
+
+.tb-set-option-modal .tb-form-group {
+  margin-bottom: 1rem;
+}
+
+.tb-set-option-modal .tb-form-group label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-weight: 500;
+}
+
+.tb-set-option-modal .tb-form-group select {
+  min-width: 10rem;
+  padding: 0.4rem 0.5rem;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 0.35rem;
+  color: #e2e8f0;
+}
+
 .tb-job-layout {
   display: flex;
   flex-wrap: wrap;

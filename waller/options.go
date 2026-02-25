@@ -20,6 +20,14 @@ func (w *Waller) SetOption(opt, val string) (_ string, status error) {
 	}
 }
 
+// GetFreezeOption returns the current freeze option value for display (e.g. "none", "buys", "sells", "both").
+func (w *Waller) GetFreezeOption() string {
+	if len(w.loopers) == 0 {
+		return "none"
+	}
+	return w.loopers[0].GetFreezeOption()
+}
+
 var trues = []string{"true", "yes", "1"}
 var falses = []string{"false", "no", "0"}
 

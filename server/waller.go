@@ -53,6 +53,7 @@ func (s *Server) doWallerGet(ctx context.Context, uid string) (*api.WallerGetRes
 		resp.ExchangeName = t.ExchangeName()
 
 		wall := t.(*waller.Waller)
+		resp.Freeze = wall.GetFreezeOption()
 
 		if st := wall.Status(&timerange.Range{}); st != nil {
 			resp.HasStatus = true

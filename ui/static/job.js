@@ -16,6 +16,21 @@
   /** When false, hide rows with 0 buys; when true, show all rows. */
   let showAllZeroBuys = false;
 
+  const jobActionsEl = document.getElementById('tb-job-actions');
+  const jobPauseBtn = document.getElementById('tb-job-pause-btn');
+  const jobResumeBtn = document.getElementById('tb-job-resume-btn');
+  const jobCancelBtn = document.getElementById('tb-job-cancel-btn');
+  const jobSetOptionBtn = document.getElementById('tb-job-set-option-btn');
+  const setOptionBackdrop = document.getElementById('tb-set-option-backdrop');
+  const setOptionModal = document.getElementById('tb-set-option-modal');
+  const setOptionCloseBtn = document.getElementById('tb-set-option-close');
+  const setOptionPausedMsg = document.getElementById('tb-set-option-paused-msg');
+  const setOptionFormWrap = document.getElementById('tb-set-option-form-wrap');
+  const setOptionFreezeSelect = document.getElementById('tb-set-option-freeze');
+  const setOptionApplyBtn = document.getElementById('tb-set-option-apply');
+  const setOptionCancelBtn = document.getElementById('tb-set-option-cancel');
+  const jobFreezeValueEl = document.getElementById('tb-job-freeze-value');
+
   function setStatus(msg, kind = 'info') {
     if (!statusEl) return;
     statusEl.textContent = msg || '';
@@ -235,7 +250,150 @@
     } else {
       lastJob = null;
     }
+
+    updateActionButtons(job);
   }
+
+  function updateActionButtons(job) {
+    if (!jobActionsEl) return;
+    jobActionsEl.hidden = false;
+    const status = (job.Status || '').toLowerCase();
+    const isRunning = status === 'running';
+    const isPaused = status === 'paused';
+    const isDone = status === 'completed' || status === 'canceled' || status === 'failed';
+    if (jobPauseBtn) {
+      jobPauseBtn.hidden = !isRunning;
+    }
+    if (jobResumeBtn) {
+      jobResumeBtn.hidden = !isPaused;
+    }
+    if (jobCancelBtn) {
+      jobCancelBtn.hidden = isDone;
+    }
+    if (jobFreezeValueEl) {
+      jobFreezeValueEl.textContent = job.Freeze != null && job.Freeze !== '' ? job.Freeze : '—';
+    }
+  }
+
+  async function jobPause() {
+    if (!uid) return;
+    if (!confirm('Pause this job?')) return;
+    setStatus('Pausing…', 'info');
+    try {
+      const resp = await fetch('/trader/job/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ UID: uid }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      setStatus('Job paused.', 'success');
+      await load();
+    } catch (err) {
+      setStatus(`Pause failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function jobResume() {
+    if (!uid) return;
+    if (!confirm('Resume this job?')) return;
+    setStatus('Resuming…', 'info');
+    try {
+      const resp = await fetch('/trader/job/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ UID: uid }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      setStatus('Job resumed.', 'success');
+      await load();
+    } catch (err) {
+      setStatus(`Resume failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function jobCancel() {
+    if (!uid) return;
+    if (!confirm('Cancel this job? This cannot be undone.')) return;
+    setStatus('Canceling…', 'info');
+    try {
+      const resp = await fetch('/trader/job/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ UID: uid }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      setStatus('Job canceled.', 'success');
+      await load();
+    } catch (err) {
+      setStatus(`Cancel failed: ${err.message}`, 'error');
+    }
+  }
+
+  function openSetOptionModal() {
+    if (!setOptionBackdrop || !setOptionModal) return;
+    const isPaused = lastJob && (lastJob.Status || '').toLowerCase() === 'paused';
+    if (setOptionPausedMsg) {
+      setOptionPausedMsg.hidden = isPaused;
+    }
+    if (setOptionFormWrap) {
+      setOptionFormWrap.hidden = !isPaused;
+    }
+    if (setOptionApplyBtn) {
+      setOptionApplyBtn.disabled = !isPaused;
+    }
+    if (setOptionFreezeSelect && lastJob && lastJob.Freeze) {
+      const v = (lastJob.Freeze || '').toLowerCase();
+      if (['none', 'buys', 'sells', 'both'].includes(v)) {
+        setOptionFreezeSelect.value = v;
+      }
+    }
+    setOptionBackdrop.hidden = false;
+  }
+
+  function closeSetOptionModal() {
+    if (setOptionBackdrop) setOptionBackdrop.hidden = true;
+  }
+
+  async function applySetOption() {
+    if (!uid || !setOptionFreezeSelect) return;
+    const value = setOptionFreezeSelect.value;
+    setStatus('Applying option…', 'info');
+    try {
+      const resp = await fetch('/trader/job/set-option', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ UID: uid, OptionKey: 'freeze', OptionValue: value }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      closeSetOptionModal();
+      setStatus('Option applied.', 'success');
+      await load();
+    } catch (err) {
+      setStatus(`Set option failed: ${err.message}`, 'error');
+    }
+  }
+
+  if (jobPauseBtn) jobPauseBtn.addEventListener('click', (e) => { e.preventDefault(); jobPause(); });
+  if (jobResumeBtn) jobResumeBtn.addEventListener('click', (e) => { e.preventDefault(); jobResume(); });
+  if (jobCancelBtn) jobCancelBtn.addEventListener('click', (e) => { e.preventDefault(); jobCancel(); });
+  if (jobSetOptionBtn) jobSetOptionBtn.addEventListener('click', (e) => { e.preventDefault(); openSetOptionModal(); });
+  if (setOptionCloseBtn) setOptionCloseBtn.addEventListener('click', closeSetOptionModal);
+  if (setOptionBackdrop) setOptionBackdrop.addEventListener('click', closeSetOptionModal);
+  if (setOptionModal) setOptionModal.addEventListener('click', (e) => e.stopPropagation());
+  if (setOptionCancelBtn) setOptionCancelBtn.addEventListener('click', closeSetOptionModal);
+  if (setOptionApplyBtn) setOptionApplyBtn.addEventListener('click', (e) => { e.preventDefault(); applySetOption(); });
 
   if (showAllCheckbox) {
     showAllCheckbox.addEventListener('change', () => {

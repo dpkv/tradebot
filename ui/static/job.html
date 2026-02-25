@@ -16,6 +16,16 @@
   <main class="tb-main tb-job-main">
     <div id="tb-status" class="tb-status"></div>
 
+    <section class="tb-card tb-job-actions" id="tb-job-actions" hidden>
+      <div class="tb-job-actions-btns">
+        <button type="button" id="tb-job-pause-btn" class="tb-button tb-job-action-btn" title="Pause job">&#10074;&#10074; Pause</button>
+        <button type="button" id="tb-job-resume-btn" class="tb-button tb-button-secondary tb-job-action-btn" title="Resume job">&#9658; Resume</button>
+        <button type="button" id="tb-job-cancel-btn" class="tb-button tb-job-cancel-btn">Cancel</button>
+        <span class="tb-job-freeze-status">Freeze: <span id="tb-job-freeze-value">—</span></span>
+        <button type="button" id="tb-job-set-option-btn" class="tb-button tb-button-secondary">Set option</button>
+      </div>
+    </section>
+
     <div class="tb-job-layout">
 
       <!-- Left column: summary + stats -->
@@ -70,6 +80,33 @@
 
     </div>
   </main>
+
+  <div id="tb-set-option-backdrop" class="tb-modal-backdrop" hidden>
+    <div id="tb-set-option-modal" class="tb-modal tb-set-option-modal">
+      <div class="tb-modal-header">
+        <h3>Set option</h3>
+        <button type="button" id="tb-set-option-close" class="tb-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="tb-modal-body">
+        <p id="tb-set-option-paused-msg" class="tb-set-option-paused-msg" hidden>Job must be paused to set options. Pause the job first, then open this dialog again.</p>
+        <div id="tb-set-option-form-wrap">
+          <div class="tb-form-group">
+            <label for="tb-set-option-freeze">Freeze</label>
+            <select id="tb-set-option-freeze">
+              <option value="none">none</option>
+              <option value="buys">buys</option>
+              <option value="sells">sells</option>
+              <option value="both">both</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="tb-modal-footer">
+        <button type="button" id="tb-set-option-apply" class="tb-button">Apply</button>
+        <button type="button" id="tb-set-option-cancel" class="tb-button tb-button-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/job.js"></script>
 </body>

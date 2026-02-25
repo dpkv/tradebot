@@ -68,6 +68,11 @@ func (v *Looper) currentFreezeValue() string {
 	}
 }
 
+// GetFreezeOption returns the current freeze option value for display (e.g. "none", "buys", "sells", "both").
+func (v *Looper) GetFreezeOption() string {
+	return v.currentFreezeValue()
+}
+
 func (v *Looper) setFreezeOption(opt, val string) (string, error) {
 	current := v.currentFreezeValue()
 

@@ -66,4 +66,7 @@ type WallerGetResponse struct {
 
 	// Per-pair breakdown — populated only for Waller jobs.
 	Pairs []*WallerGetPairItem
+
+	// Freeze option: "none", "buys", "sells", or "both".
+	Freeze string
 }
