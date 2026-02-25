@@ -411,6 +411,7 @@
     }
     addJobBackdrop.hidden = false;
     if (addJobModal) addJobModal.addEventListener('click', (e) => e.stopPropagation(), { once: true });
+    updateAddJobBudgetDisplay();
   }
 
   function closeAddJobDialog() {
@@ -426,6 +427,50 @@
       addJobErrorEl.hidden = true;
       addJobErrorEl.textContent = '';
     }
+  }
+
+  /** Compute budget from begin, end, interval (or interval %), size, fee %. Mirrors server pair generation. */
+  function computeAddJobBudget() {
+    const getNum = (id) => {
+      const el = document.getElementById(id);
+      if (!el) return 0;
+      const v = el.value.trim();
+      return v === '' ? 0 : Number(v);
+    };
+    const begin = getNum('tb-add-begin-price');
+    const end = getNum('tb-add-end-price');
+    const buySize = getNum('tb-add-buy-size');
+    const feePct = getNum('tb-add-fee-pct') || 0;
+    const buySpacing = document.querySelector('input[name="tb-add-buy-spacing"]:checked');
+    const usePct = buySpacing && buySpacing.value === 'pct';
+    const interval = getNum('tb-add-buy-interval');
+    const intervalPct = getNum('tb-add-buy-interval-pct');
+
+    if (begin <= 0 || end <= begin || buySize <= 0) return null;
+    const stepAbs = !usePct ? interval : 0;
+    const stepPct = usePct ? intervalPct : 0;
+    if (stepAbs <= 0 && stepPct <= 0) return null;
+
+    const feeFactor = 1 + (2 * feePct) / 100;
+    let total = 0;
+    let price = begin;
+    const maxPairs = 100000;
+    let count = 0;
+    while (price < end && count < maxPairs) {
+      total += price * buySize * feeFactor;
+      const step = stepAbs > 0 ? stepAbs : price * (stepPct / 100);
+      if (step <= 0) break;
+      price += step;
+      count++;
+    }
+    return count >= maxPairs ? null : total;
+  }
+
+  function updateAddJobBudgetDisplay() {
+    const el = document.getElementById('tb-add-job-budget-value');
+    if (!el) return;
+    const budget = computeAddJobBudget();
+    el.textContent = budget != null ? fmtBudget(budget) : '—';
   }
 
   function collectWallerSpecFromForm() {
@@ -728,6 +773,7 @@
         buyIntervalPct.value = '';
       }
       invalidateAddJobValidation();
+      updateAddJobBudgetDisplay();
     });
   });
 
@@ -757,6 +803,7 @@
         return;
       }
       invalidateAddJobValidation();
+      updateAddJobBudgetDisplay();
     });
   }
 

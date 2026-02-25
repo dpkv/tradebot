@@ -113,7 +113,11 @@
     <div class="tb-modal tb-add-job-modal" id="tb-add-job-modal">
       <div class="tb-modal-header">
         <h2>New job</h2>
-        <button id="tb-add-job-close" class="tb-modal-close" type="button" aria-label="Close">×</button>
+        <div class="tb-add-job-header-right">
+          <span class="tb-add-job-budget-label">Budget:</span>
+          <span id="tb-add-job-budget-value" class="tb-add-job-budget-value">—</span>
+          <button id="tb-add-job-close" class="tb-modal-close" type="button" aria-label="Close">×</button>
+        </div>
       </div>
       <div class="tb-modal-body">
         <form id="tb-add-job-form" class="tb-add-job-form" novalidate>

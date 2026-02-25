@@ -268,6 +268,24 @@ body {
   width: 100%;
 }
 
+.tb-add-job-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.tb-add-job-budget-label {
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+.tb-add-job-budget-value {
+  font-weight: 600;
+  color: #e5e7eb;
+  min-width: 3.5em;
+  text-align: right;
+}
+
 .tb-add-job-form {
   display: flex;
   flex-direction: column;
