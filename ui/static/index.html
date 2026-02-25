@@ -106,10 +106,175 @@
     </div>
   </div>
 
+  <div id="tb-add-job-backdrop" class="tb-modal-backdrop" hidden>
+    <div class="tb-modal tb-add-job-modal" id="tb-add-job-modal">
+      <div class="tb-modal-header">
+        <h2>New job</h2>
+        <button id="tb-add-job-close" class="tb-modal-close" type="button" aria-label="Close">×</button>
+      </div>
+      <div class="tb-modal-body">
+        <form id="tb-add-job-form" class="tb-add-job-form" novalidate>
+          <div class="tb-add-job-row">
+            <label class="tb-add-job-field">
+              <span>Type</span>
+              <select id="tb-add-job-type">
+                <option value="waller">Waller</option>
+              </select>
+            </label>
+            <label class="tb-add-job-field">
+              <span>Name</span>
+              <input id="tb-add-job-name" type="text" required>
+            </label>
+          </div>
+
+          <div class="tb-add-job-row">
+            <label class="tb-add-job-field">
+              <span>Exchange</span>
+              <select id="tb-add-job-exchange">
+                <option value="coinbase">coinbase</option>
+                <option value="coinex">coinex</option>
+              </select>
+            </label>
+            <label class="tb-add-job-field">
+              <span>Product</span>
+              <input id="tb-add-job-product" type="text" placeholder="e.g. BCH-USD or BTCUSDT" required>
+            </label>
+          </div>
+
+          <fieldset class="tb-add-job-fieldset">
+            <legend>Price range</legend>
+            <div class="tb-add-job-row">
+              <label class="tb-add-job-field">
+                <span>Begin price</span>
+                <input id="tb-add-begin-price" type="number" step="any">
+              </label>
+              <label class="tb-add-job-field">
+                <span>End price</span>
+                <input id="tb-add-end-price" type="number" step="any">
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="tb-add-job-fieldset">
+            <legend>Buy spacing (choose one)</legend>
+            <div class="tb-add-job-row tb-add-job-row-split">
+              <label class="tb-add-job-field tb-add-job-radio-group">
+                <span><input type="radio" name="tb-add-buy-spacing" value="abs" checked> Interval</span>
+                <input id="tb-add-buy-interval" type="number" step="any" placeholder="absolute">
+              </label>
+              <label class="tb-add-job-field tb-add-job-radio-group">
+                <span><input type="radio" name="tb-add-buy-spacing" value="pct"> Interval %</span>
+                <input id="tb-add-buy-interval-pct" type="number" step="any" placeholder="% of last buy" disabled>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="tb-add-job-fieldset">
+            <legend>Profit target (choose one)</legend>
+            <div class="tb-add-job-row tb-add-job-row-split">
+              <label class="tb-add-job-field tb-add-job-radio-group">
+                <span><input type="radio" name="tb-add-profit-mode" value="abs" checked> Fixed profit</span>
+                <input id="tb-add-profit-margin" type="number" step="any" placeholder="quote amount">
+              </label>
+              <label class="tb-add-job-field tb-add-job-radio-group">
+                <span><input type="radio" name="tb-add-profit-mode" value="pct"> Profit %</span>
+                <input id="tb-add-profit-margin-pct" type="number" step="any" placeholder="% of buy value" disabled>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="tb-add-job-fieldset">
+            <legend>Size &amp; fees</legend>
+            <div class="tb-add-job-row tb-add-job-row-split">
+              <label class="tb-add-job-field">
+                <span>Buy size</span>
+                <input id="tb-add-buy-size" type="number" step="any">
+              </label>
+              <label class="tb-add-job-field">
+                <span>Cancel offset %</span>
+                <input id="tb-add-cancel-offset-pct" type="number" step="any" value="5">
+              </label>
+              <label class="tb-add-job-field">
+                <span>Fee %</span>
+                <input id="tb-add-fee-pct" type="number" step="any" value="0.25">
+              </label>
+            </div>
+          </fieldset>
+
+          <div id="tb-add-job-error" class="tb-error-message" hidden></div>
+
+          <div id="tb-add-job-preview" class="tb-add-job-preview" hidden>
+            <h3 class="tb-job-detail-section">Validation &amp; preview</h3>
+            <div class="tb-add-job-summary-grid">
+              <div class="tb-add-job-summary-card">
+                <h4>Overview</h4>
+                <table class="tb-table tb-add-job-summary-table">
+                  <tbody id="tb-add-job-overview-body"></tbody>
+                </table>
+              </div>
+              <div class="tb-add-job-summary-card">
+                <h4>Loop fees</h4>
+                <table class="tb-table tb-add-job-summary-table">
+                  <tbody id="tb-add-job-loop-body"></tbody>
+                </table>
+              </div>
+              <div class="tb-add-job-summary-card">
+                <h4>Price margins</h4>
+                <table class="tb-table tb-add-job-summary-table">
+                  <tbody id="tb-add-job-price-body"></tbody>
+                </table>
+              </div>
+              <div class="tb-add-job-summary-card">
+                <h4>Profit margins</h4>
+                <table class="tb-table tb-add-job-summary-table">
+                  <tbody id="tb-add-job-profit-body"></tbody>
+                </table>
+              </div>
+              <div class="tb-add-job-summary-card">
+                <h4>Target APR</h4>
+                <table class="tb-table tb-add-job-summary-table">
+                  <thead>
+                    <tr>
+                      <th>Rate</th>
+                      <th>Sells/day</th>
+                      <th>Sells/month</th>
+                      <th>Sells/year</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tb-add-job-apr-body"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="tb-table-wrapper tb-add-job-pairs-wrapper">
+              <table class="tb-table tb-add-job-pairs-table">
+                <thead>
+                  <tr>
+                    <th>BuySize</th>
+                    <th>BuyPrice</th>
+                    <th>SellSize</th>
+                    <th>SellPrice</th>
+                    <th>PriceMargin</th>
+                    <th>Profit</th>
+                  </tr>
+                </thead>
+                <tbody id="tb-add-job-pairs-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="tb-modal-footer">
+        <button id="tb-add-job-validate" type="button" class="tb-button tb-button-secondary">Validate</button>
+        <button id="tb-add-job-create" type="button" class="tb-button" disabled>Create job</button>
+      </div>
+    </div>
+  </div>
+
   <main class="tb-main">
     <section class="tb-card">
       <div class="tb-card-header">
         <h2>Jobs</h2>
+        <button id="tb-add-job" class="tb-button tb-button-secondary" type="button">Add job</button>
         <button id="tb-refresh" class="tb-button">Refresh</button>
       </div>
       <div id="tb-status" class="tb-status"></div>

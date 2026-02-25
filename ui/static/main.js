@@ -32,6 +32,10 @@
 
   let headerCells = [];
 
+  // --- Add job dialog state ---
+  let addJobValidated = false;
+  let addJobValidatedResponse = null;
+
   // --- Filter state ---
   // filters[key] = { type: 'string', value } | { type: 'enum', included: Set } | { type: 'numeric', op, value }
   let filters = {};
@@ -309,6 +313,374 @@
     }
   }
 
+  // --- Add job dialog ---
+
+  const addJobBackdrop = document.getElementById('tb-add-job-backdrop');
+  const addJobModal = document.getElementById('tb-add-job-modal');
+  const addJobBtn = document.getElementById('tb-add-job');
+  const addJobCloseBtn = document.getElementById('tb-add-job-close');
+  const addJobForm = document.getElementById('tb-add-job-form');
+  const addJobErrorEl = document.getElementById('tb-add-job-error');
+  const addJobPreviewEl = document.getElementById('tb-add-job-preview');
+  const addJobOverviewBody = document.getElementById('tb-add-job-overview-body');
+  const addJobLoopBody = document.getElementById('tb-add-job-loop-body');
+  const addJobPriceBody = document.getElementById('tb-add-job-price-body');
+  const addJobProfitBody = document.getElementById('tb-add-job-profit-body');
+  const addJobAprBody = document.getElementById('tb-add-job-apr-body');
+  const addJobPairsBody = document.getElementById('tb-add-job-pairs-body');
+  const addJobValidateBtn = document.getElementById('tb-add-job-validate');
+  const addJobCreateBtn = document.getElementById('tb-add-job-create');
+
+  function openAddJobDialog() {
+    if (!addJobBackdrop) return;
+    addJobValidated = false;
+    addJobValidatedResponse = null;
+    if (addJobForm) addJobForm.reset();
+    const cancelOffset = document.getElementById('tb-add-cancel-offset-pct');
+    const feePct = document.getElementById('tb-add-fee-pct');
+    if (cancelOffset && !cancelOffset.value) cancelOffset.value = '5';
+    if (feePct && !feePct.value) feePct.value = '0.25';
+    if (addJobErrorEl) {
+      addJobErrorEl.hidden = true;
+      addJobErrorEl.textContent = '';
+    }
+    if (addJobPreviewEl) {
+      addJobPreviewEl.hidden = true;
+    }
+    if (addJobCreateBtn) {
+      addJobCreateBtn.disabled = true;
+    }
+    // Ensure default radio state
+    const buyModeAbs = document.querySelector('input[name="tb-add-buy-spacing"][value="abs"]');
+    const profitModeAbs = document.querySelector('input[name="tb-add-profit-mode"][value="abs"]');
+    if (buyModeAbs) buyModeAbs.checked = true;
+    if (profitModeAbs) profitModeAbs.checked = true;
+    const buyInterval = document.getElementById('tb-add-buy-interval');
+    const buyIntervalPct = document.getElementById('tb-add-buy-interval-pct');
+    if (buyInterval && buyIntervalPct) {
+      buyInterval.disabled = false;
+      buyIntervalPct.disabled = true;
+      buyIntervalPct.value = '';
+    }
+    const profitMargin = document.getElementById('tb-add-profit-margin');
+    const profitMarginPct = document.getElementById('tb-add-profit-margin-pct');
+    if (profitMargin && profitMarginPct) {
+      profitMargin.disabled = false;
+      profitMarginPct.disabled = true;
+      profitMarginPct.value = '';
+    }
+    addJobBackdrop.hidden = false;
+    if (addJobModal) addJobModal.addEventListener('click', (e) => e.stopPropagation(), { once: true });
+  }
+
+  function closeAddJobDialog() {
+    if (addJobBackdrop) addJobBackdrop.hidden = true;
+  }
+
+  function invalidateAddJobValidation() {
+    addJobValidated = false;
+    addJobValidatedResponse = null;
+    if (addJobCreateBtn) addJobCreateBtn.disabled = true;
+    if (addJobPreviewEl) addJobPreviewEl.hidden = true;
+    if (addJobErrorEl) {
+      addJobErrorEl.hidden = true;
+      addJobErrorEl.textContent = '';
+    }
+  }
+
+  function collectWallerSpecFromForm() {
+    const getNumber = (id) => {
+      const el = document.getElementById(id);
+      if (!el) return 0;
+      const v = el.value.trim();
+      return v === '' ? 0 : Number(v);
+    };
+
+    const buySpacing = document.querySelector('input[name="tb-add-buy-spacing"]:checked');
+    const profitMode = document.querySelector('input[name="tb-add-profit-mode"]:checked');
+
+    const beginPrice = getNumber('tb-add-begin-price');
+    const endPrice = getNumber('tb-add-end-price');
+    let buyInterval = 0;
+    let buyIntervalPct = 0;
+    if (buySpacing && buySpacing.value === 'pct') {
+      buyIntervalPct = getNumber('tb-add-buy-interval-pct');
+    } else {
+      buyInterval = getNumber('tb-add-buy-interval');
+    }
+
+    let profitMargin = 0;
+    let profitMarginPct = 0;
+    if (profitMode && profitMode.value === 'pct') {
+      profitMarginPct = getNumber('tb-add-profit-margin-pct');
+    } else {
+      profitMargin = getNumber('tb-add-profit-margin');
+    }
+
+    const buySize = getNumber('tb-add-buy-size');
+    const cancelOffsetPct = getNumber('tb-add-cancel-offset-pct') || 5;
+    const feePct = getNumber('tb-add-fee-pct') || 0.25;
+
+    return {
+      BeginPrice: beginPrice,
+      EndPrice: endPrice,
+      BuyInterval: buyInterval,
+      BuyIntervalPct: buyIntervalPct,
+      ProfitMargin: profitMargin,
+      ProfitMarginPct: profitMarginPct,
+      BuySize: buySize,
+      CancelOffsetPct: cancelOffsetPct,
+      FeePct: feePct,
+    };
+  }
+
+  function renderAddJobSummary(summary) {
+    if (!summary) return;
+    const makeRow = (label, value) => {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th');
+      th.textContent = label;
+      const td = document.createElement('td');
+      td.textContent = value != null && value !== '' ? String(value) : '—';
+      tr.appendChild(th);
+      tr.appendChild(td);
+      return tr;
+    };
+
+    if (addJobOverviewBody) {
+      addJobOverviewBody.innerHTML = '';
+      addJobOverviewBody.appendChild(makeRow('Budget required', summary.Budget));
+      addJobOverviewBody.appendChild(makeRow('Fee %', summary.FeePct));
+      addJobOverviewBody.appendChild(makeRow('Num pairs', summary.NumPairs));
+    }
+
+    if (addJobLoopBody) {
+      addJobLoopBody.innerHTML = '';
+      addJobLoopBody.appendChild(makeRow('Min loop fee', summary.MinLoopFee));
+      addJobLoopBody.appendChild(makeRow('Avg loop fee', summary.AvgLoopFee));
+      addJobLoopBody.appendChild(makeRow('Max loop fee', summary.MaxLoopFee));
+    }
+
+    if (addJobPriceBody) {
+      addJobPriceBody.innerHTML = '';
+      addJobPriceBody.appendChild(makeRow('Min price margin', summary.MinPriceMargin));
+      addJobPriceBody.appendChild(makeRow('Avg price margin', summary.AvgPriceMargin));
+      addJobPriceBody.appendChild(makeRow('Max price margin', summary.MaxPriceMargin));
+    }
+
+    if (addJobProfitBody) {
+      addJobProfitBody.innerHTML = '';
+      addJobProfitBody.appendChild(makeRow('Min profit margin', summary.MinProfitMargin));
+      addJobProfitBody.appendChild(makeRow('Avg profit margin', summary.AvgProfitMargin));
+      addJobProfitBody.appendChild(makeRow('Max profit margin', summary.MaxProfitMargin));
+    }
+
+    if (addJobAprBody) {
+      addJobAprBody.innerHTML = '';
+      if (summary.APRs && summary.APRs.length) {
+        for (const apr of summary.APRs) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${apr.RatePct}</td>
+            <td>${apr.NumSellsPerDay}</td>
+            <td>${apr.NumSellsPerMonth}</td>
+            <td>${apr.NumSellsPerYear}</td>
+          `;
+          addJobAprBody.appendChild(tr);
+        }
+      }
+    }
+  }
+
+  function renderAddJobPairs(previewPairs) {
+    if (!addJobPairsBody) return;
+    addJobPairsBody.innerHTML = '';
+    for (const p of previewPairs || []) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${p.BuySize}</td>
+        <td>${p.BuyPrice}</td>
+        <td>${p.SellSize}</td>
+        <td>${p.SellPrice}</td>
+        <td>${p.PriceMargin}</td>
+        <td>${p.Profit}</td>
+      `;
+      addJobPairsBody.appendChild(tr);
+    }
+  }
+
+  async function onAddJobValidateClick() {
+    if (!addJobErrorEl || !addJobPreviewEl || !addJobValidateBtn) return;
+    addJobErrorEl.hidden = true;
+    addJobErrorEl.textContent = '';
+    addJobPreviewEl.hidden = true;
+    if (addJobCreateBtn) addJobCreateBtn.disabled = true;
+
+    const spec = collectWallerSpecFromForm();
+
+    try {
+      addJobValidateBtn.disabled = true;
+      const resp = await fetch('/trader/waller/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spec),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      if (!data.Valid) {
+        addJobValidated = false;
+        addJobValidatedResponse = null;
+        addJobErrorEl.textContent = data.Error || 'Validation failed.';
+        addJobErrorEl.hidden = false;
+        return;
+      }
+      addJobValidated = true;
+      addJobValidatedResponse = data;
+      renderAddJobSummary(data.Summary || {});
+      renderAddJobPairs(data.PreviewPairs || []);
+      addJobPreviewEl.hidden = false;
+      if (addJobCreateBtn) addJobCreateBtn.disabled = false;
+    } catch (err) {
+      addJobValidated = false;
+      addJobValidatedResponse = null;
+      addJobErrorEl.textContent = `Validation failed: ${err.message || err}`;
+      addJobErrorEl.hidden = false;
+    } finally {
+      addJobValidateBtn.disabled = false;
+    }
+  }
+
+  async function onAddJobCreateClick() {
+    if (!addJobValidated || !addJobValidatedResponse || !addJobErrorEl) return;
+
+    const nameEl = document.getElementById('tb-add-job-name');
+    const productEl = document.getElementById('tb-add-job-product');
+    const exchangeEl = document.getElementById('tb-add-job-exchange');
+    const jobName = nameEl ? nameEl.value.trim() : '';
+    const productID = productEl ? productEl.value.trim() : '';
+    const exchangeName = exchangeEl ? exchangeEl.value.trim() : '';
+
+    if (!jobName || !productID || !exchangeName) {
+      addJobErrorEl.textContent = 'Name, exchange, and product are required.';
+      addJobErrorEl.hidden = false;
+      return;
+    }
+
+    try {
+      addJobErrorEl.hidden = true;
+      addJobErrorEl.textContent = '';
+
+      const previewPairs = addJobValidatedResponse.PreviewPairs || [];
+      if (!Array.isArray(previewPairs) || previewPairs.length === 0) {
+        addJobErrorEl.textContent = 'Validated job has no pairs to create.';
+        addJobErrorEl.hidden = false;
+        return;
+      }
+
+      const wallReq = {
+        ExchangeName: exchangeName,
+        ProductID: productID,
+        Pairs: previewPairs.map((p) => ({
+          Buy: {
+            Size: p.BuySize,
+            Price: p.BuyPrice,
+            Cancel: p.BuyCancel,
+          },
+          Sell: {
+            Size: p.SellSize,
+            Price: p.SellPrice,
+            Cancel: p.SellCancel,
+          },
+        })),
+      };
+
+      const resp1 = await fetch('/trader/wall', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wallReq),
+      });
+      if (!resp1.ok) {
+        const text = await resp1.text();
+        throw new Error(text || `HTTP ${resp1.status}`);
+      }
+      const wallData = await resp1.json();
+      const uid = wallData.UID;
+      if (!uid) {
+        throw new Error('Server did not return a job UID.');
+      }
+
+      const nameReq = { UID: uid, JobName: jobName };
+      const resp2 = await fetch('/trader/set-job-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nameReq),
+      });
+      if (!resp2.ok) {
+        const text = await resp2.text();
+        console.error('Job is created, but could not set the job name', text);
+      }
+
+      closeAddJobDialog();
+      await loadJobs();
+      setStatus(`Created job ${jobName}`, 'success');
+    } catch (err) {
+      addJobErrorEl.textContent = `Failed to create job: ${err.message || err}`;
+      addJobErrorEl.hidden = false;
+    }
+  }
+
+  // Attach radio toggles for mutually exclusive fields and invalidate on change.
+  const buySpacingRadios = document.querySelectorAll('input[name="tb-add-buy-spacing"]');
+  buySpacingRadios.forEach((radio) => {
+    radio.addEventListener('change', () => {
+      const buyInterval = document.getElementById('tb-add-buy-interval');
+      const buyIntervalPct = document.getElementById('tb-add-buy-interval-pct');
+      if (!buyInterval || !buyIntervalPct) return;
+      if (radio.value === 'pct' && radio.checked) {
+        buyInterval.disabled = true;
+        buyInterval.value = '';
+        buyIntervalPct.disabled = false;
+      } else if (radio.value === 'abs' && radio.checked) {
+        buyInterval.disabled = false;
+        buyIntervalPct.disabled = true;
+        buyIntervalPct.value = '';
+      }
+      invalidateAddJobValidation();
+    });
+  });
+
+  const profitModeRadios = document.querySelectorAll('input[name="tb-add-profit-mode"]');
+  profitModeRadios.forEach((radio) => {
+    radio.addEventListener('change', () => {
+      const profitMargin = document.getElementById('tb-add-profit-margin');
+      const profitMarginPct = document.getElementById('tb-add-profit-margin-pct');
+      if (!profitMargin || !profitMarginPct) return;
+      if (radio.value === 'pct' && radio.checked) {
+        profitMargin.disabled = true;
+        profitMargin.value = '';
+        profitMarginPct.disabled = false;
+      } else if (radio.value === 'abs' && radio.checked) {
+        profitMargin.disabled = false;
+        profitMarginPct.disabled = true;
+        profitMarginPct.value = '';
+      }
+      invalidateAddJobValidation();
+    });
+  });
+
+  if (addJobForm) {
+    addJobForm.addEventListener('input', (e) => {
+      const target = e.target;
+      if (target && target.name && (target.name === 'tb-add-buy-spacing' || target.name === 'tb-add-profit-mode')) {
+        return;
+      }
+      invalidateAddJobValidation();
+    });
+  }
+
   // --- Enum dropdown ---
   let activeEnumKey = null;
 
@@ -519,6 +891,23 @@
     refreshBtn.addEventListener('click', () => {
       loadJobs();
     });
+  }
+
+  // Wire Add job dialog buttons.
+  if (addJobBtn) {
+    addJobBtn.addEventListener('click', openAddJobDialog);
+  }
+  if (addJobCloseBtn && addJobBackdrop) {
+    addJobCloseBtn.addEventListener('click', closeAddJobDialog);
+    addJobBackdrop.addEventListener('click', (e) => {
+      if (e.target === addJobBackdrop) closeAddJobDialog();
+    });
+  }
+  if (addJobValidateBtn) {
+    addJobValidateBtn.addEventListener('click', onAddJobValidateClick);
+  }
+  if (addJobCreateBtn) {
+    addJobCreateBtn.addEventListener('click', onAddJobCreateClick);
   }
 
   initSorting();

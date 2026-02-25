@@ -159,6 +159,7 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 	t.handlerMap[api.LimitPath] = httpPostJSONHandler(t.doLimit)
 	t.handlerMap[api.LoopPath] = httpPostJSONHandler(t.doLoop)
 	t.handlerMap[api.WallPath] = httpPostJSONHandler(t.doWall)
+	t.handlerMap[api.WallerValidatePath] = httpPostJSONHandler(t.doWallerValidate)
 	t.handlerMap[api.WatchPath] = httpPostJSONHandler(t.doWatch)
 
 	t.handlerMap[api.ExchangeGetOrderPath] = httpPostJSONHandler(t.doExchangeGetOrder)
@@ -727,6 +728,46 @@ func (s *Server) doWall(ctx context.Context, req *api.WallRequest) (_ *api.WallR
 	if err := req.Check(); err != nil {
 		return nil, fmt.Errorf("invalid wall request: %w", err)
 	}
+
+	// Log a concise summary of the requested pairs.
+	n := len(req.Pairs)
+	var pairSummaries []string
+	if n > 0 {
+		if n <= 4 {
+			pairSummaries = make([]string, 0, n)
+			for _, p := range req.Pairs {
+				if p == nil {
+					continue
+				}
+				pairSummaries = append(pairSummaries,
+					fmt.Sprintf("%s -> %s", p.Buy.String(), p.Sell.String()))
+			}
+		} else {
+			// First 2, ellipsis, and last 2 pairs.
+			indexes := []int{0, 1, n - 2, n - 1}
+			pairSummaries = make([]string, 0, 5)
+			for i, idx := range indexes {
+				if idx < 0 || idx >= n {
+					continue
+				}
+				if i == 2 {
+					pairSummaries = append(pairSummaries, "...")
+				}
+				p := req.Pairs[idx]
+				if p == nil {
+					continue
+				}
+				pairSummaries = append(pairSummaries,
+					fmt.Sprintf("%s -> %s", p.Buy.String(), p.Sell.String()))
+			}
+		}
+	}
+	slog.InfoContext(ctx, "waller create request",
+		"exchange", req.ExchangeName,
+		"product", req.ProductID,
+		"numPairs", n,
+		"pairs", pairSummaries,
+	)
 
 	if _, err := s.getProduct(ctx, req.ExchangeName, req.ProductID); err != nil {
 		return nil, err
