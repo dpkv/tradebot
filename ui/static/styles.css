@@ -179,21 +179,21 @@
   border: 1px solid #111827;
 }
 
-/* State-based row highlighting */
-.tb-state-running td {
+/* State-based color indicator on leftmost column only */
+.tb-state-running td:first-child {
   border-left: 3px solid #22c55e;
 }
 
-.tb-state-paused td {
+.tb-state-paused td:first-child {
   border-left: 3px solid #eab308;
 }
 
-.tb-state-completed td {
+.tb-state-completed td:first-child {
   border-left: 3px solid #6366f1;
 }
 
-.tb-state-canceled td,
-.tb-state-failed td {
+.tb-state-canceled td:first-child,
+.tb-state-failed td:first-child {
   border-left: 3px solid #f97373;
 }
 
@@ -813,6 +813,42 @@ dd.tb-detail-value {
 
 .tb-table tbody tr.tb-clickable:hover td {
   background: #0f172a;
+}
+
+.tb-col-action {
+  width: 2.5rem;
+  min-width: 2.5rem;
+  max-width: 2.5rem;
+  padding: 0.4rem !important;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.tb-job-pause-btn,
+.tb-job-play-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.35rem;
+  background: rgba(71, 85, 105, 0.5);
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tb-job-pause-btn:hover,
+.tb-job-play-btn:hover {
+  background: rgba(100, 116, 139, 0.7);
+  color: #fff;
+}
+
+.tb-job-play-btn {
+  padding-left: 0.15rem;
 }
 
 /* Settings error popup */

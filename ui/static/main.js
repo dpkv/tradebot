@@ -12,22 +12,23 @@
   };
 
   const headerMapping = [
-    { index: 0,  key: 'Name',        filterType: 'string'  },
-    { index: 1,  key: 'Status',      filterType: 'enum'    },
-    { index: 2,  key: 'ProductID',   filterType: 'enum'    },
-    { index: 3,  key: 'Budget',      filterType: 'numeric' },
-    { index: 4,  key: 'Return',      filterType: 'numeric' },
-    { index: 5,  key: 'AnnualReturn',filterType: 'numeric' },
-    { index: 6,  key: 'Days',        filterType: 'numeric' },
-    { index: 7,  key: 'Buys',        filterType: 'numeric' },
-    { index: 8,  key: 'Sells',       filterType: 'numeric' },
-    { index: 9,  key: 'Profit',      filterType: 'numeric' },
-    { index: 10, key: 'Fees',        filterType: 'numeric' },
-    { index: 11, key: 'BoughtValue', filterType: 'numeric' },
-    { index: 12, key: 'SoldValue',   filterType: 'numeric' },
-    { index: 13, key: 'UnsoldValue', filterType: 'numeric' },
-    { index: 14, key: 'SoldSize',    filterType: 'numeric' },
-    { index: 15, key: 'UnsoldSize',  filterType: 'numeric' },
+    { index: 0,  key: '_action',     filterType: 'none'    },
+    { index: 1,  key: 'Name',        filterType: 'string'  },
+    { index: 2,  key: 'Status',      filterType: 'enum'    },
+    { index: 3,  key: 'ProductID',   filterType: 'enum'    },
+    { index: 4,  key: 'Budget',      filterType: 'numeric' },
+    { index: 5,  key: 'Return',      filterType: 'numeric' },
+    { index: 6,  key: 'AnnualReturn',filterType: 'numeric' },
+    { index: 7,  key: 'Days',        filterType: 'numeric' },
+    { index: 8,  key: 'Buys',        filterType: 'numeric' },
+    { index: 9,  key: 'Sells',       filterType: 'numeric' },
+    { index: 10, key: 'Profit',      filterType: 'numeric' },
+    { index: 11, key: 'Fees',        filterType: 'numeric' },
+    { index: 12, key: 'BoughtValue', filterType: 'numeric' },
+    { index: 13, key: 'SoldValue',   filterType: 'numeric' },
+    { index: 14, key: 'UnsoldValue', filterType: 'numeric' },
+    { index: 15, key: 'SoldSize',    filterType: 'numeric' },
+    { index: 16, key: 'UnsoldSize',  filterType: 'numeric' },
   ];
 
   let headerCells = [];
@@ -198,14 +199,35 @@
     headerCells.forEach((th, idx) => {
       th.classList.remove('tb-sort-asc', 'tb-sort-desc', 'tb-sortable');
       const mapEntry = headerMapping.find((m) => m.index === idx);
-      if (!mapEntry) {
-        return;
-      }
+      if (!mapEntry || mapEntry.key === '_action') return;
       th.classList.add('tb-sortable');
       if (sortState.key === mapEntry.key) {
         th.classList.add(sortState.dir === 'asc' ? 'tb-sort-asc' : 'tb-sort-desc');
       }
     });
+  }
+
+  async function onPauseResumeClick(job, isPaused) {
+    const action = isPaused ? 'Resume' : 'Pause';
+    const name = job.Name || job.UID || 'this job';
+    if (!confirm(`${action} job "${name}"?`)) return;
+    const path = isPaused ? '/trader/job/resume' : '/trader/job/pause';
+    setStatus(`${action}ing job…`, 'info');
+    try {
+      const resp = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ UID: job.UID }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      setStatus(`Job ${action.toLowerCase()}d.`, 'success');
+      await loadJobs();
+    } catch (err) {
+      setStatus(`${action} failed: ${err.message}`, 'error');
+    }
   }
 
   function renderJobs() {
@@ -240,7 +262,7 @@
       const name = job.Name || '(unnamed)';
       const nameTitle = job.UID ? `${name} / ${job.UID}` : name;
       const product = job.ProductID || '';
-      const status = job.Status || '';
+      const status = (job.Status || '').toLowerCase();
       const budget = job.HasStatus ? (job.Budget || '') : '—';
       const ret = job.HasStatus ? (job.Return || '') : '—';
       const annualRet = job.HasStatus ? (job.AnnualReturn || '') : '—';
@@ -255,9 +277,26 @@
       const soldSize = job.HasStatus ? (job.SoldSize || '') : '—';
       const unsoldSize = job.HasStatus ? (job.UnsoldSize || '') : '—';
 
+      const actionTd = document.createElement('td');
+      actionTd.className = 'tb-col-action';
+      if (status === 'running' || status === 'paused') {
+        const isPaused = status === 'paused';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = isPaused ? 'tb-job-play-btn' : 'tb-job-pause-btn';
+        btn.title = isPaused ? 'Resume job' : 'Pause job';
+        btn.setAttribute('aria-label', isPaused ? 'Resume' : 'Pause');
+        btn.innerHTML = isPaused ? '&#9658;' : '&#10074;&#10074;'; // play ▶, pause ⏸
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          onPauseResumeClick(job, isPaused);
+        });
+        actionTd.appendChild(btn);
+      }
+
       tr.innerHTML = `
         <td title="${nameTitle}">${name}</td>
-        <td>${status}</td>
+        <td>${job.Status || ''}</td>
         <td>${product}</td>
         <td>${budget}</td>
         <td>${ret}</td>
@@ -273,8 +312,9 @@
         <td>${soldSize}</td>
         <td>${unsoldSize}</td>
       `;
+      tr.insertBefore(actionTd, tr.firstChild);
 
-      tr.classList.add(`tb-state-${status.toLowerCase()}`);
+      tr.classList.add(`tb-state-${status}`);
       tr.classList.add('tb-clickable');
       tr.addEventListener('click', () => {
         window.location.href = `/job?uid=${encodeURIComponent(job.UID)}`;
@@ -829,6 +869,10 @@
       const td = document.createElement('td');
       td.className = 'tb-filter-cell';
 
+      if (entry.filterType === 'none') {
+        filterRow.appendChild(td);
+        continue;
+      }
       if (entry.filterType === 'string') {
         const input = document.createElement('input');
         input.type = 'text';
@@ -912,6 +956,10 @@
     headerCells.forEach((th, idx) => {
       const mapEntry = headerMapping.find((m) => m.index === idx);
       if (!mapEntry) return;
+      if (mapEntry.key === '_action') {
+        th.classList.remove('tb-sortable');
+        return;
+      }
       th.addEventListener('click', () => {
         if (sortState.key === mapEntry.key) {
           sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
