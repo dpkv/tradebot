@@ -5,6 +5,7 @@ package advanced
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -247,7 +248,7 @@ func readMessage(ctx context.Context, conn *websocket.Conn) (*Message, error) {
 
 	if m.Type == "error" {
 		slog.Warn(fmt.Sprintf("received a websocket error message: %#v", *m))
-		return nil, fmt.Errorf(m.Message)
+		return nil, errors.New(m.Message)
 	}
 	return m, nil
 }

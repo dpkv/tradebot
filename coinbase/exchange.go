@@ -106,6 +106,15 @@ func New(ctx context.Context, db kv.Database, kid, pem string, opts *Options) (_
 	if !opts.subcmdMode {
 		exchange.websocket = client.GetMessages("heartbeats", pids, exchange.dispatchMessage)
 		exchange.websocket.Subscribe("user", pids)
+
+		// Scan open orders and log the count. This helps in debugging cancellation
+		// issues when the bot is shutdown.
+		if vs, err := exchange.listRawOrders(ctx, time.Time{}, "OPEN"); err != nil {
+			slog.Error("could not list open orders on the exchange", "err", err)
+			return nil, err
+		} else if n := len(vs); n != 0 {
+			slog.Warn("found open orders already exist on the exchange", "count", n)
+		}
 	}
 
 	// Find out the last saved timestamp and fetch all FILLED and CANCELLED
@@ -489,10 +498,16 @@ func (ex *Exchange) listFillsFrom(ctx context.Context, from time.Time) ([]*advan
 func (ex *Exchange) listRawOrders(ctx context.Context, from time.Time, status string) ([]*advanced.Order, error) {
 	var result []*advanced.Order
 
+	if status == "" {
+		return nil, os.ErrInvalid
+	}
+
 	values := make(url.Values)
 	values.Add("limit", "100")
-	values.Add("start_date", from.UTC().Format(time.RFC3339))
 	values.Add("order_status", status)
+	if !from.IsZero() {
+		values.Add("start_date", from.UTC().Format(time.RFC3339))
+	}
 	for i := 0; i == 0 || values != nil; i++ {
 		resp, cont, err := ex.client.ListOrders(ctx, values)
 		if err != nil {

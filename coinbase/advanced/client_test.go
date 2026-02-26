@@ -18,9 +18,7 @@ import (
 var (
 	testingKey     string
 	testingSecret  string
-	testingOptions *Options = &Options{
-		MaxFetchTimeLatency: time.Minute,
-	}
+	testingOptions *Options = &Options{}
 )
 
 func checkCredentials() bool {
@@ -109,11 +107,13 @@ func TestClient(t *testing.T) {
 		t.Logf("%s", js)
 	}
 	defer func() {
-		cancelReq := &CancelOrderRequest{
-			OrderIDs: []string{createResp.SuccessResponse.OrderID},
-		}
-		if _, err := c.CancelOrder(ctx, cancelReq); err != nil {
-			t.Fatal(err)
+		if createResp != nil && createResp.SuccessResponse != nil {
+			cancelReq := &CancelOrderRequest{
+				OrderIDs: []string{createResp.SuccessResponse.OrderID},
+			}
+			if _, err := c.CancelOrder(ctx, cancelReq); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}()
 
