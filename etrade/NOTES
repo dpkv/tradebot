@@ -22,7 +22,7 @@ IN PROGRESS. Files completed so far (check git log for actual content):
   - etrade/internal/quote.go       DONE
   - etrade/internal/account.go     DONE
   - etrade/credentials.go          DONE
-  - etrade/options.go              TODO
+  - etrade/options.go              DONE
   - etrade/client.go               TODO
   - etrade/product.go              TODO
   - etrade/exchange.go             TODO
