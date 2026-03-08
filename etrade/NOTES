@@ -19,8 +19,8 @@ Two reference exchanges:
 IN PROGRESS. Files completed so far (check git log for actual content):
   - etrade/internal/codes.go       DONE
   - etrade/internal/order.go       DONE
-  - etrade/internal/quote.go       TODO
-  - etrade/internal/account.go     TODO
+  - etrade/internal/quote.go       DONE
+  - etrade/internal/account.go     DONE
   - etrade/credentials.go          TODO
   - etrade/options.go              TODO
   - etrade/client.go               TODO
