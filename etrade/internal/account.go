@@ -3,6 +3,8 @@
 package internal
 
 import (
+	"encoding/json"
+
 	"github.com/shopspring/decimal"
 )
 
@@ -12,31 +14,13 @@ import (
 // derived from them.
 
 type apiBalanceComputed struct {
-	CashAvailableForInvesting decimal.Decimal `json:"cashAvailableForInvesting"`
-
-	// Unused: total value of all positions including cash.
-	TotalAccountValue decimal.Decimal `json:"totalAccountValue"`
+	CashAvailableForInvestment decimal.Decimal `json:"cashAvailableForInvestment"`
 
 	// Unused: settled cash available for withdrawal (excludes unsettled proceeds).
 	CashAvailableForWithdrawal decimal.Decimal `json:"cashAvailableForWithdrawal"`
 
-	// Unused: net market value of open positions.
-	NetPortfolioValue decimal.Decimal `json:"netPortfolioValue"`
-
-	// Unused: amount of buying power available on margin accounts.
-	MarginBuyingPower decimal.Decimal `json:"marginBuyingPower"`
-
-	// Unused: amount of cash buying power (non-margin).
-	CashBuyingPower decimal.Decimal `json:"cashBuyingPower"`
-
-	// Unused: day trading buying power (4x for qualified accounts).
-	DtBuyingPower decimal.Decimal `json:"dtBuyingPower"`
-
-	// Unused: amount borrowed on margin.
-	MarginBalance decimal.Decimal `json:"marginBalance"`
-
-	// Unused: real-time balance not yet settled.
-	RealTimeValues bool `json:"realTimeValues"`
+	// Unused: real-time values object (structure varies by account type).
+	RealTimeValues json.RawMessage `json:"RealTimeValues"`
 }
 
 // APIBalanceResponse is the top-level E*TRADE balance response structure. It
@@ -61,7 +45,7 @@ type APIBalanceResponse struct {
 // implements exchange.BalanceUpdate.
 type Balance struct {
 	Currency                  string
-	CashAvailableForInvesting decimal.Decimal
+	CashAvailableForInvestment decimal.Decimal
 }
 
 var _ interface{ Balance() (string, decimal.Decimal) } = &Balance{}
@@ -77,11 +61,11 @@ func NewBalanceFromAPI(a *APIBalanceResponse) *Balance {
 	}
 	return &Balance{
 		Currency:                  currency,
-		CashAvailableForInvesting: a.Computed.CashAvailableForInvesting,
+		CashAvailableForInvestment: a.Computed.CashAvailableForInvestment,
 	}
 }
 
 // Balance returns the currency and cash available for placing new orders.
 func (b *Balance) Balance() (string, decimal.Decimal) {
-	return b.Currency, b.CashAvailableForInvesting
+	return b.Currency, b.CashAvailableForInvestment
 }

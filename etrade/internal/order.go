@@ -4,6 +4,7 @@ package internal
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -118,9 +119,16 @@ var _ exchange.OrderUpdate = &Order{}
 var _ exchange.OrderDetail = &Order{}
 
 // NewOrderFromAPI converts the nested E*TRADE API order structure into a flat
-// Order. The ClientUUID field is left as uuid.Nil and must be set by the
-// caller.
+// Order. Returns nil for order types we don't support (multi-leg OCA orders,
+// options, etc.) and logs the skipped order. The ClientUUID field is left as
+// uuid.Nil and must be set by the caller.
 func NewOrderFromAPI(a *APIOrder) *Order {
+	skip := func(reason string) *Order {
+		js, _ := json.MarshalIndent(a, "  ", "  ")
+		slog.Warn("etrade: skipping order "+strconv.FormatInt(a.OrderID, 10)+" ("+reason+"): \n  "+string(js))
+		return nil
+	}
+
 	o := &Order{
 		OrderID:       a.OrderID,
 		ClientOrderID: a.ClientOrderID,
@@ -129,8 +137,10 @@ func NewOrderFromAPI(a *APIOrder) *Order {
 		return o
 	}
 	if len(a.OrderDetail) > 1 {
-		js, _ := json.Marshal(a)
-		panic("etrade: unexpected multiple OrderDetail entries for order " + strconv.FormatInt(a.OrderID, 10) + ": " + string(js))
+		// TODO: OCA (One Cancels All) and other multi-leg order types are not
+		// yet supported. They are silently skipped during polling. If support is
+		// needed, parse each leg individually and track them as separate orders.
+		return skip("multiple OrderDetail entries (e.g. OCA order)")
 	}
 	d := &a.OrderDetail[0]
 	o.Status = d.Status
@@ -142,10 +152,12 @@ func NewOrderFromAPI(a *APIOrder) *Order {
 		return o
 	}
 	if len(d.Instrument) > 1 {
-		js, _ := json.Marshal(a)
-		panic("etrade: unexpected multiple Instrument entries for order " + strconv.FormatInt(a.OrderID, 10) + ": " + string(js))
+		return skip("multiple Instrument entries")
 	}
 	inst := &d.Instrument[0]
+	if inst.Product.SecurityType != "EQ" {
+		return skip("non-equity security type: " + inst.Product.SecurityType)
+	}
 	o.Symbol = inst.Product.Symbol
 	o.Side = strings.ToUpper(inst.OrderAction)
 	o.OrderedQty = inst.OrderedQuantity

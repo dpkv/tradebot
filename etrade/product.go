@@ -125,20 +125,6 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 	// Register the symbol with the client so goPollPrices starts fetching it.
 	client.getSymbolPriceTopic(symbol)
 
-	// Fetch open orders once. Used both for startup logging and for reconciling
-	// entries whose ServerOrderID is 0 (PlaceOrder outcome was unknown).
-	openOrders, err := client.ListOpenOrders(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("etrade: could not list open orders for %s: %w", symbol, err)
-	}
-	count := 0
-	for _, o := range openOrders {
-		if o.Symbol == symbol {
-			count++
-		}
-	}
-	slog.Info("etrade: open orders found for symbol at startup", "symbol", symbol, "count", count)
-
 	lifeCtx, lifeCancel := context.WithCancelCause(context.Background())
 	p := &Product{
 		lifeCtx:         lifeCtx,
@@ -183,8 +169,12 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 
 	// Reconcile each persisted entry as the last step. For entries with a known
 	// server order ID, fetch current state from E*TRADE. For entries with
-	// ServerOrderID==0 (PlaceOrder outcome was unknown), scan the already-fetched
-	// open orders list to determine if the order was created.
+	// ServerOrderID==0 (PlaceOrder outcome was unknown), fetch the open orders
+	// list once (lazily) to determine if the order was created.
+	//
+	// openOrders is fetched at most once and cached across iterations.
+	var openOrders []*internal.Order
+	var openOrdersFetched bool
 	for _, pe := range pending {
 		cid := pe.counterID
 		entry := pe.entry
@@ -192,6 +182,30 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 
 		if entry.ServerOrderID == 0 {
 			// PlaceOrder may not have completed before the previous session ended.
+			// Fetch open orders exactly once; if unavailable defer to goCancelFailedCreates.
+			if !openOrdersFetched {
+				openOrdersFetched = true
+				var listErr error
+				openOrders, listErr = p.client.ListOpenOrders(ctx)
+				if listErr != nil {
+					slog.Warn("etrade: startup: could not list open orders; deferring ServerOrderID=0 reconciliation",
+						"symbol", symbol, "err", listErr)
+				} else {
+					count := 0
+					for _, o := range openOrders {
+						if o.Symbol == symbol {
+							count++
+						}
+					}
+					slog.Info("etrade: open orders found for symbol at startup", "symbol", symbol, "count", count)
+				}
+			}
+			if openOrders == nil {
+				// ListOpenOrders unavailable; defer to goCancelFailedCreates.
+				p.clientIDStatusMap.Store(uid, &clientIDStatus{counterID: cid})
+				p.failedCreatesCh <- uid
+				continue
+			}
 			// Check open orders to see if the order was actually created.
 			counterIDStr := strconv.FormatInt(cid, 10)
 			var found *internal.Order
