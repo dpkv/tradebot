@@ -16,7 +16,7 @@ Two reference exchanges:
   coinex/     newer, no datastore, cleaner — PRIMARY model for etrade
 
 ## Status
-IN PROGRESS. Files completed so far (check git log for actual content):
+COMPLETE. All files implemented (check git log for actual content):
   - etrade/internal/codes.go       DONE
   - etrade/internal/order.go       DONE
   - etrade/internal/quote.go       DONE
@@ -25,10 +25,12 @@ IN PROGRESS. Files completed so far (check git log for actual content):
   - etrade/options.go              DONE
   - etrade/client.go               DONE
   - etrade/product.go              DONE
+  - etrade/setup.go                DONE (OAuth setup helpers: OAuthRequestToken, OAuthAccessToken, OAuthListAccounts)
   - etrade/exchange.go             DONE
   - server/secrets.go              DONE (added ETrade *etrade.Credentials field)
-  - server/server.go               DONE (loadSecrets check + Start() creation block)
-  - subcmds/setup/etrade.go        TODO (interactive OAuth1 authorization)
+  - server/server.go               DONE (loadSecrets check, Start() block, initServerState + state migration)
+  - subcmds/setup/etrade.go        DONE (interactive OAuth1 authorization)
+  - main.go                        DONE (registered setup.ETrade)
 
 ## Implementation Rule
 One file at a time. After each file: give detailed summary, wait for green flag.
@@ -177,17 +179,28 @@ GetOrder: routes through open Product (for UUID restoration) or falls back
   server/secrets.go             (Secrets struct — already updated)
   server/server.go              (Start() method — already updated)
 
-## setup etrade Subcommand Flow (TODO)
+## setup etrade Subcommand
 File: subcmds/setup/etrade.go
+Flags: --consumer-key, --consumer-secret, --data-dir, --sandbox
 
-  1. Use ConsumerKey+ConsumerSecret to GET /oauth/request_token
-  2. Print authorization URL for user to open in browser:
-       https://us.etrade.com/e/t/etws/authorize?key=<consumerKey>&token=<requestToken>
-  3. Prompt user to enter the verifier code shown after browser authorization
-  4. GET /oauth/access_token with request token + verifier → access token
-  5. Call GET /v1/accounts/list, print all accounts with accountIdKey
-  6. Prompt user to select which accountIdKey to use
-  7. Load existing secrets.json (or create new), set ETrade field, save
+OAuth helpers in etrade/setup.go (standalone, no Client needed):
+  - oauthSignSetup() — package-level signing; reuses oauthEscape from client.go
+  - OAuthRequestToken() — GET /oauth/request_token, oauth_callback=oob
+  - OAuthAccessToken() — GET /oauth/access_token with verifier
+  - OAuthListAccounts() — GET /v1/accounts/list, returns []Account
 
-Reference for subcommand structure: subcmds/setup/ directory (other setup cmds).
-The setup subcommand does NOT need kv.Database — it only writes secrets.json.
+Interactive flow in subcmds/setup/etrade.go:
+  1. OAuthRequestToken → short-lived request token
+  2. Print https://us.etrade.com/e/t/etws/authorize?key=KEY&token=TOKEN
+  3. Read verifier from stdin
+  4. OAuthAccessToken → long-lived access token
+  5. OAuthListAccounts → print accounts
+  6. If >1 account: prompt for accountIdKey; if 1: auto-select
+  7. Write secrets.json (merges with existing file)
+
+## server/server.go Changes
+  - loadSecrets() check includes ETrade (coinbase || coinex || etrade)
+  - Start() block creates etrade.NewExchange(ctx, s.db, secrets.ETrade, opts)
+  - initServerState includes "etrade": {EnabledProductIDs: []string{}}
+  - New() patches loaded state with any exchanges in initServerState missing
+    from the persisted DB state — handles existing DBs predating etrade support

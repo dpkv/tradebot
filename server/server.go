@@ -82,6 +82,9 @@ var initServerState = &gobs.ServerState{
 				"SHIBUSDT",
 			},
 		},
+		"etrade": {
+			EnabledProductIDs: []string{},
+		},
 	},
 }
 
@@ -135,6 +138,19 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 		state = initServerState
 		if err := kvutil.SetDB(newctx, db, ServerStateKey, state); err != nil {
 			return nil, err
+		}
+	}
+	// Ensure newly added exchanges are present in the persisted state.
+	updated := false
+	for name, init := range initServerState.ExchangeMap {
+		if _, ok := state.ExchangeMap[name]; !ok {
+			state.ExchangeMap[name] = init
+			updated = true
+		}
+	}
+	if updated {
+		if err := kvutil.SetDB(newctx, db, ServerStateKey, state); err != nil {
+			return nil, fmt.Errorf("could not update server state with new exchanges: %w", err)
 		}
 	}
 

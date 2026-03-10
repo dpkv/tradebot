@@ -64,6 +64,7 @@ func main() {
 	setupCmds := []cli.Command{
 		new(setup.Coinbase),
 		new(setup.CoinEx),
+		new(setup.ETrade),
 		new(setup.PushOver),
 		new(setup.Telegram),
 	}
