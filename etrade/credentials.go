@@ -19,10 +19,13 @@ type Credentials struct {
 	AccessToken       string `json:"access_token"`
 	AccessTokenSecret string `json:"access_token_secret"`
 
-	// AccountID is the accountIdKey used in all account-scoped API URLs. It is
+	// AccountIDKey is the accountIdKey used in all account-scoped API URLs. It is
 	// discovered interactively during setup by listing the user's accounts and
 	// saved here so it does not need to be passed on every run.
-	AccountID string `json:"account_id"`
+	AccountIDKey string `json:"account_id_key"`
+
+	// Sandbox selects the E*TRADE sandbox environment when true.
+	Sandbox bool `json:"sandbox,omitempty"`
 }
 
 // Check returns an error if any credential field is empty.
@@ -39,8 +42,8 @@ func (c *Credentials) Check() error {
 	if c.AccessTokenSecret == "" {
 		return fmt.Errorf("etrade: access_token_secret is required")
 	}
-	if c.AccountID == "" {
-		return fmt.Errorf("etrade: account_id is required")
+	if c.AccountIDKey == "" {
+		return fmt.Errorf("etrade: account_id_key is required")
 	}
 	return nil
 }

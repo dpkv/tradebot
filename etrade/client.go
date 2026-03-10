@@ -335,7 +335,7 @@ func doGetJSON[PT *T, T any](ctx context.Context, c *Client, apiPath string, que
 	for {
 		httpResp, err := c.do(ctx, http.MethodGet, apiPath, queryParams, "")
 		if err != nil {
-			if !errors.Is(err, context.Canceled) {
+			if ctx.Err() == nil {
 				slog.Error("etrade: GET failed", "path", apiPath, "err", err)
 			}
 			return err
@@ -382,7 +382,7 @@ func doPostJSON[PT *T, T any](ctx context.Context, c *Client, apiPath string, re
 	for {
 		httpResp, err := c.do(ctx, http.MethodPost, apiPath, nil, body)
 		if err != nil {
-			if !errors.Is(err, context.Canceled) {
+			if ctx.Err() == nil {
 				slog.Error("etrade: POST failed", "path", apiPath, "err", err)
 			}
 			return err
@@ -418,7 +418,7 @@ func (c *Client) doPutEmpty(ctx context.Context, apiPath string) error {
 	for {
 		httpResp, err := c.do(ctx, http.MethodPut, apiPath, nil, "")
 		if err != nil {
-			if !errors.Is(err, context.Canceled) {
+			if ctx.Err() == nil {
 				slog.Error("etrade: PUT failed", "path", apiPath, "err", err)
 			}
 			return err
@@ -475,7 +475,7 @@ func (c *Client) GetQuotes(ctx context.Context, symbols []string) ([]*internal.Q
 // GetBalance fetches the current account balance from
 // GET /v1/accounts/{accountIdKey}/balance.
 func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountID) + "/balance"
+	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/balance"
 	params := url.Values{
 		"instType":    {"BROKERAGE"},
 		"realTimeNAV": {"true"},
@@ -493,7 +493,7 @@ func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
 // ListOpenOrders fetches all currently open orders for the account from
 // GET /v1/accounts/{accountIdKey}/orders?status=OPEN.
 func (c *Client) ListOpenOrders(ctx context.Context) ([]*internal.Order, error) {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountID) + "/orders"
+	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/orders"
 	params := url.Values{"status": {"OPEN"}}
 	var wrapper ordersResponseWrapper
 	if err := doGetJSON(ctx, c, apiPath, params, &wrapper); err != nil {
@@ -501,7 +501,9 @@ func (c *Client) ListOpenOrders(ctx context.Context) ([]*internal.Order, error) 
 	}
 	orders := make([]*internal.Order, 0, len(wrapper.OrdersResponse.Order))
 	for _, apiOrder := range wrapper.OrdersResponse.Order {
-		orders = append(orders, internal.NewOrderFromAPI(apiOrder))
+		if o := internal.NewOrderFromAPI(apiOrder); o != nil {
+			orders = append(orders, o)
+		}
 	}
 	return orders, nil
 }
@@ -509,7 +511,7 @@ func (c *Client) ListOpenOrders(ctx context.Context) ([]*internal.Order, error) 
 // GetOrder fetches a single order by its E*TRADE order ID from
 // GET /v1/accounts/{accountIdKey}/orders/{orderId}.
 func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, error) {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountID) + "/orders/" + strconv.FormatInt(orderID, 10)
+	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/orders/" + strconv.FormatInt(orderID, 10)
 	var wrapper ordersResponseWrapper
 	if err := doGetJSON(ctx, c, apiPath, nil, &wrapper); err != nil {
 		return nil, err
@@ -517,7 +519,11 @@ func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, 
 	if len(wrapper.OrdersResponse.Order) == 0 {
 		return nil, os.ErrNotExist
 	}
-	return internal.NewOrderFromAPI(wrapper.OrdersResponse.Order[0]), nil
+	o := internal.NewOrderFromAPI(wrapper.OrdersResponse.Order[0])
+	if o == nil {
+		return nil, os.ErrNotExist
+	}
+	return o, nil
 }
 
 // PlaceOrder submits a new GTC limit order via
@@ -540,7 +546,7 @@ func (c *Client) PlaceOrder(ctx context.Context, symbol, side string, qty, limit
 			}},
 		},
 	}
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountID) + "/orders/place"
+	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/orders/place"
 	var resp placeOrderResponseWrapper
 	if err := doPostJSON(ctx, c, apiPath, &req, &resp); err != nil {
 		return 0, err
@@ -554,7 +560,7 @@ func (c *Client) PlaceOrder(ctx context.Context, symbol, side string, qty, limit
 // CancelOrder requests cancellation of an order via
 // PUT /v1/accounts/{accountIdKey}/orders/{orderId}/cancel.
 func (c *Client) CancelOrder(ctx context.Context, orderID int64) error {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountID) +
+	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) +
 		"/orders/" + strconv.FormatInt(orderID, 10) + "/cancel"
 	if err := c.doPutEmpty(ctx, apiPath); err != nil {
 		return err

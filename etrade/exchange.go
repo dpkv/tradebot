@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strconv"
 
 	"github.com/bvk/tradebot/etrade/internal"
@@ -97,14 +96,13 @@ func (v *Exchange) GetSpotProduct(ctx context.Context, base, quote string) (*gob
 		return nil, fmt.Errorf("etrade: only USD is supported as quote currency")
 	}
 	symbol := base
+	var price decimal.Decimal
 	quotes, err := v.client.GetQuotes(ctx, []string{symbol})
 	if err != nil {
-		return nil, err
+		slog.Warn("etrade: could not fetch quote for product (using zero price)", "symbol", symbol, "err", err)
+	} else if len(quotes) > 0 {
+		price, _ = quotes[0].PricePoint()
 	}
-	if len(quotes) == 0 {
-		return nil, fmt.Errorf("etrade: no quote returned for symbol %q: %w", symbol, os.ErrNotExist)
-	}
-	price, _ := quotes[0].PricePoint()
 	return &gobs.Product{
 		ProductID:       symbol,
 		Status:          "online",

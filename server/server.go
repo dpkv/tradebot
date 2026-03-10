@@ -310,6 +310,7 @@ func (s *Server) Start(ctx context.Context) (status error) {
 		if secrets.ETrade != nil {
 			opts := &etrade.Options{
 				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
+				Sandbox:           secrets.ETrade.Sandbox,
 			}
 			exch, err := etrade.NewExchange(ctx, s.db, secrets.ETrade, opts)
 			if err != nil {

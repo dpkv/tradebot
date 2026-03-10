@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/bvk/tradebot/etrade"
@@ -126,6 +127,7 @@ func (c *ETrade) run(ctx context.Context, args []string) error {
 		ConsumerSecret:    c.consumerSecret,
 		AccessToken:       accessToken,
 		AccessTokenSecret: accessTokenSecret,
+		Sandbox:           c.sandbox,
 	}
 	accounts, err := etrade.OAuthListAccounts(ctx, creds, c.sandbox)
 	if err != nil {
@@ -142,21 +144,34 @@ func (c *ETrade) run(ctx context.Context, args []string) error {
 	}
 
 	// Step 6: prompt for account selection (skip if only one account).
-	var accountIDKey string
+	var selected etrade.Account
 	if len(accounts) == 1 {
-		accountIDKey = accounts[0].AccountIDKey
-		fmt.Printf("\nUsing the only account: %s (key=%s)\n", accounts[0].AccountID, accountIDKey)
+		selected = accounts[0]
 	} else {
-		fmt.Print("\nEnter the accountIdKey of the account to use: ")
+		fmt.Print("\nEnter the index of the account to use: ")
 		if !scanner.Scan() {
 			return fmt.Errorf("could not read account selection")
 		}
-		accountIDKey = strings.TrimSpace(scanner.Text())
-		if accountIDKey == "" {
-			return fmt.Errorf("account ID key is required")
+		idx, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
+		if err != nil || idx < 1 || idx > len(accounts) {
+			return fmt.Errorf("invalid selection: enter a number between 1 and %d", len(accounts))
 		}
+		selected = accounts[idx-1]
 	}
-	creds.AccountID = accountIDKey
+	fmt.Printf("\nSelected account:\n")
+	fmt.Printf("  Account ID:   %s\n", selected.AccountID)
+	fmt.Printf("  Account Key:  %s\n", selected.AccountIDKey)
+	fmt.Printf("  Name:         %s\n", selected.AccountName)
+	fmt.Printf("  Type:         %s\n", selected.AccountType)
+	fmt.Printf("  Status:       %s\n", selected.Status)
+	fmt.Print("\nConfirm? [y/N]: ")
+	if !scanner.Scan() {
+		return fmt.Errorf("could not read confirmation")
+	}
+	if strings.ToLower(strings.TrimSpace(scanner.Text())) != "y" {
+		return fmt.Errorf("aborted")
+	}
+	creds.AccountIDKey = selected.AccountIDKey
 
 	// Step 7: load existing secrets (or start fresh) and write.
 	secretsPath := filepath.Join(dataDir, "secrets.json")

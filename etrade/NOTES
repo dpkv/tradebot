@@ -43,18 +43,25 @@ Reasons: no datastore, simpler, more recent. Deviations documented below.
 ## Key Design Decisions
 
 ### Credentials (secrets.json)
-AccountID is in Credentials (not Options) so user doesn't pass it on every run.
-setup etrade subcommand discovers AccountID interactively and saves it.
+AccountIDKey and Sandbox are in Credentials (not Options) so they are saved
+once during setup and don't need to be re-specified on every run.
+setup etrade subcommand discovers AccountIDKey interactively and saves it.
+Sandbox is saved from the --sandbox flag passed to setup etrade.
 
     type Credentials struct {
         ConsumerKey       string `json:"consumer_key"`
         ConsumerSecret    string `json:"consumer_secret"`
         AccessToken       string `json:"access_token"`
         AccessTokenSecret string `json:"access_token_secret"`
-        AccountID         string `json:"account_id"`
+        AccountIDKey      string `json:"account_id_key"`
+        Sandbox           bool   `json:"sandbox,omitempty"`
     }
 
-Validation: Credentials.Check() returns error if any field is empty.
+Validation: Credentials.Check() returns error if any required field is empty.
+Sandbox is optional (omitempty); absent means production.
+
+server.go reads Sandbox from credentials and passes it to Options when
+creating the exchange: opts.Sandbox = secrets.ETrade.Sandbox.
 
 ### Options
 Sandbox bool selects the REST hostname via a restHostname() method.
@@ -64,7 +71,7 @@ No mandatory fields in Options (everything mandatory is in Credentials).
     SandboxHostname    = "apisb.etrade.com"
 
     type Options struct {
-        Sandbox              bool
+        Sandbox              bool           // copied from Credentials.Sandbox by server.go
         HttpClientTimeout    time.Duration  // default 5s
         TokenRenewalInterval time.Duration  // default 90min
         PollOrdersInterval   time.Duration  // default 10s
@@ -134,9 +141,16 @@ NOT using top-level TotalCommission (instrument level is more granular).
 ### Done Statuses
 "EXECUTED", "CANCELLED", "REJECTED", "EXPIRED", "PARTIAL_CANCEL"
 
-### Fatal Panics
-If E*TRADE returns >1 OrderDetail or >1 Instrument for an order: panic with
-the full JSON response body in the message. We only handle equity spot orders.
+### Unsupported Order Types (skipped, not panicked)
+NewOrderFromAPI returns nil and logs a WARN for:
+  - >1 OrderDetail entries (OCA / multi-leg orders)
+  - >1 Instrument entries per OrderDetail
+  - Non-equity security types (options, etc.)
+ListOpenOrders filters out nil results; GetOrder returns os.ErrNotExist for nil.
+
+TODO: OCA (One Cancels All) multi-leg orders are silently skipped during polling.
+If support is needed, parse each OrderDetail leg individually and track them as
+separate orders in product.go.
 
 ### exchange.go Design
 Exchange wraps Client + db kv.Database + productMap.
@@ -152,7 +166,7 @@ GetOrder: routes through open Product (for UUID restoration) or falls back
   apiOrderDetail) for JSON parsing + public flat Order struct for interface impl.
 - APIOrder is exported (used in client.go response structs).
 - All API response fields included in nested structs; unused ones commented.
-- NewOrderFromAPI() converts nested -> flat, panics on unexpected multiplicity.
+- NewOrderFromAPI() converts nested -> flat, returns nil for unsupported types.
 - ClientUUID left as uuid.Nil by NewOrderFromAPI; caller must set it.
 - FinishedAt() guards on ExecutedTimeMilli != 0 (cancelled orders have 0).
 - ExecutedValue() = FilledQty * AvgFillPrice (computed, not stored).
