@@ -57,20 +57,25 @@ type placeOrderRequestWrapper struct {
 }
 
 type placeOrderRequest struct {
-	ClientOrderID string            `json:"clientOrderId"`
-	AllOrNone     bool              `json:"allOrNone"`
-	PriceType     string            `json:"priceType"`
-	OrderTerm     string            `json:"orderTerm"`
-	MarketSession string            `json:"marketSession"`
-	LimitPrice    string            `json:"limitPrice"`
+	ClientOrderID string             `json:"clientOrderId,omitempty"`
+	OrderType     string             `json:"orderType"`
+	Order         []placeOrderDetail `json:"Order"`
+}
+
+type placeOrderDetail struct {
+	AllOrNone     bool                   `json:"allOrNone"`
+	PriceType     string                 `json:"priceType"`
+	OrderTerm     string                 `json:"orderTerm"`
+	MarketSession string                 `json:"marketSession"`
+	LimitPrice    decimal.Decimal        `json:"limitPrice"`
 	Instrument    []placeOrderInstrument `json:"Instrument"`
 }
 
 type placeOrderInstrument struct {
 	Product      placeOrderProduct `json:"Product"`
-	OrderAction  string       `json:"orderAction"`
-	QuantityType string       `json:"quantityType"`
-	Quantity     string       `json:"quantity"`
+	OrderAction  string            `json:"orderAction"`
+	QuantityType string            `json:"quantityType"`
+	Quantity     decimal.Decimal   `json:"quantity"`
 }
 
 type placeOrderProduct struct {
@@ -526,23 +531,27 @@ func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, 
 	return o, nil
 }
 
-// PlaceOrder submits a new GTC limit order via
+// PlaceOrder submits a limit order via
 // POST /v1/accounts/{accountIdKey}/orders/place. Returns the E*TRADE-assigned
 // numeric order ID. clientOrderID must be a decimal integer string (E*TRADE
-// only accepts digits in this field).
-func (c *Client) PlaceOrder(ctx context.Context, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID string) (int64, error) {
+// only accepts digits in this field). orderTerm is typically "GOOD_UNTIL_CANCEL"
+// for bot orders or "GOOD_FOR_DAY" for manual/sandbox use.
+func (c *Client) PlaceOrder(ctx context.Context, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm string) (int64, error) {
 	req := placeOrderRequestWrapper{
 		PlaceOrderRequest: placeOrderRequest{
 			ClientOrderID: clientOrderID,
-			PriceType:     "LIMIT",
-			OrderTerm:     "GOOD_UNTIL_CANCEL",
-			MarketSession: "REGULAR",
-			LimitPrice:    limitPrice.String(),
-			Instrument: []placeOrderInstrument{{
-				Product:      placeOrderProduct{SecurityType: "EQ", Symbol: symbol},
-				OrderAction:  strings.ToUpper(side),
-				QuantityType: "QUANTITY",
-				Quantity:     qty.String(),
+			OrderType:     "EQ",
+			Order: []placeOrderDetail{{
+				PriceType:     "LIMIT",
+				OrderTerm:     orderTerm,
+				MarketSession: "REGULAR",
+				LimitPrice:    limitPrice,
+				Instrument: []placeOrderInstrument{{
+					Product:      placeOrderProduct{SecurityType: "EQ", Symbol: symbol},
+					OrderAction:  strings.ToUpper(side),
+					QuantityType: "QUANTITY",
+					Quantity:     qty,
+				}},
 			}},
 		},
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/bvk/tradebot/etrade"
@@ -18,27 +19,42 @@ import (
 	"github.com/visvasity/cli"
 )
 
-type ListOrders struct {
+type GetOrder struct {
 	secretsPath string
+	orderID     int64
 }
 
-func (c *ListOrders) Command() (string, *flag.FlagSet, cli.CmdFunc) {
-	fset := flag.NewFlagSet("list-orders", flag.ContinueOnError)
+func (c *GetOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
+	fset := flag.NewFlagSet("get-order", flag.ContinueOnError)
 	fset.StringVar(&c.secretsPath, "secrets-file", filepath.Join(defaults.DataDir(), "secrets.json"), "path to secrets.json file")
-	return "list-orders", fset, cli.CmdFunc(c.run)
+	fset.Int64Var(&c.orderID, "order-id", 0, "E*TRADE order ID")
+	return "get-order", fset, cli.CmdFunc(c.run)
 }
 
-func (c *ListOrders) Purpose() string {
-	return "List open orders from E*TRADE."
+func (c *GetOrder) Purpose() string {
+	return "Fetch a single order by ID from E*TRADE."
 }
 
-func (c *ListOrders) run(ctx context.Context, args []string) error {
+func (c *GetOrder) run(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if c.secretsPath == "" {
 		return fmt.Errorf("--secrets-file flag is required")
 	}
+	if c.orderID == 0 {
+		// Allow passing order ID as a positional argument too.
+		if len(args) == 1 {
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid order ID %q: %w", args[0], err)
+			}
+			c.orderID = id
+		} else {
+			return fmt.Errorf("--order-id flag is required")
+		}
+	}
+
 	secrets, err := server.SecretsFromFile(c.secretsPath)
 	if err != nil {
 		return err
@@ -54,17 +70,12 @@ func (c *ListOrders) run(ctx context.Context, args []string) error {
 	}
 	defer client.Close()
 
-	orders, err := client.ListOpenOrders(ctx)
+	order, err := client.GetOrder(ctx, c.orderID)
 	if err != nil {
-		return fmt.Errorf("could not list open orders: %w", err)
+		return fmt.Errorf("could not get order %d: %w", c.orderID, err)
 	}
 
-	for _, o := range orders {
-		js, _ := json.MarshalIndent(o, "", "  ")
-		fmt.Printf("%s\n", js)
-	}
-	if len(orders) == 0 {
-		fmt.Println("no open orders")
-	}
+	js, _ := json.MarshalIndent(order, "", "  ")
+	fmt.Printf("%s\n", js)
 	return nil
 }

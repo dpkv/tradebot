@@ -331,7 +331,7 @@ func (p *Product) placeOrder(ctx context.Context, clientOrderUUID uuid.UUID, sid
 	})
 
 	orderID, err := p.client.PlaceOrder(ctx, p.symbol, side, size, price,
-		strconv.FormatInt(cstatus.counterID, 10))
+		strconv.FormatInt(cstatus.counterID, 10), "GOOD_UNTIL_CANCEL")
 	if err != nil {
 		// PlaceOrder failed; the order may or may not have been created on
 		// E*TRADE. goCancelFailedCreates will resolve this and clean up the DB

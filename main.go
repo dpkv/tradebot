@@ -151,6 +151,9 @@ func main() {
 
 	etradeCmds := []cli.Command{
 		new(subcmdsetrade.ListOrders),
+		new(subcmdsetrade.PlaceOrder),
+		new(subcmdsetrade.GetOrder),
+		new(subcmdsetrade.CancelOrder),
 	}
 
 	cmds := []cli.Command{
