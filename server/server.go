@@ -20,6 +20,7 @@ import (
 	"github.com/bvk/tradebot/api"
 	"github.com/bvk/tradebot/coinbase"
 	"github.com/bvk/tradebot/coinex"
+	"github.com/bvk/tradebot/etrade"
 	"github.com/bvk/tradebot/ctxutil"
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
@@ -174,7 +175,7 @@ func (s *Server) loadSecrets(ctx context.Context) (*Secrets, error) {
 		return nil, err
 	}
 	// Check that secrets exist for at least one exchange and one messaging service..
-	if secrets.Coinbase == nil && secrets.CoinEx == nil {
+	if secrets.Coinbase == nil && secrets.CoinEx == nil && secrets.ETrade == nil {
 		return nil, fmt.Errorf("no exchange secrets are configured")
 	}
 	if secrets.Pushover == nil && secrets.Telegram == nil {
@@ -288,6 +289,17 @@ func (s *Server) Start(ctx context.Context) (status error) {
 				return fmt.Errorf("could not create coinex exchange: %w", err)
 			}
 			exchangeMap["coinex"] = exchange
+		}
+
+		if secrets.ETrade != nil {
+			opts := &etrade.Options{
+				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
+			}
+			exch, err := etrade.NewExchange(ctx, s.db, secrets.ETrade, opts)
+			if err != nil {
+				return fmt.Errorf("could not create etrade exchange: %w", err)
+			}
+			exchangeMap["etrade"] = exch
 		}
 
 		if len(exchangeMap) == 0 {
