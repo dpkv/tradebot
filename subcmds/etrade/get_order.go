@@ -70,12 +70,14 @@ func (c *GetOrder) run(ctx context.Context, args []string) error {
 	}
 	defer client.Close()
 
-	order, err := client.GetOrder(ctx, c.orderID)
+	orders, err := client.GetOrder(ctx, c.orderID)
 	if err != nil {
 		return fmt.Errorf("could not get order %d: %w", c.orderID, err)
 	}
 
-	js, _ := json.MarshalIndent(order, "", "  ")
-	fmt.Printf("%s\n", js)
+	for _, order := range orders {
+		js, _ := json.MarshalIndent(order, "", "  ")
+		fmt.Printf("%s\n", js)
+	}
 	return nil
 }

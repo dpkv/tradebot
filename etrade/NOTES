@@ -141,16 +141,17 @@ NOT using top-level TotalCommission (instrument level is more granular).
 ### Done Statuses
 "EXECUTED", "CANCELLED", "REJECTED", "EXPIRED", "PARTIAL_CANCEL"
 
-### Unsupported Order Types (skipped, not panicked)
-NewOrderFromAPI returns nil and logs a WARN for:
-  - >1 OrderDetail entries (OCA / multi-leg orders)
-  - >1 Instrument entries per OrderDetail
-  - Non-equity security types (options, etc.)
-ListOpenOrders filters out nil results; GetOrder returns os.ErrNotExist for nil.
+### Partially Unsupported Order Types
+NewOrdersFromAPI (renamed from NewOrderFromAPI) returns []*Order — one per leg.
+OCA multi-leg orders produce multiple Orders sharing the same OrderID, with
+ClientOrderID suffixed by leg index (e.g. "477-0", "477-1").
 
-TODO: OCA (One Cancels All) multi-leg orders are silently skipped during polling.
-If support is needed, parse each OrderDetail leg individually and track them as
-separate orders in product.go.
+Per-leg skips (WARN log, leg omitted from result):
+  - >1 Instrument entries per leg (spread orders)
+  - Non-equity security types (options, futures, etc.)
+
+TODO: multi-instrument legs (spread orders) are not yet supported.
+TODO: non-equity security types (options, futures, etc.) are not yet supported.
 
 ### exchange.go Design
 Exchange wraps Client + db kv.Database + productMap.

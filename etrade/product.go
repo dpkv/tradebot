@@ -239,7 +239,8 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 		}
 
 		// Fetch current order state using the persisted server order ID.
-		order, err := p.client.GetOrder(ctx, entry.ServerOrderID)
+		// Bot-placed orders are always single-leg; panic if that ever changes.
+		orders, err := p.client.GetOrder(ctx, entry.ServerOrderID)
 		if err != nil {
 			slog.Warn("etrade: startup: could not fetch order state; will rely on polling to recover",
 				"symbol", symbol, "counterID", cid, "serverOrderID", entry.ServerOrderID, "err", err)
@@ -248,6 +249,11 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 			p.client.TrackOrder(entry.ServerOrderID)
 			continue
 		}
+		if len(orders) != 1 {
+			panic(fmt.Sprintf("etrade: startup: bot-placed order %d returned %d legs, expected 1",
+				entry.ServerOrderID, len(orders)))
+		}
+		order := orders[0]
 		order.ClientUUID = uid
 		p.clientIDStatusMap.Store(uid, &clientIDStatus{
 			counterID:      cid,
@@ -372,10 +378,11 @@ func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetai
 	if err != nil {
 		return nil, fmt.Errorf("etrade: invalid server order id %q: %w", serverID, err)
 	}
-	order, err := p.client.GetOrder(ctx, orderID)
+	orders, err := p.client.GetOrder(ctx, orderID)
 	if err != nil {
 		return nil, err
 	}
+	order := orders[0]
 	// Restore ClientUUID from the counterIDMap if we placed this order.
 	if counterID, parseErr := strconv.ParseInt(order.ClientOrderID, 10, 64); parseErr == nil {
 		if uid, ok := p.counterIDMap.Load(counterID); ok {

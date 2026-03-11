@@ -99,14 +99,16 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 		return fmt.Errorf("could not place order: %w", err)
 	}
 
-	order, err := client.GetOrder(ctx, orderID)
+	orders, err := client.GetOrder(ctx, orderID)
 	if err != nil {
 		// Still print the ID even if we can't fetch the full order.
 		fmt.Printf("{\"orderId\": %d}\n", orderID)
 		return nil
 	}
 
-	js, _ := json.MarshalIndent(order, "", "  ")
-	fmt.Printf("%s\n", js)
+	for _, order := range orders {
+		js, _ := json.MarshalIndent(order, "", "  ")
+		fmt.Printf("%s\n", js)
+	}
 	return nil
 }

@@ -4,6 +4,7 @@ package internal
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -103,11 +104,11 @@ type Order struct {
 	PlacedTimeMilli   int64
 	ExecutedTimeMilli int64
 
-	LimitPrice  decimal.Decimal
-	OrderedQty  decimal.Decimal
-	FilledQty   decimal.Decimal
+	LimitPrice   decimal.Decimal
+	OrderedQty   decimal.Decimal
+	FilledQty    decimal.Decimal
 	AvgFillPrice decimal.Decimal
-	Commission  decimal.Decimal
+	Commission   decimal.Decimal
 
 	// ClientUUID is our internal tracking UUID. It is not present in the
 	// E*TRADE API response and must be set by the caller.
@@ -118,53 +119,72 @@ var _ exchange.Order = &Order{}
 var _ exchange.OrderUpdate = &Order{}
 var _ exchange.OrderDetail = &Order{}
 
-// NewOrderFromAPI converts the nested E*TRADE API order structure into a flat
-// Order. Returns nil for order types we don't support (multi-leg OCA orders,
-// options, etc.) and logs the skipped order. The ClientUUID field is left as
-// uuid.Nil and must be set by the caller.
-func NewOrderFromAPI(a *APIOrder) *Order {
-	skip := func(reason string) *Order {
+// NewOrdersFromAPI converts the nested E*TRADE API order structure into a
+// slice of flat Orders — one per OrderDetail leg. Multi-leg OCA orders produce
+// multiple Orders that all share the same OrderID; legs with unsupported
+// instrument types (options, multi-instrument) are skipped with a WARN log.
+// The ClientUUID field on every returned Order is left as uuid.Nil and must be
+// set by the caller.
+func NewOrdersFromAPI(a *APIOrder) []*Order {
+	orderID := strconv.FormatInt(a.OrderID, 10)
+	multiLeg := len(a.OrderDetail) > 1
+
+	skipLeg := func(legIdx int, reason string) {
 		js, _ := json.MarshalIndent(a, "  ", "  ")
-		slog.Warn("etrade: skipping order "+strconv.FormatInt(a.OrderID, 10)+" ("+reason+"): \n  "+string(js))
-		return nil
+		leg := ""
+		if multiLeg {
+			leg = fmt.Sprintf(" leg %d", legIdx)
+		}
+		slog.Warn("etrade: skipping order " + orderID + leg + " (" + reason + "): \n  " + string(js))
 	}
 
-	o := &Order{
-		OrderID:       a.OrderID,
-		ClientOrderID: a.ClientOrderID,
-	}
 	if len(a.OrderDetail) == 0 {
-		return o
+		return []*Order{{
+			OrderID:       a.OrderID,
+			ClientOrderID: a.ClientOrderID,
+		}}
 	}
-	if len(a.OrderDetail) > 1 {
-		// TODO: OCA (One Cancels All) and other multi-leg order types are not
-		// yet supported. They are silently skipped during polling. If support is
-		// needed, parse each leg individually and track them as separate orders.
-		return skip("multiple OrderDetail entries (e.g. OCA order)")
-	}
-	d := &a.OrderDetail[0]
-	o.Status = d.Status
-	o.PlacedTimeMilli = d.PlacedTime
-	o.ExecutedTimeMilli = d.ExecutedTime
-	o.LimitPrice = d.LimitPrice
 
-	if len(d.Instrument) == 0 {
-		return o
+	var orders []*Order
+	for i, d := range a.OrderDetail {
+		clientOrderID := a.ClientOrderID
+		if multiLeg {
+			clientOrderID = fmt.Sprintf("%s-%d", a.ClientOrderID, i)
+		}
+		o := &Order{
+			OrderID:           a.OrderID,
+			ClientOrderID:     clientOrderID,
+			Status:            d.Status,
+			PlacedTimeMilli:   d.PlacedTime,
+			ExecutedTimeMilli: d.ExecutedTime,
+			LimitPrice:        d.LimitPrice,
+		}
+		if len(d.Instrument) == 0 {
+			orders = append(orders, o)
+			continue
+		}
+		if len(d.Instrument) > 1 {
+			// TODO: multi-instrument legs (e.g. spread orders) are not yet
+			// supported. If needed, parse each Instrument entry individually.
+			skipLeg(i, "multiple Instrument entries")
+			continue
+		}
+		inst := &d.Instrument[0]
+		if inst.Product.SecurityType != "EQ" {
+			// TODO: non-equity security types (options, futures, etc.) are not
+			// yet supported. If needed, add handling per SecurityType.
+			skipLeg(i, "non-equity security type: "+inst.Product.SecurityType)
+			continue
+		}
+		o.Symbol = inst.Product.Symbol
+		o.Side = strings.ToUpper(inst.OrderAction)
+		o.OrderedQty = inst.OrderedQuantity
+		o.FilledQty = inst.FilledQuantity
+		o.AvgFillPrice = inst.AverageExecutionPrice
+		o.Commission = inst.EstimatedCommission.Add(inst.EstimatedFees)
+		orders = append(orders, o)
 	}
-	if len(d.Instrument) > 1 {
-		return skip("multiple Instrument entries")
-	}
-	inst := &d.Instrument[0]
-	if inst.Product.SecurityType != "EQ" {
-		return skip("non-equity security type: " + inst.Product.SecurityType)
-	}
-	o.Symbol = inst.Product.Symbol
-	o.Side = strings.ToUpper(inst.OrderAction)
-	o.OrderedQty = inst.OrderedQuantity
-	o.FilledQty = inst.FilledQuantity
-	o.AvgFillPrice = inst.AverageExecutionPrice
-	o.Commission = inst.EstimatedCommission.Add(inst.EstimatedFees)
-	return o
+	return orders
 }
 
 func (o *Order) ServerID() string {

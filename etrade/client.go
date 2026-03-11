@@ -506,16 +506,14 @@ func (c *Client) ListOpenOrders(ctx context.Context) ([]*internal.Order, error) 
 	}
 	orders := make([]*internal.Order, 0, len(wrapper.OrdersResponse.Order))
 	for _, apiOrder := range wrapper.OrdersResponse.Order {
-		if o := internal.NewOrderFromAPI(apiOrder); o != nil {
-			orders = append(orders, o)
-		}
+		orders = append(orders, internal.NewOrdersFromAPI(apiOrder)...)
 	}
 	return orders, nil
 }
 
 // GetOrder fetches a single order by its E*TRADE order ID from
 // GET /v1/accounts/{accountIdKey}/orders/{orderId}.
-func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, error) {
+func (c *Client) GetOrder(ctx context.Context, orderID int64) ([]*internal.Order, error) {
 	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/orders/" + strconv.FormatInt(orderID, 10)
 	var wrapper ordersResponseWrapper
 	if err := doGetJSON(ctx, c, apiPath, nil, &wrapper); err != nil {
@@ -524,11 +522,15 @@ func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, 
 	if len(wrapper.OrdersResponse.Order) == 0 {
 		return nil, os.ErrNotExist
 	}
-	o := internal.NewOrderFromAPI(wrapper.OrdersResponse.Order[0])
-	if o == nil {
+	if len(wrapper.OrdersResponse.Order) > 1 {
+		panic(fmt.Sprintf("etrade: GetOrder %d: API returned %d top-level orders, expected 1",
+			orderID, len(wrapper.OrdersResponse.Order)))
+	}
+	orders := internal.NewOrdersFromAPI(wrapper.OrdersResponse.Order[0])
+	if len(orders) == 0 {
 		return nil, os.ErrNotExist
 	}
-	return o, nil
+	return orders, nil
 }
 
 // PlaceOrder submits a limit order via
@@ -723,7 +725,7 @@ func (c *Client) goRefreshOrders(ctx context.Context) {
 			continue
 		}
 
-		order, err := c.GetOrder(ctx, orderID)
+		orders, err := c.GetOrder(ctx, orderID)
 		if err != nil {
 			if !errors.Is(err, context.Cause(ctx)) {
 				slog.Warn("etrade: could not refresh order (will retry)", "orderID", orderID, "err", err)
@@ -734,10 +736,16 @@ func (c *Client) goRefreshOrders(ctx context.Context) {
 			continue
 		}
 
-		c.getSymbolOrdersTopic(order.Symbol).Send(order)
+		allDone := true
+		for _, order := range orders {
+			c.getSymbolOrdersTopic(order.Symbol).Send(order)
+			if !order.IsDone() {
+				allDone = false
+			}
+		}
 
-		// Re-queue if the order is not yet in a terminal state.
-		if !order.IsDone() {
+		// Re-queue if any leg is not yet in a terminal state.
+		if !allDone {
 			time.AfterFunc(c.opts.PollOrdersInterval, func() {
 				c.refreshOrderTopic.Send(orderID)
 			})
