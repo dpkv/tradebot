@@ -147,42 +147,51 @@ func NewOrdersFromAPI(a *APIOrder) []*Order {
 
 	var orders []*Order
 	for i, d := range a.OrderDetail {
-		clientOrderID := a.ClientOrderID
+		multiInstr := len(d.Instrument) > 1
+
+		legClientOrderID := a.ClientOrderID
 		if multiLeg {
-			clientOrderID = fmt.Sprintf("%s-%d", a.ClientOrderID, i)
+			legClientOrderID = fmt.Sprintf("%s-%d", a.ClientOrderID, i)
 		}
-		o := &Order{
-			OrderID:           a.OrderID,
-			ClientOrderID:     clientOrderID,
-			Status:            d.Status,
-			PlacedTimeMilli:   d.PlacedTime,
-			ExecutedTimeMilli: d.ExecutedTime,
-			LimitPrice:        d.LimitPrice,
-		}
+
 		if len(d.Instrument) == 0 {
-			orders = append(orders, o)
+			orders = append(orders, &Order{
+				OrderID:           a.OrderID,
+				ClientOrderID:     legClientOrderID,
+				Status:            d.Status,
+				PlacedTimeMilli:   d.PlacedTime,
+				ExecutedTimeMilli: d.ExecutedTime,
+				LimitPrice:        d.LimitPrice,
+			})
 			continue
 		}
-		if len(d.Instrument) > 1 {
-			// TODO: multi-instrument legs (e.g. spread orders) are not yet
-			// supported. If needed, parse each Instrument entry individually.
-			skipLeg(i, "multiple Instrument entries")
-			continue
+
+		for j, inst := range d.Instrument {
+			clientOrderID := legClientOrderID
+			if multiInstr {
+				clientOrderID = fmt.Sprintf("%s-%d", legClientOrderID, j)
+			}
+			if inst.Product.SecurityType != "EQ" {
+				// TODO: non-equity security types (options, futures, etc.) are not
+				// yet supported. If needed, add handling per SecurityType.
+				skipLeg(i, fmt.Sprintf("instrument %d: non-equity security type: %s", j, inst.Product.SecurityType))
+				continue
+			}
+			orders = append(orders, &Order{
+				OrderID:           a.OrderID,
+				ClientOrderID:     clientOrderID,
+				Status:            d.Status,
+				PlacedTimeMilli:   d.PlacedTime,
+				ExecutedTimeMilli: d.ExecutedTime,
+				LimitPrice:        d.LimitPrice,
+				Symbol:            inst.Product.Symbol,
+				Side:              strings.ToUpper(inst.OrderAction),
+				OrderedQty:        inst.OrderedQuantity,
+				FilledQty:         inst.FilledQuantity,
+				AvgFillPrice:      inst.AverageExecutionPrice,
+				Commission:        inst.EstimatedCommission.Add(inst.EstimatedFees),
+			})
 		}
-		inst := &d.Instrument[0]
-		if inst.Product.SecurityType != "EQ" {
-			// TODO: non-equity security types (options, futures, etc.) are not
-			// yet supported. If needed, add handling per SecurityType.
-			skipLeg(i, "non-equity security type: "+inst.Product.SecurityType)
-			continue
-		}
-		o.Symbol = inst.Product.Symbol
-		o.Side = strings.ToUpper(inst.OrderAction)
-		o.OrderedQty = inst.OrderedQuantity
-		o.FilledQty = inst.FilledQuantity
-		o.AvgFillPrice = inst.AverageExecutionPrice
-		o.Commission = inst.EstimatedCommission.Add(inst.EstimatedFees)
-		orders = append(orders, o)
 	}
 	return orders
 }
