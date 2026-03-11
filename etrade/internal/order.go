@@ -3,9 +3,7 @@
 package internal
 
 import (
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -96,8 +94,9 @@ type Order struct {
 	OrderID       int64
 	ClientOrderID string // E*TRADE's numeric sequential id, not a UUID
 
-	Symbol string // equity ticker, e.g. "AAPL"
-	Side   string // "BUY" or "SELL"
+	Symbol       string // equity ticker, e.g. "AAPL"
+	SecurityType string // "EQ", "OPTN", etc.
+	Side         string // "BUY" or "SELL"
 
 	Status string // E*TRADE status string, e.g. "OPEN", "EXECUTED"
 
@@ -109,6 +108,13 @@ type Order struct {
 	FilledQty    decimal.Decimal
 	AvgFillPrice decimal.Decimal
 	Commission   decimal.Decimal
+
+	// Option-specific fields; zero for non-option orders.
+	ExpiryYear  int
+	ExpiryMonth int
+	ExpiryDay   int
+	StrikePrice decimal.Decimal
+	CallPut     string // "CALL" or "PUT"
 
 	// ClientUUID is our internal tracking UUID. It is not present in the
 	// E*TRADE API response and must be set by the caller.
@@ -126,17 +132,7 @@ var _ exchange.OrderDetail = &Order{}
 // The ClientUUID field on every returned Order is left as uuid.Nil and must be
 // set by the caller.
 func NewOrdersFromAPI(a *APIOrder) []*Order {
-	orderID := strconv.FormatInt(a.OrderID, 10)
 	multiLeg := len(a.OrderDetail) > 1
-
-	skipLeg := func(legIdx int, reason string) {
-		js, _ := json.MarshalIndent(a, "  ", "  ")
-		leg := ""
-		if multiLeg {
-			leg = fmt.Sprintf(" leg %d", legIdx)
-		}
-		slog.Warn("etrade: skipping order " + orderID + leg + " (" + reason + "): \n  " + string(js))
-	}
 
 	if len(a.OrderDetail) == 0 {
 		return []*Order{{
@@ -171,12 +167,6 @@ func NewOrdersFromAPI(a *APIOrder) []*Order {
 			if multiInstr {
 				clientOrderID = fmt.Sprintf("%s-%d", legClientOrderID, j)
 			}
-			if inst.Product.SecurityType != "EQ" {
-				// TODO: non-equity security types (options, futures, etc.) are not
-				// yet supported. If needed, add handling per SecurityType.
-				skipLeg(i, fmt.Sprintf("instrument %d: non-equity security type: %s", j, inst.Product.SecurityType))
-				continue
-			}
 			orders = append(orders, &Order{
 				OrderID:           a.OrderID,
 				ClientOrderID:     clientOrderID,
@@ -185,11 +175,17 @@ func NewOrdersFromAPI(a *APIOrder) []*Order {
 				ExecutedTimeMilli: d.ExecutedTime,
 				LimitPrice:        d.LimitPrice,
 				Symbol:            inst.Product.Symbol,
+				SecurityType:      inst.Product.SecurityType,
 				Side:              strings.ToUpper(inst.OrderAction),
 				OrderedQty:        inst.OrderedQuantity,
 				FilledQty:         inst.FilledQuantity,
 				AvgFillPrice:      inst.AverageExecutionPrice,
 				Commission:        inst.EstimatedCommission.Add(inst.EstimatedFees),
+				ExpiryYear:        inst.Product.ExpiryYear,
+				ExpiryMonth:       inst.Product.ExpiryMonth,
+				ExpiryDay:         inst.Product.ExpiryDay,
+				StrikePrice:       inst.Product.StrikePrice,
+				CallPut:           inst.Product.CallPut,
 			})
 		}
 	}
