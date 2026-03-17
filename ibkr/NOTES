@@ -111,7 +111,7 @@ Implement `ibkr/` following the exact structure of `etrade/`. IBKR uses the **Cl
 - [x] `ibkr/internal/quote.go`
 - [x] `ibkr/internal/account.go`
 - [x] `ibkr/credentials.go`
-- [ ] `ibkr/options.go`
+- [x] `ibkr/options.go`
 - [ ] `ibkr/client.go`
 - [ ] `ibkr/exchange.go`
 - [ ] `ibkr/product.go`
