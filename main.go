@@ -14,6 +14,7 @@ import (
 	"github.com/bvk/tradebot/subcmds"
 	"github.com/bvk/tradebot/subcmds/coinbase"
 	"github.com/bvk/tradebot/subcmds/coinex"
+	subcmdibkr "github.com/bvk/tradebot/subcmds/ibkr"
 	"github.com/bvk/tradebot/subcmds/configure/alerts"
 	"github.com/bvk/tradebot/subcmds/db"
 	"github.com/bvk/tradebot/subcmds/exchange"
@@ -147,6 +148,16 @@ func main() {
 		new(coinex.RunTest),
 	}
 
+	ibkrCmds := []cli.Command{
+		new(subcmdibkr.ListOrders),
+		new(subcmdibkr.PlaceOrder),
+		new(subcmdibkr.GetOrder),
+		new(subcmdibkr.CancelOrder),
+		new(subcmdibkr.GetBalance),
+		new(subcmdibkr.PollPrices),
+		new(subcmdibkr.PollOrders),
+	}
+
 	cmds := []cli.Command{
 		new(subcmds.Run),
 		new(subcmds.Status),
@@ -162,6 +173,7 @@ func main() {
 		cli.NewGroup("exchange", "View/query exchange directly", exchangeCmds...),
 		cli.NewGroup("coinbase", "Coinbase exchange operations", coinbaseCmds...),
 		cli.NewGroup("coinex", "CoinEx exchange operations", coinexCmds...),
+		cli.NewGroup("ibkr", "IBKR exchange operations", ibkrCmds...),
 		cli.NewGroup("setup", "Setup operations", setupCmds...),
 	}
 	if err := cli.Run(context.Background(), cmds, os.Args[1:]); err != nil {

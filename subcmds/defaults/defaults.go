@@ -52,6 +52,15 @@ func DataDir() string {
 	return value
 }
 
+func SecretsPath() string {
+	var defaultValue = filepath.Join(DataDir(), "secrets.json")
+	value := os.Getenv("TRADEBOT_SECRETS_FILE")
+	if len(value) == 0 {
+		return defaultValue
+	}
+	return value
+}
+
 func LogDir() string {
 	var dataDir = DataDir()
 
