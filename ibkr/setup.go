@@ -49,9 +49,28 @@ func setupGet(ctx context.Context, gatewayURL, path string, dst any) error {
 // Used by the setup subcommand to verify the user has logged in before saving
 // credentials.
 func CheckAuth(ctx context.Context, gatewayURL string) (authenticated bool, err error) {
-	var status apiAuthStatusResponse
-	if err := setupGet(ctx, gatewayURL, "/v1/api/iserver/auth/status", &status); err != nil {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gatewayURL+"/v1/api/iserver/auth/status", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := setupClient().Do(req)
+	if err != nil {
 		return false, fmt.Errorf("ibkr: could not reach gateway at %s: %w", gatewayURL, err)
+	}
+	defer resp.Body.Close()
+	// 401 means the gateway is running but the session is not yet authenticated
+	// (user has not logged in via the browser). Treat it as authenticated=false,
+	// not as an unreachable error.
+	if resp.StatusCode == 401 {
+		return false, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("ibkr: unexpected status from gateway at %s: HTTP %d: %s", gatewayURL, resp.StatusCode, string(body))
+	}
+	var status apiAuthStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return false, fmt.Errorf("ibkr: could not decode auth status response: %w", err)
 	}
 	return status.Authenticated, nil
 }
@@ -69,11 +88,15 @@ func ListAccounts(ctx context.Context, gatewayURL string) ([]string, error) {
 	if !authenticated {
 		return nil, fmt.Errorf("ibkr: gateway session is not authenticated — see setup instructions below")
 	}
-	var accounts []string
-	if err := setupGet(ctx, gatewayURL, "/v1/api/iserver/accounts", &accounts); err != nil {
+	// The /iserver/accounts endpoint returns an object with an "accounts" array,
+	// not a bare JSON array.
+	var resp struct {
+		Accounts []string `json:"accounts"`
+	}
+	if err := setupGet(ctx, gatewayURL, "/v1/api/iserver/accounts", &resp); err != nil {
 		return nil, err
 	}
-	return accounts, nil
+	return resp.Accounts, nil
 }
 
 // PrintSetupInstructions writes step-by-step gateway authentication

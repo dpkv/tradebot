@@ -99,7 +99,7 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 		return fmt.Errorf("could not resolve conid for %q: %w", c.symbol, err)
 	}
 
-	orderID, err := client.PlaceOrder(ctx, conid, c.side, qty, price, clientID.String())
+	orderID, err := client.PlaceOrder(ctx, c.symbol, conid, c.side, qty, price, clientID.String())
 	if err != nil {
 		return err
 	}

@@ -74,8 +74,9 @@ type apiAuthStatusResponse struct {
 
 // apiSecDefResult is one entry in the JSON array returned by
 // GET /v1/api/iserver/secdef/search.
+// The gateway returns conid as a JSON string (e.g. "265598"), not a number.
 type apiSecDefResult struct {
-	ConID       int    `json:"conid"`
+	ConID       string `json:"conid"`
 	Symbol      string `json:"symbol"`
 	CompanyName string `json:"companyName"`
 	Sections    []struct {
@@ -86,16 +87,20 @@ type apiSecDefResult struct {
 // apiPlaceOrderRequest is the JSON body for
 // POST /v1/api/iserver/account/{accountId}/orders.
 type apiPlaceOrderRequest struct {
-	AccountID string          `json:"acctId"`
-	ConID     int             `json:"conid"`
+	AccountID  string  `json:"acctId"`
+	ConID      int     `json:"conid"`
 	// SecType is the composite "conid:secType" string required by the gateway.
-	SecType   string          `json:"secType"`
-	ClientOID string          `json:"cOID"`
-	OrderType string          `json:"orderType"` // always "LMT"
-	Price     decimal.Decimal `json:"price"`
-	Side      string          `json:"side"` // "BUY" or "SELL"
-	Quantity  decimal.Decimal `json:"quantity"`
-	TIF       string          `json:"tif"` // "GTC"
+	SecType    string  `json:"secType"`
+	Ticker     string  `json:"ticker"`
+	ClientOID  string  `json:"cOID"`
+	OrderType  string  `json:"orderType"` // always "LMT"
+	// Price and Quantity must be JSON numbers; shopspring/decimal marshals as
+	// quoted strings which the gateway rejects with 400.
+	Price      float64 `json:"price"`
+	Side       string  `json:"side"`       // "BUY" or "SELL"
+	Quantity   float64 `json:"quantity"`
+	TIF        string  `json:"tif"`        // "GTC"
+	OutsideRTH bool    `json:"outsideRTH"`
 }
 
 // apiPlaceOrderResponse is one element of the JSON array returned by
@@ -111,6 +116,12 @@ type apiPlaceOrderResponse struct {
 	// Set when a reply challenge is issued.
 	ID      string   `json:"id"`
 	Message []string `json:"message"`
+}
+
+// apiPlaceOrdersRequestWrapper wraps orders in the envelope expected by the CP Gateway.
+// The gateway requires {"orders": [...]} not a bare JSON array.
+type apiPlaceOrdersRequestWrapper struct {
+	Orders []*apiPlaceOrderRequest `json:"orders"`
 }
 
 // apiReplyRequest is the JSON body for
@@ -268,11 +279,13 @@ func (c *Client) GetAuthStatus(ctx context.Context) (*apiAuthStatusResponse, err
 // ListAccounts returns the list of account IDs available in the gateway
 // session. Used by the setup subcommand to discover the AccountID.
 func (c *Client) ListAccounts(ctx context.Context) ([]string, error) {
-	var accounts []string
-	if err := c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/accounts", nil, &accounts); err != nil {
+	var resp struct {
+		Accounts []string `json:"accounts"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/accounts", nil, &resp); err != nil {
 		return nil, err
 	}
-	return accounts, nil
+	return resp.Accounts, nil
 }
 
 // ResolveConid looks up the conid (contract ID) for a stock symbol by
@@ -286,7 +299,11 @@ func (c *Client) ResolveConid(ctx context.Context, symbol string) (int, error) {
 	for _, r := range results {
 		for _, s := range r.Sections {
 			if s.SecType == "STK" {
-				return r.ConID, nil
+				conid, err := strconv.Atoi(r.ConID)
+				if err != nil {
+					return 0, fmt.Errorf("ibkr: could not parse conid %q for symbol %q: %w", r.ConID, symbol, err)
+				}
+				return conid, nil
 			}
 		}
 	}
@@ -295,22 +312,26 @@ func (c *Client) ResolveConid(ctx context.Context, symbol string) (int, error) {
 
 // PlaceOrder places a limit order and returns the server-assigned order ID.
 // If the gateway issues a reply challenge, it is auto-confirmed.
-func (c *Client) PlaceOrder(ctx context.Context, conid int, side string, qty, price decimal.Decimal, cOID string) (int64, error) {
+func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side string, qty, price decimal.Decimal, cOID string) (int64, error) {
 	req := &apiPlaceOrderRequest{
-		AccountID: c.creds.AccountID,
-		ConID:     conid,
-		SecType:   strconv.Itoa(conid) + ":STK",
-		ClientOID: cOID,
-		OrderType: "LMT",
-		Price:     price,
-		Side:      side,
-		Quantity:  qty,
-		TIF:       "GTC",
+		AccountID:  c.creds.AccountID,
+		ConID:      conid,
+		SecType:    strconv.Itoa(conid) + ":STK",
+		Ticker:     symbol,
+		ClientOID:  cOID,
+		OrderType:  "LMT",
+		Price:      price.InexactFloat64(),
+		Side:       side,
+		Quantity:   qty.InexactFloat64(),
+		TIF:        "GTC",
+		OutsideRTH: false,
 	}
 	path := "/v1/api/iserver/account/" + c.creds.AccountID + "/orders"
 
+	wrapped := &apiPlaceOrdersRequestWrapper{Orders: []*apiPlaceOrderRequest{req}}
+
 	var responses []apiPlaceOrderResponse
-	if err := c.doRequest(ctx, http.MethodPost, path, []*apiPlaceOrderRequest{req}, &responses); err != nil {
+	if err := c.doRequest(ctx, http.MethodPost, path, wrapped, &responses); err != nil {
 		return 0, err
 	}
 
@@ -345,8 +366,9 @@ func (c *Client) PlaceOrder(ctx context.Context, conid int, side string, qty, pr
 }
 
 // confirmReply sends a confirmation for a gateway reply challenge.
+// The reply endpoint is /v1/api/iserver/reply/{replyId}, not account-scoped.
 func (c *Client) confirmReply(ctx context.Context, replyID string) ([]apiPlaceOrderResponse, error) {
-	path := "/v1/api/iserver/account/" + c.creds.AccountID + "/orders/" + replyID
+	path := "/v1/api/iserver/reply/" + replyID
 	var responses []apiPlaceOrderResponse
 	if err := c.doRequest(ctx, http.MethodPost, path, &apiReplyRequest{Confirmed: true}, &responses); err != nil {
 		return nil, err

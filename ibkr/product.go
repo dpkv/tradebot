@@ -156,7 +156,7 @@ func (p *Product) placeOrder(ctx context.Context, clientID uuid.UUID, side strin
 		cstatus.err = status
 	}()
 
-	serverOrderID, err := p.client.PlaceOrder(ctx, p.conid, side, size, price, clientID.String())
+	serverOrderID, err := p.client.PlaceOrder(ctx, p.symbol, p.conid, side, size, price, clientID.String())
 	if err != nil {
 		return nil, err
 	}

@@ -36,8 +36,9 @@ type APIOrder struct {
 	// "lastExecutionTime_r" in the JSON response).
 	LastExecutionTime int64  `json:"lastExecutionTime_r"`
 	TimeInForce       string `json:"timeInForce"`
-	// ClientOrderID is the cOID field set when the order was placed.
-	ClientOrderID   string `json:"cOID"`
+	// ClientOrderID is the order_ref field in the orders list response.
+	// Note: the placement request uses "cOID" but the list response returns "order_ref".
+	ClientOrderID   string `json:"order_ref"`
 	ListingExchange string `json:"listingExchange"`
 
 	// Unused fields — decoded for completeness but not used by the bot.
