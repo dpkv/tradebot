@@ -114,7 +114,7 @@ Implement `ibkr/` following the exact structure of `etrade/`. IBKR uses the **Cl
 - [x] `ibkr/options.go`
 - [x] `ibkr/client.go`
 - [x] `ibkr/exchange.go`
-- [ ] `ibkr/product.go`
+- [x] `ibkr/product.go`
 - [ ] `ibkr/setup.go`
 - [ ] `server/secrets.go` — add IBKR field
 - [ ] `server/server.go` — wire IBKR exchange
