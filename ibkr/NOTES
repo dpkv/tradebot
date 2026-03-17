@@ -106,9 +106,9 @@ Implement `ibkr/` following the exact structure of `etrade/`. IBKR uses the **Cl
 
 ## Progress Tracker
 
-- [ ] `ibkr/internal/codes.go`
-- [ ] `ibkr/internal/order.go`
-- [ ] `ibkr/internal/quote.go`
+- [x] `ibkr/internal/codes.go`
+- [x] `ibkr/internal/order.go`
+- [x] `ibkr/internal/quote.go`
 - [ ] `ibkr/internal/account.go`
 - [ ] `ibkr/credentials.go`
 - [ ] `ibkr/options.go`
