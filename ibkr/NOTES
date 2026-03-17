@@ -1,0 +1,121 @@
+# IBKR Exchange Implementation Plan
+
+## Overview
+
+Implement `ibkr/` following the exact structure of `etrade/`. IBKR uses the **Client Portal API (CP Gateway)** — a locally-running REST gateway (IB Gateway or CP Gateway) on `localhost:5000` by default. No streaming; polling-based like E*TRADE.
+
+## Key Differences from E*TRADE
+
+| Aspect | E*TRADE | IBKR |
+|--------|---------|------|
+| Auth | OAuth 1.0a (daily renewal) | Session cookies + tickle keepalive |
+| Symbol ID | Ticker string directly | `conid` (integer contract ID) — must resolve ticker → conid |
+| Client order ID | Numeric string (int64 counter) | `cOID` string (up to 50 chars) — UUID fits directly |
+| Dedup | `CanDedupOnClientUUID = false` | `CanDedupOnClientUUID = true` |
+| DB needed | Yes (counterID→UUID mapping) | No (cOID = UUID, no mapping needed) |
+| TLS | Standard HTTPS | Self-signed cert → InsecureSkipVerify: true |
+| Order confirm | Single step | May return replyId requiring confirmation POST |
+| Paper trading | Sandbox flag → different hostname | Same gateway, different account (PaperTrading bool for port hint) |
+| Token renewal goroutine | Yes (OAuth renew) | Replaced by tickle goroutine |
+
+## Files to Create
+
+### ibkr/internal/ (types and parsing)
+
+- **`codes.go`** — HTTP status constants (401, 404, 429, etc.)
+- **`order.go`** — `APIOrder` nested structs for JSON; flat `Order` struct implementing `exchange.Order/OrderUpdate/OrderDetail`; `NewOrdersFromAPI()` converter
+  - Key API fields: `orderId` (int64), `conid` (int), `ticker`, `side` (BUY/SELL), `status`, `totalSize`, `filledQuantity`, `avgPrice`, `commission`, `listingExchange`, `secType`, `lastExecutionTime_r` (millis), `timeInForce`
+  - cOID maps directly to ClientUUID (no counter needed)
+- **`quote.go`** — `APISnapshot` struct; flat `Quote` implementing `exchange.PriceUpdate`
+  - Fields: conid, field 31 (last), 84 (bid), 86 (ask), 7295 (open)
+- **`account.go`** — `APISummary` struct; flat `Balance` implementing `exchange.BalanceUpdate`
+  - Field: `availablefunds` (cash available for investment)
+
+### ibkr/ (exchange implementation)
+
+- **`credentials.go`**
+  - `GatewayURL string` — e.g. "https://localhost:5000"
+  - `AccountID string` — IBKR account ID
+  - `PaperTrading bool` — hint for port selection in setup
+
+- **`options.go`**
+  - `HttpClientTimeout` — default 10s (gateway is local but can be slow)
+  - `TickleInterval` — default 55s (session expires at 60s)
+  - `PollOrdersInterval` — default 10s
+  - `PollPricesInterval` — default 5s
+  - `PollBalancesInterval` — default 30s
+
+- **`client.go`** — Core HTTP client + goroutines
+  - `Client` struct: `http.Client` with `InsecureSkipVerify: true`, base URL, accountID
+  - `goTickle(ctx)` — `POST /v1/api/tickle` every TickleInterval; log warn if not authenticated
+  - `goWatchOrders(ctx)` — `GET /v1/api/iserver/account/orders` on PollOrdersInterval, publishes to per-symbol order topics
+  - `goWatchPrices(ctx, conid)` — `GET /v1/api/iserver/marketdata/snapshot?conids={conid}&fields=31,84,86` on PollPricesInterval
+  - `goWatchBalances(ctx)` — `GET /v1/api/portfolio/{accountId}/summary` on PollBalancesInterval
+  - `ResolveConid(ctx, symbol)` — `GET /v1/api/iserver/secdef/search?symbol={symbol}&secType=STK`, returns first STK match's conid; cached in Exchange
+  - `PlaceOrder(ctx, conid, side, qty, price, cOID)` — `POST /v1/api/iserver/account/{accountId}/orders`; if response contains replyId, auto-confirm with `POST .../orders/{replyId}` body `{"confirmed":true}`
+  - `CancelOrder(ctx, orderId)` — `DELETE /v1/api/iserver/account/{accountId}/order/{orderId}`
+  - `GetOrders(ctx)` — `GET /v1/api/iserver/account/orders`
+  - `GetBalance(ctx)` — `GET /v1/api/portfolio/{accountId}/summary`
+  - `ListAccounts(ctx)` — `GET /v1/api/iserver/accounts` (used by setup)
+
+- **`exchange.go`** — Implements `exchange.Exchange`
+  - Holds Client, conid cache (map[string]int symbol→conid), balance topic
+  - `ExchangeName() = "ibkr"`
+  - `CanDedupOnClientUUID() = true`
+  - `OpenSpotProduct(ctx, productID)` — resolves conid, creates/caches Product
+  - `GetSpotProduct(ctx, base, quote)` — requires quote == "USD"; resolves conid, returns *gobs.Product
+  - `GetOrder(ctx, productID, serverID)` — polls from GetOrders, finds matching orderId
+  - `GetBalanceUpdates()` — returns subscription to balance topic
+
+- **`product.go`** — Implements `exchange.Product`
+  - Simpler than E*TRADE: no DB, no counterID map — cOID = UUID string directly
+  - `clientIDStatusMap map[uuid.UUID]*clientIDStatus` — tracks in-flight orders
+  - `goWatchOrderUpdates(ctx)` — subscribes to per-symbol order topic from client
+  - `LimitBuy/LimitSell` — call `client.PlaceOrder`, map cOID = clientID.String()
+  - `Get(serverID)` — scan clientIDStatusMap for matching OrderID
+  - `Cancel(serverID)` — call `client.CancelOrder`
+  - `BaseMinSize()` — return decimal("1") for equities (IBKR min 1 share)
+  - No `goCancelFailedCreates` needed (cOID dedup handled by exchange)
+
+- **`setup.go`** — Session helpers for `setup ibkr` subcommand
+  - `CheckAuth(ctx, gatewayURL)` — `GET /v1/api/iserver/auth/status`
+  - `ListAccounts(ctx, gatewayURL)` — returns account IDs
+  - Prints instructions to authenticate via IB Gateway or CP Gateway browser login
+
+### server/ (integration)
+
+- **`server/secrets.go`** — Add `IBKR *ibkr.Credentials` field
+- **`server/server.go`**:
+  - Add `"ibkr": {EnabledProductIDs: []string{}}` to `initServerState`
+  - Add IBKR block in `Start()` (no `s.db` — IBKR doesn't need the kv store)
+
+## IBKR CP API Endpoint Reference
+
+| Purpose | Method | Path |
+|---------|--------|------|
+| Keepalive | POST | `/v1/api/tickle` |
+| Auth status | GET | `/v1/api/iserver/auth/status` |
+| List accounts | GET | `/v1/api/iserver/accounts` |
+| Symbol → conid | GET | `/v1/api/iserver/secdef/search?symbol={sym}&secType=STK` |
+| Snapshot quote | GET | `/v1/api/iserver/marketdata/snapshot?conids={conid}&fields=31,84,86` |
+| List orders | GET | `/v1/api/iserver/account/orders` |
+| Place order | POST | `/v1/api/iserver/account/{accountId}/orders` |
+| Confirm order | POST | `/v1/api/iserver/account/{accountId}/orders/{replyId}` |
+| Cancel order | DELETE | `/v1/api/iserver/account/{accountId}/order/{orderId}` |
+| Account summary | GET | `/v1/api/portfolio/{accountId}/summary` |
+
+## Progress Tracker
+
+- [ ] `ibkr/internal/codes.go`
+- [ ] `ibkr/internal/order.go`
+- [ ] `ibkr/internal/quote.go`
+- [ ] `ibkr/internal/account.go`
+- [ ] `ibkr/credentials.go`
+- [ ] `ibkr/options.go`
+- [ ] `ibkr/client.go`
+- [ ] `ibkr/exchange.go`
+- [ ] `ibkr/product.go`
+- [ ] `ibkr/setup.go`
+- [ ] `server/secrets.go` — add IBKR field
+- [ ] `server/server.go` — wire IBKR exchange
+- [ ] `go build ./...` passes
