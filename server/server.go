@@ -21,6 +21,7 @@ import (
 	"github.com/bvk/tradebot/coinbase"
 	"github.com/bvk/tradebot/coinex"
 	"github.com/bvk/tradebot/ctxutil"
+	"github.com/bvk/tradebot/ibkr"
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/job"
@@ -80,6 +81,9 @@ var initServerState = &gobs.ServerState{
 				"DOGEUSDT",
 				"SHIBUSDT",
 			},
+		},
+		"ibkr": {
+			EnabledProductIDs: []string{},
 		},
 	},
 }
@@ -174,7 +178,7 @@ func (s *Server) loadSecrets(ctx context.Context) (*Secrets, error) {
 		return nil, err
 	}
 	// Check that secrets exist for at least one exchange and one messaging service..
-	if secrets.Coinbase == nil && secrets.CoinEx == nil {
+	if secrets.Coinbase == nil && secrets.CoinEx == nil && secrets.IBKR == nil {
 		return nil, fmt.Errorf("no exchange secrets are configured")
 	}
 	if secrets.Pushover == nil && secrets.Telegram == nil {
@@ -288,6 +292,17 @@ func (s *Server) Start(ctx context.Context) (status error) {
 				return fmt.Errorf("could not create coinex exchange: %w", err)
 			}
 			exchangeMap["coinex"] = exchange
+		}
+
+		if secrets.IBKR != nil {
+			opts := &ibkr.Options{
+				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
+			}
+			exchange, err := ibkr.NewExchange(ctx, secrets.IBKR, opts)
+			if err != nil {
+				return fmt.Errorf("could not create ibkr exchange: %w", err)
+			}
+			exchangeMap["ibkr"] = exchange
 		}
 
 		if len(exchangeMap) == 0 {
