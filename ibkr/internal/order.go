@@ -39,6 +39,24 @@ type APIOrder struct {
 	// ClientOrderID is the cOID field set when the order was placed.
 	ClientOrderID   string `json:"cOID"`
 	ListingExchange string `json:"listingExchange"`
+
+	// Unused fields — decoded for completeness but not used by the bot.
+
+	// Account is the IBKR account ID associated with this order.
+	Account string `json:"acct"` // unused
+	// CashCurrency is the currency used for cash settlement, e.g. "USD".
+	CashCurrency string `json:"cashCcy"` // unused
+	// OrderType is the human-readable order type, e.g. "Limit", "Market".
+	OrderType string `json:"orderType"` // unused
+	// OutsideRTH indicates whether the order is active outside regular trading hours.
+	OutsideRTH bool `json:"outsideRTH"` // unused
+	// CompanyName is the full company name for the instrument.
+	CompanyName string `json:"companyName"` // unused
+	// LastExecutionTimeStr is the human-readable form of LastExecutionTime.
+	// The _r (raw/millis) field is used instead for precision.
+	LastExecutionTimeStr string `json:"lastExecutionTime"` // unused
+	// ConIDEx is the composite conid+exchange string, e.g. "265598@NASDAQ".
+	ConIDEx string `json:"conidex"` // unused
 }
 
 // Order is a flat representation of an IBKR order. It implements

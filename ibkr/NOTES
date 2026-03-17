@@ -109,7 +109,7 @@ Implement `ibkr/` following the exact structure of `etrade/`. IBKR uses the **Cl
 - [x] `ibkr/internal/codes.go`
 - [x] `ibkr/internal/order.go`
 - [x] `ibkr/internal/quote.go`
-- [ ] `ibkr/internal/account.go`
+- [x] `ibkr/internal/account.go`
 - [ ] `ibkr/credentials.go`
 - [ ] `ibkr/options.go`
 - [ ] `ibkr/client.go`
@@ -124,3 +124,4 @@ Implement `ibkr/` following the exact structure of `etrade/`. IBKR uses the **Cl
 
 - [ ] **Lot selection for tax cost basis**: Update `exchange.Product.LimitSell` to accept variadic `...LotInfo` (openDate, price, size); IBKR uses `lotParams` in the CP API order request; other exchanges (coinbase, coinex) silently ignore; design agreed: variadic on `LimitSell` only (not `LimitBuy`).
 - [ ] **Executed fee / commission**: `ExecutedFee()` on `internal.Order` always returns zero because the IBKR orders list API (`/iserver/account/orders`) does not include commission data. Accurate fees require the Flex Query API (asynchronous reporting). Revisit when Flex Query support is added.
+- [ ] **Balance field — settled vs available cash**: `account.go` currently uses `availablefunds` from the portfolio summary. For cash accounts this equals settled cash only. For margin accounts it includes unsettled proceeds backed by margin credit, which may cause the bot to overtrade. Consider making the field configurable via `Options` (e.g. `BalanceField string` defaulting to `"availablefunds"`; set to `"settledcash"` for strict cash-only accounts). The `settledcash` field is available in the same summary response.

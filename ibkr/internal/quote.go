@@ -16,20 +16,41 @@ import (
 // IBKR encodes market data fields as string-keyed JSON properties using
 // numeric field IDs. The relevant fields are:
 //
-//	31  - last traded price
-//	84  - bid price
-//	86  - ask price
-//	7295 - open price (unused here, available if needed)
+//	31   - last traded price
+//	84   - bid price
+//	86   - ask price
+//	7057 - ask size (unused)
+//	7058 - bid size (unused)
+//	7284 - day high price (unused)
+//	7285 - day low price (unused)
+//	7295 - day open price (unused)
+//	7296 - previous close price (unused)
 //
 // All price fields are strings in the response and may be absent if the
 // market data subscription is not yet ready (IBKR streams data lazily after
 // the first snapshot request).
 type APISnapshot struct {
-	ConID    int    `json:"conid"`
-	Updated  int64  `json:"_updated"` // milliseconds since epoch
-	LastStr  string `json:"31"`
-	BidStr   string `json:"84"`
-	AskStr   string `json:"86"`
+	ConID   int   `json:"conid"`
+	Updated int64 `json:"_updated"` // milliseconds since epoch
+
+	LastStr string `json:"31"`
+	BidStr  string `json:"84"`
+	AskStr  string `json:"86"`
+
+	// Unused fields — decoded for completeness but not used by the bot.
+
+	// AskSizeStr is the number of shares available at the ask.
+	AskSizeStr string `json:"7057"` // unused
+	// BidSizeStr is the number of shares available at the bid.
+	BidSizeStr string `json:"7058"` // unused
+	// DayHighStr is the highest traded price of the current session.
+	DayHighStr string `json:"7284"` // unused
+	// DayLowStr is the lowest traded price of the current session.
+	DayLowStr string `json:"7285"` // unused
+	// OpenStr is the opening price of the current session.
+	OpenStr string `json:"7295"` // unused
+	// PrevCloseStr is the prior session's closing price.
+	PrevCloseStr string `json:"7296"` // unused
 }
 
 // Quote is a flat price update derived from an IBKR market data snapshot. It
