@@ -4,12 +4,13 @@ package ibkr
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"text/tabwriter"
+	"time"
 
 	ibkrpkg "github.com/bvk/tradebot/ibkr"
 	"github.com/bvk/tradebot/server"
@@ -54,7 +55,16 @@ func (c *ListOrders) run(ctx context.Context, args []string) error {
 		return err
 	}
 
-	js, _ := json.MarshalIndent(orders, "", "  ")
-	fmt.Printf("%s\n", js)
-	return nil
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ORDER_ID\tCLIENT_ID\tSYMBOL\tSIDE\tSTATUS\tLIMIT_PRICE\tORDERED_QTY\tFILLED_QTY\tAVG_FILL_PRICE\tLAST_EXEC_TIME")
+	for _, o := range orders {
+		var ts string
+		if o.LastExecutionTimeMilli != 0 {
+			ts = time.UnixMilli(o.LastExecutionTimeMilli).Format(time.DateTime)
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			o.OrderID, o.ClientOrderID, o.Symbol, o.Side, o.Status,
+			o.LimitPrice, o.OrderedQty, o.FilledQty, o.AvgFillPrice, ts)
+	}
+	return w.Flush()
 }

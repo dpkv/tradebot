@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -39,6 +40,10 @@ type Client struct {
 	creds Credentials
 
 	httpClient http.Client
+
+	// orderMu serializes order mutations (place, cancel) because the CP
+	// Gateway cannot handle concurrent order operations and returns 503.
+	orderMu sync.Mutex
 
 	balanceUpdatesTopic *topic.Topic[*internal.Balance]
 
@@ -116,6 +121,9 @@ type apiPlaceOrderResponse struct {
 	// Set when a reply challenge is issued.
 	ID      string   `json:"id"`
 	Message []string `json:"message"`
+	// Set when the order is rejected or an error occurs.
+	Error string `json:"error"`
+	Text  string `json:"text"`
 }
 
 // apiPlaceOrdersRequestWrapper wraps orders in the envelope expected by the CP Gateway.
@@ -254,6 +262,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, dst a
 	if resp.StatusCode == internal.StatusTooManyRequests {
 		return fmt.Errorf("ibkr: rate limited: %w", errRateLimited)
 	}
+	if resp.StatusCode == internal.StatusServiceUnavailable {
+		data, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ibkr: service unavailable: %s: %w", string(data), errServiceUnavailable)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("ibkr: unexpected status %d: %s", resp.StatusCode, string(data))
@@ -310,9 +322,40 @@ func (c *Client) ResolveConid(ctx context.Context, symbol string) (int, error) {
 	return 0, fmt.Errorf("ibkr: no STK conid found for symbol %q: %w", symbol, errNotFound)
 }
 
+// decodePlaceOrderResponses decodes a JSON body that may be either an array
+// or a single object into a []apiPlaceOrderResponse. The IBKR CP Gateway
+// sometimes returns a bare object instead of a one-element array.
+func decodePlaceOrderResponses(data json.RawMessage) ([]apiPlaceOrderResponse, error) {
+	// Determine if response is array or object by finding first non-whitespace byte.
+	for _, b := range data {
+		if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+			continue
+		}
+		if b == '[' {
+			var responses []apiPlaceOrderResponse
+			if err := json.Unmarshal(data, &responses); err != nil {
+				return nil, err
+			}
+			return responses, nil
+		}
+		// Single object — wrap in a slice.
+		var single apiPlaceOrderResponse
+		if err := json.Unmarshal(data, &single); err != nil {
+			return nil, err
+		}
+		return []apiPlaceOrderResponse{single}, nil
+	}
+	return nil, nil
+}
+
 // PlaceOrder places a limit order and returns the server-assigned order ID.
 // If the gateway issues a reply challenge, it is auto-confirmed.
+// Order operations are serialized via orderMu because the CP Gateway returns
+// 503 when multiple order mutations are in flight concurrently.
 func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side string, qty, price decimal.Decimal, cOID string) (int64, error) {
+	c.orderMu.Lock()
+	defer c.orderMu.Unlock()
+
 	req := &apiPlaceOrderRequest{
 		AccountID:  c.creds.AccountID,
 		ConID:      conid,
@@ -320,7 +363,7 @@ func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side 
 		Ticker:     symbol,
 		ClientOID:  cOID,
 		OrderType:  "LMT",
-		Price:      price.InexactFloat64(),
+		Price:      price.Round(2).InexactFloat64(),
 		Side:       side,
 		Quantity:   qty.InexactFloat64(),
 		TIF:        "GTC",
@@ -330,64 +373,108 @@ func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side 
 
 	wrapped := &apiPlaceOrdersRequestWrapper{Orders: []*apiPlaceOrderRequest{req}}
 
-	var responses []apiPlaceOrderResponse
-	if err := c.doRequest(ctx, http.MethodPost, path, wrapped, &responses); err != nil {
+	var raw json.RawMessage
+	if err := c.doRequest(ctx, http.MethodPost, path, wrapped, &raw); err != nil {
 		return 0, err
 	}
+	responses, err := decodePlaceOrderResponses(raw)
+	if err != nil {
+		return 0, fmt.Errorf("ibkr: could not decode place order response: %w", err)
+	}
 
-	// Resolve any reply challenges before reading the order ID.
-	for _, r := range responses {
-		if r.ID != "" {
-			responses, err := c.confirmReply(ctx, r.ID)
-			if err != nil {
-				return 0, fmt.Errorf("ibkr: could not confirm order reply %q: %w", r.ID, err)
-			}
-			// Use the confirmed responses for the final order ID extraction.
-			for _, cr := range responses {
-				if cr.OrderID != "" {
-					id, err := strconv.ParseInt(cr.OrderID, 10, 64)
-					if err != nil {
-						return 0, fmt.Errorf("ibkr: could not parse confirmed order id %q: %w", cr.OrderID, err)
-					}
-					return id, nil
+	// Resolve any reply challenges (possibly chained) before reading the order ID.
+	for {
+		var replyID string
+		for _, r := range responses {
+			if r.OrderID != "" {
+				id, err := strconv.ParseInt(r.OrderID, 10, 64)
+				if err != nil {
+					return 0, fmt.Errorf("ibkr: could not parse order id %q: %w", r.OrderID, err)
 				}
+				return id, nil
 			}
-			return 0, fmt.Errorf("ibkr: no order id in reply confirmation response")
+			if r.ID != "" {
+				replyID = r.ID
+			}
+			if r.Error != "" {
+				return 0, fmt.Errorf("ibkr: order rejected: %s (status=%s)", r.Error, r.OrderStatus)
+			}
+			if r.Text != "" {
+				return 0, fmt.Errorf("ibkr: order rejected: %s (status=%s)", r.Text, r.OrderStatus)
+			}
 		}
-		if r.OrderID != "" {
-			id, err := strconv.ParseInt(r.OrderID, 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("ibkr: could not parse order id %q: %w", r.OrderID, err)
-			}
-			return id, nil
+		if replyID == "" {
+			return 0, fmt.Errorf("ibkr: place order returned no order id and no reply id: %s", string(raw))
+		}
+		raw = nil
+		responses, err = c.confirmReply(ctx, replyID)
+		if err != nil {
+			return 0, fmt.Errorf("ibkr: could not confirm order reply %q: %w", replyID, err)
 		}
 	}
-	return 0, fmt.Errorf("ibkr: place order returned no order id and no reply id")
 }
 
 // confirmReply sends a confirmation for a gateway reply challenge.
 // The reply endpoint is /v1/api/iserver/reply/{replyId}, not account-scoped.
+// Retries on 503 since the gateway can be temporarily slow under load.
 func (c *Client) confirmReply(ctx context.Context, replyID string) ([]apiPlaceOrderResponse, error) {
+	const maxRetries = 5
+	const retryDelay = 2 * time.Second
 	path := "/v1/api/iserver/reply/" + replyID
-	var responses []apiPlaceOrderResponse
-	if err := c.doRequest(ctx, http.MethodPost, path, &apiReplyRequest{Confirmed: true}, &responses); err != nil {
-		return nil, err
+	var raw json.RawMessage
+	for attempt := range maxRetries {
+		err := c.doRequest(ctx, http.MethodPost, path, &apiReplyRequest{Confirmed: true}, &raw)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errServiceUnavailable) || attempt == maxRetries-1 {
+			return nil, err
+		}
+		slog.Warn("ibkr: reply confirmation returned 503 (will retry)", "reply-id", replyID, "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		case <-time.After(retryDelay):
+		}
+	}
+	responses, err := decodePlaceOrderResponses(raw)
+	if err != nil {
+		return nil, fmt.Errorf("ibkr: could not decode reply confirmation response %s: %w", string(raw), err)
 	}
 	return responses, nil
 }
 
 // CancelOrder cancels an open order by its server-assigned order ID.
 func (c *Client) CancelOrder(ctx context.Context, orderID int64) error {
+	c.orderMu.Lock()
+	defer c.orderMu.Unlock()
+
 	path := "/v1/api/iserver/account/" + c.creds.AccountID + "/order/" + strconv.FormatInt(orderID, 10)
 	return c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }
 
 // GetOrders fetches all live orders from the gateway and converts them to the
-// flat Order type.
+// flat Order type. The gateway's orders endpoint can return 503 while the
+// session's order cache is cold; this retries up to 5 times with a 2-second
+// delay before giving up.
 func (c *Client) GetOrders(ctx context.Context) ([]*internal.Order, error) {
+	const maxRetries = 5
+	const retryDelay = 2 * time.Second
 	var resp internal.APIOrdersResponse
-	if err := c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/account/orders", nil, &resp); err != nil {
-		return nil, err
+	for attempt := range maxRetries {
+		err := c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/account/orders", nil, &resp)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errServiceUnavailable) || attempt == maxRetries-1 {
+			return nil, err
+		}
+		slog.Warn("ibkr: orders endpoint returned 503 (will retry)", "attempt", attempt+1, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		case <-time.After(retryDelay):
+		}
 	}
 	orders := make([]*internal.Order, 0, len(resp.Orders))
 	for _, a := range resp.Orders {
@@ -554,7 +641,8 @@ func (c *Client) goWatchBalances(ctx context.Context) {
 // Sentinel errors for HTTP status codes, used by callers to detect specific
 // failure modes without string matching.
 var (
-	errUnauthorized = fmt.Errorf("unauthorized")
-	errNotFound     = fmt.Errorf("not found")
-	errRateLimited  = fmt.Errorf("rate limited")
+	errUnauthorized        = fmt.Errorf("unauthorized")
+	errNotFound            = fmt.Errorf("not found")
+	errRateLimited         = fmt.Errorf("rate limited")
+	errServiceUnavailable  = fmt.Errorf("service unavailable")
 )
