@@ -17,7 +17,9 @@ import (
 )
 
 const SaveClientIDOffsetSize = 10
-const CancelOffsetTimeout = time.Minute
+// CancelOffsetTimeout is the minimum age of an order before it may be cancelled
+// when the cancel price is breached (reduces cancel churn).
+const CancelOffsetTimeout = 24 * time.Hour
 
 func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 	v.runtimeLock.Lock()
@@ -139,9 +141,8 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 
 			if v.IsSell() {
 				if tickerPrice.LessThanOrEqual(v.point.Cancel) {
-					// Cancel an order after a minute has passed and cancel price is
-					// breached. One minute timeout reduces number of overall exchange
-					// operations.
+					// Cancel only after CancelOffsetTimeout since placement when cancel
+					// price is breached.
 					if activeOrderID != "" && activeOrderAt.Add(CancelOffsetTimeout).Before(now) {
 						if err := v.cancel(localCtx, rt.Product, activeOrderID); err != nil {
 							return err
@@ -167,9 +168,8 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 
 			if v.IsBuy() {
 				if tickerPrice.GreaterThanOrEqual(v.point.Cancel) {
-					// Cancel an order after a minute has passed and cancel price is
-					// breached. One minute timeout reduces number of overall exchange
-					// operations.
+					// Cancel only after CancelOffsetTimeout since placement when cancel
+					// price is breached.
 					if activeOrderID != "" && activeOrderAt.Add(CancelOffsetTimeout).Before(now) {
 						if err := v.cancel(localCtx, rt.Product, activeOrderID); err != nil {
 							return err
