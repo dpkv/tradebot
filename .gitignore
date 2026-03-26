@@ -2,6 +2,7 @@
 *.db
 *.db.gz
 *-creds.json
+third-party
 /t/
 /tradebot
 /tradebot.mac
