@@ -328,6 +328,7 @@ func (c *Run) run(ctx context.Context, args []string) error {
 	// Start other services.
 	topts := &server.Options{
 		DataDir:              c.dataDir,
+		SecretsPath:          c.secretsPath,
 		NoResume:             c.noResume,
 		NoFetchCandles:       c.noFetchCandles,
 		MaxFetchTimeLatency:  c.maxFetchTimeLatency,
