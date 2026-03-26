@@ -53,3 +53,27 @@ docker-tradebot:
 .PHONY: docker-ibkr-cp-gw
 docker-ibkr-cp-gw:
 	$(DOCKER) build -f docker/ibkr-cp-gw/Dockerfile -t $(IMAGE_IBKR_CP_GW):latest .
+
+# Run IBKR Client Portal Gateway: map host PORT to container 5000.
+# Usage: make docker-run-ibkr-cp-gw PORT=3000 CNAME=ibkr-cp-gw
+.PHONY: docker-run-ibkr-cp-gw
+docker-run-ibkr-cp-gw:
+	@test -n "$(PORT)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
+	@test -n "$(CNAME)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
+	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
+
+# Run tradebot image with data directory on the host mounted at /root/.tradebot.
+# Usage: make docker-run-tradebot TAG=branch-YYYYMMDD-abc1234 DATA_DIR=/path/to/data CNAME=tradebot
+.PHONY: docker-run-tradebot
+docker-run-tradebot:
+	@test -n "$(TAG)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
+	@test -n "$(DATA_DIR)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
+	@test -n "$(CNAME)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
+	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -v "$(abspath $(DATA_DIR))":/root/.tradebot $(IMAGE_TRADEBOT):$(TAG)
+
+# Stop a container; -t is seconds to wait after SIGTERM before SIGKILL (5 minutes).
+# Usage: make docker-stop CNAME=<container-name-or-id>
+.PHONY: docker-stop
+docker-stop:
+	@test -n "$(CNAME)" || (echo "usage: make docker-stop CNAME=<container-name-or-id>" >&2; exit 1)
+	$(DOCKER) stop -t 300 "$(CNAME)"
