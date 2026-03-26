@@ -66,13 +66,15 @@ docker-run-ibkr-cp-gw:
 	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -e TZ=$(HOST_TZ) -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
 
 # Run tradebot image with data directory on the host mounted at /root/.tradebot.
-# Usage: make docker-run-tradebot TAG=branch-YYYYMMDD-abc1234 DATA_DIR=/path/to/data CNAME=tradebot
+# PORT maps host port to container 10000 (tradebot server default).
+# Usage: make docker-run-tradebot TAG=branch-YYYYMMDD-abc1234 DATA_DIR=/path/to/data CNAME=tradebot PORT=10000
 .PHONY: docker-run-tradebot
 docker-run-tradebot:
-	@test -n "$(TAG)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
-	@test -n "$(DATA_DIR)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
-	@test -n "$(CNAME)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
-	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -e TZ=$(HOST_TZ) -v "$(abspath $(DATA_DIR))":/root/.tradebot $(IMAGE_TRADEBOT):$(TAG)
+	@test -n "$(TAG)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name> PORT=<host-port>" >&2; exit 1)
+	@test -n "$(DATA_DIR)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name> PORT=<host-port>" >&2; exit 1)
+	@test -n "$(CNAME)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name> PORT=<host-port>" >&2; exit 1)
+	@test -n "$(PORT)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name> PORT=<host-port>" >&2; exit 1)
+	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -p $(PORT):10000 -v "$(abspath $(DATA_DIR))":/root/.tradebot $(IMAGE_TRADEBOT):$(TAG)
 
 # Stop a container; -t is seconds to wait after SIGTERM before SIGKILL (5 minutes).
 # Usage: make docker-stop CNAME=<container-name-or-id>
