@@ -172,7 +172,7 @@ func keepOrNew(current, newVal string) string {
 }
 
 func (s *Server) doSecretsPost(ctx context.Context, req *api.SecretsPostRequest) (*api.SecretsPostResponse, error) {
-	if s.opts.SecretsPath == "" {
+	if s.secretsFilePath == "" {
 		return nil, os.ErrNotExist
 	}
 
@@ -269,7 +269,7 @@ func (s *Server) doSecretsPost(ctx context.Context, req *api.SecretsPostRequest)
 		return nil, &SecretsValidationError{Message: err.Error()}
 	}
 
-	if err := SecretsToFile(s.opts.SecretsPath, out); err != nil {
+	if err := SecretsToFile(s.secretsFilePath, out); err != nil {
 		return nil, err
 	}
 	return &api.SecretsPostResponse{OK: true}, nil

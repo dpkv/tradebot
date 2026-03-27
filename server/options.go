@@ -17,9 +17,6 @@ type Options struct {
 	// Path to the data directory.
 	DataDir string
 
-	// SecretsPath is the path to secrets.json (under DataDir when empty).
-	SecretsPath string
-
 	// BinaryBackupPath if non-empty holds path to the backup for the currently
 	// executing binary path.
 	BinaryBackupPath string
