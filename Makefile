@@ -9,6 +9,9 @@ DOCKER ?= docker
 IMAGE_TRADEBOT ?= tradebot
 IMAGE_IBKR_CP_GW ?= ibkr-cp-gw
 
+# Auto-detect host timezone: Linux uses /etc/timezone, macOS uses the /etc/localtime symlink.
+HOST_TZ ?= $(shell cat /etc/timezone 2>/dev/null || readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')
+
 # Branch name (lowercase, docker-tag-safe), commit date YYYYMMDD, short SHA for image tags.
 GIT_BRANCH_SAFE := $(shell git rev-parse --abbrev-ref HEAD | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
 GIT_COMMIT_DATE_COMPACT := $(shell git log -1 --format=%cd --date=format:%Y%m%d)
@@ -46,12 +49,12 @@ go-test-long: go-all
 	$(GO) test -fullpath -failfast -count=1 -coverprofile=coverage.out $(GOTESTFLAGS) ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
-.PHONY: docker-tradebot
-docker-tradebot:
+.PHONY: docker-build-tradebot
+docker-build-tradebot:
 	$(DOCKER) build -f docker/tradebot/Dockerfile -t $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG) .
 
-.PHONY: docker-ibkr-cp-gw
-docker-ibkr-cp-gw:
+.PHONY: docker-build-ibkr-cp-gw
+docker-build-ibkr-cp-gw:
 	$(DOCKER) build -f docker/ibkr-cp-gw/Dockerfile -t $(IMAGE_IBKR_CP_GW):latest .
 
 # Run IBKR Client Portal Gateway: map host PORT to container 5000.
@@ -60,7 +63,7 @@ docker-ibkr-cp-gw:
 docker-run-ibkr-cp-gw:
 	@test -n "$(PORT)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
 	@test -n "$(CNAME)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
-	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
+	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -e TZ=$(HOST_TZ) -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
 
 # Run tradebot image with data directory on the host mounted at /root/.tradebot.
 # Usage: make docker-run-tradebot TAG=branch-YYYYMMDD-abc1234 DATA_DIR=/path/to/data CNAME=tradebot
@@ -69,7 +72,7 @@ docker-run-tradebot:
 	@test -n "$(TAG)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
 	@test -n "$(DATA_DIR)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
 	@test -n "$(CNAME)" || (echo "usage: make docker-run-tradebot TAG=<image-tag> DATA_DIR=<host-data-dir> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
-	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -v "$(abspath $(DATA_DIR))":/root/.tradebot $(IMAGE_TRADEBOT):$(TAG)
+	$(DOCKER) run -d --rm --hostname "$(CNAME)" --name "$(CNAME)" -e TZ=$(HOST_TZ) -v "$(abspath $(DATA_DIR))":/root/.tradebot $(IMAGE_TRADEBOT):$(TAG)
 
 # Stop a container; -t is seconds to wait after SIGTERM before SIGKILL (5 minutes).
 # Usage: make docker-stop CNAME=<container-name-or-id>
