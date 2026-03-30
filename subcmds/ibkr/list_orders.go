@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -87,7 +88,7 @@ func (c *ListOrders) run(ctx context.Context, args []string) error {
 		}
 		contract, err := client.GetOptionContractInfo(ctx, o.ConID)
 		if err != nil {
-			// Non-fatal: display raw ticker if lookup fails.
+			slog.Warn("ibkr: could not resolve option contract info (will show raw ticker)", "conid", o.ConID, "err", err)
 			optInfoCache[o.ConID] = &optInfo{occSymbol: o.Symbol}
 			continue
 		}
