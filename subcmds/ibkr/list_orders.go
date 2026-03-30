@@ -69,13 +69,41 @@ func (c *ListOrders) run(ctx context.Context, args []string) error {
 	side := strings.ToUpper(c.side)
 	status := strings.ToLower(c.status)
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ORDER_ID\tCLIENT_ID\tSEC_TYPE\tSYMBOL\tSIDE\tSTATUS\tLIMIT_PRICE\tORDERED_QTY\tFILLED_QTY\tAVG_FILL_PRICE\tLAST_EXEC_TIME")
+	// Resolve contract details for each unique OPT conid.
+	type optInfo struct {
+		occSymbol  string
+		underlying string
+		optType    string
+		strike     string
+		expiry     string
+	}
+	optInfoCache := map[int]*optInfo{}
 	for _, o := range orders {
-		if secType != "" && strings.ToUpper(o.SecType) != secType {
+		if o.SecType != "OPT" {
 			continue
 		}
-		if symbol != "" && strings.ToUpper(o.Symbol) != symbol {
+		if _, ok := optInfoCache[o.ConID]; ok {
+			continue
+		}
+		contract, err := client.GetOptionContractInfo(ctx, o.ConID)
+		if err != nil {
+			// Non-fatal: display raw ticker if lookup fails.
+			optInfoCache[o.ConID] = &optInfo{occSymbol: o.Symbol}
+			continue
+		}
+		optInfoCache[o.ConID] = &optInfo{
+			occSymbol:  contract.Symbol,
+			underlying: contract.Underlying,
+			optType:    contract.OptionType,
+			strike:     contract.Strike.String(),
+			expiry:     contract.Expiry.Format("2006-01-02"),
+		}
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ORDER_ID\tCLIENT_ID\tSEC_TYPE\tSYMBOL\tUNDERLYING\tTYPE\tSTRIKE\tEXPIRY\tSIDE\tSTATUS\tLIMIT_PRICE\tORDERED_QTY\tFILLED_QTY\tAVG_FILL_PRICE\tLAST_EXEC_TIME")
+	for _, o := range orders {
+		if secType != "" && strings.ToUpper(o.SecType) != secType {
 			continue
 		}
 		if side != "" && strings.ToUpper(o.Side) != side {
@@ -84,13 +112,37 @@ func (c *ListOrders) run(ctx context.Context, args []string) error {
 		if status != "" && strings.ToLower(o.Status) != status {
 			continue
 		}
+
+		var displaySymbol, underlying, optType, strike, expiry string
+		if o.SecType == "OPT" {
+			if info, ok := optInfoCache[o.ConID]; ok {
+				displaySymbol = info.occSymbol
+				underlying = info.underlying
+				optType = info.optType
+				strike = info.strike
+				expiry = info.expiry
+			} else {
+				displaySymbol = o.Symbol
+			}
+		} else {
+			displaySymbol = o.Symbol
+		}
+
+		if symbol != "" && strings.ToUpper(displaySymbol) != symbol &&
+			strings.ToUpper(underlying) != symbol {
+			continue
+		}
+
 		var ts string
 		if o.LastExecutionTimeMilli != 0 {
 			ts = time.UnixMilli(o.LastExecutionTimeMilli).Format(time.DateTime)
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			o.OrderID, o.ClientOrderID, o.SecType, o.Symbol, o.Side, o.Status,
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			o.OrderID, o.ClientOrderID, o.SecType,
+			displaySymbol, underlying, optType, strike, expiry,
+			o.Side, o.Status,
 			o.LimitPrice, o.OrderedQty, o.FilledQty, o.AvgFillPrice, ts)
 	}
 	return w.Flush()
 }
+
