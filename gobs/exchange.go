@@ -83,10 +83,21 @@ type Accounts struct {
 }
 
 type OptionContract struct {
-	// ContractID uniquely identifies the contract, e.g. "AAPL_20261218_C00200000".
+	// Symbol is the OCC option symbol, e.g. "AAPL261218C00200000".
+	// It encodes the underlying, expiry, right, and strike in a standard
+	// exchange-agnostic format used across brokers and data providers.
+	Symbol string
+
+	// ContractID is the exchange-native identifier for this contract.
+	// For IBKR this is the numeric conid as a string. Empty until resolved
+	// by GetOptionsProduct or OpenOptionsProduct.
 	ContractID string
 
+	// Underlying is the ticker of the underlying instrument, e.g. "AAPL".
+	// Distinct from Symbol: Symbol identifies this specific option contract;
+	// Underlying identifies the asset the option is written on.
 	Underlying string
+
 	OptionType string // "CALL" or "PUT"
 
 	Strike decimal.Decimal
@@ -95,7 +106,7 @@ type OptionContract struct {
 	// ContractSize is the number of underlying shares per contract (typically 100).
 	ContractSize decimal.Decimal
 
-	// Snapshot pricing — populated by GetOptionsChain / GetOptionsProduct.
+	// Snapshot pricing — populated by GetOptionChain / GetOptionsProduct.
 	Price          decimal.Decimal
 	Bid            decimal.Decimal
 	Ask            decimal.Decimal

@@ -84,8 +84,9 @@ type OptionsProduct interface {
 	io.Closer
 
 	// Contract identity.
-	ContractID() string
-	Underlying() string
+	Symbol() string     // OCC option symbol, e.g. "AAPL  261218C00200000"
+	ContractID() string // exchange-native identifier, e.g. IBKR conid
+	Underlying() string // underlying ticker, e.g. "AAPL"
 	OptionType() string // "CALL" or "PUT"
 	Strike() decimal.Decimal
 	Expiry() time.Time
@@ -135,14 +136,14 @@ type Exchange interface {
 	GetOrder(ctx context.Context, productID string, serverID string) (OrderDetail, error)
 
 	// SupportsOptions returns true if this exchange supports options trading.
-	// If false, GetOptionsChain, GetOptionsProduct, and OpenOptionsProduct
+	// If false, GetOptionChain, GetOptionsProduct, and OpenOptionsProduct
 	// return errors.ErrUnsupported.
 	SupportsOptions() bool
 
-	// GetOptionsChain returns all available option contracts for the given
+	// GetOptionChain returns all available option contracts for the given
 	// underlying across all expirations and types. Callers filter by expiry,
 	// type, or strike as needed.
-	GetOptionsChain(ctx context.Context, underlying string) ([]*gobs.OptionContract, error)
+	GetOptionChain(ctx context.Context, underlying string) ([]*gobs.OptionContract, error)
 
 	// GetOptionsProduct returns a read-only metadata snapshot for a specific
 	// contract. Analogous to GetSpotProduct.

@@ -43,7 +43,7 @@ type apiSecDefInfoEntry struct {
 	Multiplier   string  `json:"multiplier"` // typically "100"
 }
 
-// GetOptionsChain returns all available option contracts for the given
+// GetOptionChain returns all available option contracts for the given
 // underlying symbol. It queries the CP Gateway in three stages:
 //
 //  1. secdef/search to discover available expiry months and the underlying conid.
@@ -56,7 +56,7 @@ type apiSecDefInfoEntry struct {
 // "{symbol}_{monthCode}_{C|P}_{strike}" so that GetOptionsProduct and
 // OpenOptionsProduct can resolve the actual IBKR conid on demand without
 // making N×strikes round trips here.
-func (c *Client) GetOptionsChain(ctx context.Context, symbol string) ([]*gobs.OptionContract, error) {
+func (c *Client) GetOptionChain(ctx context.Context, symbol string) ([]*gobs.OptionContract, error) {
 	// Stage 1: discover available months for this symbol's options.
 	var searchResults []*apiSecDefOPTResult
 	searchPath := "/v1/api/iserver/secdef/search?symbol=" + symbol + "&secType=OPT"
@@ -123,8 +123,8 @@ func (c *Client) GetOptionsChain(ctx context.Context, symbol string) ([]*gobs.Op
 			for _, s := range side.strikes {
 				strike := decimal.NewFromFloat(s)
 				contracts = append(contracts, &gobs.OptionContract{
-					ContractID:   fmt.Sprintf("%s_%s_%s_%s", symbol, month, side.right, strike.String()),
-					Underlying:   symbol,
+					Symbol:     occContractID(symbol, expiry, side.right, strike),
+					Underlying: symbol,
 					OptionType:   side.optType,
 					Strike:       strike,
 					Expiry:       expiry,

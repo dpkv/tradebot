@@ -140,7 +140,7 @@ func (v *Exchange) GetOrder(ctx context.Context, productID string, orderID strin
 
 func (v *Exchange) SupportsOptions() bool { return false }
 
-func (v *Exchange) GetOptionsChain(_ context.Context, _ string) ([]*gobs.OptionContract, error) {
+func (v *Exchange) GetOptionChain(_ context.Context, _ string) ([]*gobs.OptionContract, error) {
 	return nil, errors.ErrUnsupported
 }
 

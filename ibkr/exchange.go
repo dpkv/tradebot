@@ -185,13 +185,10 @@ func (v *Exchange) resolveConid(ctx context.Context, symbol string) (int, error)
 
 func (v *Exchange) SupportsOptions() bool { return true }
 
-func (v *Exchange) GetOptionsChain(ctx context.Context, underlying string) ([]*gobs.OptionContract, error) {
-	return v.client.GetOptionsChain(ctx, underlying)
+func (v *Exchange) GetOptionChain(ctx context.Context, underlying string) ([]*gobs.OptionContract, error) {
+	return v.client.GetOptionChain(ctx, underlying)
 }
 
-func (v *Exchange) GetOptionsProduct(_ context.Context, _ string) (*gobs.OptionContract, error) {
-	return nil, errors.New("not yet implemented")
-}
 
 func (v *Exchange) OpenOptionsProduct(_ context.Context, _ string) (exchange.OptionsProduct, error) {
 	return nil, errors.New("not yet implemented")

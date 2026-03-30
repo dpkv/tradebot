@@ -683,7 +683,7 @@ func (ex *Exchange) IsDone(status string) bool {
 
 func (ex *Exchange) SupportsOptions() bool { return false }
 
-func (ex *Exchange) GetOptionsChain(_ context.Context, _ string) ([]*gobs.OptionContract, error) {
+func (ex *Exchange) GetOptionChain(_ context.Context, _ string) ([]*gobs.OptionContract, error) {
 	return nil, errors.ErrUnsupported
 }
 
