@@ -5,99 +5,259 @@ package ibkr
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
+	"github.com/bvk/tradebot/ibkr/internal"
+	"github.com/bvk/tradebot/syncmap"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/visvasity/topic"
 )
 
-// occContractID returns the compact OCC option symbol for the given contract,
-// e.g. "AAPL261218C00200000". The suffix is always 15 chars: expiry as YYMMDD,
-// right (C/P), strike × 1000 zero-padded to 8 digits.
-func occContractID(symbol string, expiry time.Time, right string, strike decimal.Decimal) string {
-	strikePennies := strike.Mul(decimal.NewFromInt(1000)).IntPart()
-	return fmt.Sprintf("%s%s%s%08d", symbol, expiry.Format("060102"), right, strikePennies)
+// OptionsProduct implements exchange.OptionsProduct for a single IBKR option
+// contract. Follows the same pattern as Product (stocks) but keyed by conid
+// for order routing and uses PlaceOptionOrder for order placement.
+type OptionsProduct struct {
+	lifeCtx    context.Context
+	lifeCancel context.CancelCauseFunc
+
+	wg sync.WaitGroup
+
+	client *Client
+
+	// Contract identity.
+	occSymbol    string
+	conid        int
+	underlying   string
+	optionType   string
+	strike       decimal.Decimal
+	expiry       time.Time
+	contractSize decimal.Decimal
+
+	clientIDStatusMap syncmap.Map[uuid.UUID, *clientIDStatus]
 }
 
-// parseOCCContractID parses a compact OCC option symbol back into its
-// components. The suffix is always 15 chars, so the symbol is everything
-// before that. Returns an error if the string is malformed.
-func parseOCCContractID(contractID string) (symbol, right string, expiry time.Time, strike decimal.Decimal, err error) {
-	const suffixLen = 15 // YYMMDD(6) + right(1) + strike(8)
-	if len(contractID) <= suffixLen {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: too short", contractID)
-	}
-	split := len(contractID) - suffixLen
-	symbol = contractID[:split]
-	suffix := contractID[split:]
-	expiry, err = time.Parse("060102", suffix[:6])
+var _ exchange.OptionsProduct = &OptionsProduct{}
+
+// NewOptionsProduct creates an OptionsProduct from a resolved gobs.OptionContract
+// and starts its background goroutine. WatchOptionConid must have been called
+// on the client before NewOptionsProduct so that the price topic exists.
+func NewOptionsProduct(ctx context.Context, client *Client, contract *gobs.OptionContract) (*OptionsProduct, error) {
+	conid, err := strconv.Atoi(contract.ContractID)
 	if err != nil {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: bad expiry: %w", contractID, err)
+		return nil, fmt.Errorf("ibkr: OptionsProduct: invalid conid %q in contract %s", contract.ContractID, contract.Symbol)
 	}
-	right = string(suffix[6])
-	if right != "C" && right != "P" {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: right must be C or P", contractID)
+
+	lifeCtx, lifeCancel := context.WithCancelCause(context.Background())
+	p := &OptionsProduct{
+		lifeCtx:      lifeCtx,
+		lifeCancel:   lifeCancel,
+		client:       client,
+		occSymbol:    contract.Symbol,
+		conid:        conid,
+		underlying:   contract.Underlying,
+		optionType:   contract.OptionType,
+		strike:       contract.Strike,
+		expiry:       contract.Expiry,
+		contractSize: contract.ContractSize,
 	}
-	pennies, err := strconv.ParseInt(suffix[7:], 10, 64)
-	if err != nil {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: bad strike: %w", contractID, err)
-	}
-	strike = decimal.NewFromInt(pennies).Div(decimal.NewFromInt(1000))
-	return symbol, right, expiry, strike, nil
+
+	p.wg.Add(1)
+	go p.goWatchOrderUpdates(p.lifeCtx)
+
+	return p, nil
 }
 
-// GetOptionsProduct returns a metadata snapshot for the option contract
-// identified by its OCC Symbol. It calls secdef/info to resolve the exact
-// IBKR conid, which is stored in ContractID. Analogous to GetSpotProduct.
-func (v *Exchange) GetOptionsProduct(ctx context.Context, contractID string) (*gobs.OptionContract, error) {
-	symbol, right, expiry, strike, err := parseOCCContractID(contractID)
+func (p *OptionsProduct) Close() error {
+	p.lifeCancel(os.ErrClosed)
+	p.wg.Wait()
+	return nil
+}
+
+func (p *OptionsProduct) Symbol() string             { return p.occSymbol }
+func (p *OptionsProduct) ContractID() string         { return strconv.Itoa(p.conid) }
+func (p *OptionsProduct) Underlying() string         { return p.underlying }
+func (p *OptionsProduct) OptionType() string         { return p.optionType }
+func (p *OptionsProduct) Strike() decimal.Decimal    { return p.strike }
+func (p *OptionsProduct) Expiry() time.Time          { return p.expiry }
+func (p *OptionsProduct) ContractSize() decimal.Decimal { return p.contractSize }
+
+// GetOrderUpdates returns a receiver that delivers order updates for this
+// option contract as they are published by goWatchOrders in the client.
+func (p *OptionsProduct) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], error) {
+	t := p.client.GetOptionOrdersTopic(p.conid)
+	fn := func(o *internal.Order) exchange.OrderUpdate { return o }
+	return topic.SubscribeFunc(t, fn, 0, true)
+}
+
+// GetPriceUpdates returns a receiver that delivers price updates for this
+// option contract as they are published by goWatchPrices in the client.
+func (p *OptionsProduct) GetPriceUpdates() (*topic.Receiver[exchange.PriceUpdate], error) {
+	t := p.client.GetSymbolPricesTopic(p.occSymbol)
+	if t == nil {
+		return nil, os.ErrNotExist
+	}
+	fn := func(q *internal.Quote) exchange.PriceUpdate { return q }
+	return topic.SubscribeFunc(t, fn, 1, true)
+}
+
+// GetGreeks fetches a current snapshot of the option sensitivities from the
+// CP Gateway market data snapshot endpoint.
+func (p *OptionsProduct) GetGreeks(ctx context.Context) (*exchange.Greeks, error) {
+	path := fmt.Sprintf("/v1/api/iserver/marketdata/snapshot?conids=%d&fields=7308,7309,7310,7311,7312", p.conid)
+	var snapshots []*internal.APIGreeksSnapshot
+	if err := p.client.doRequest(ctx, "GET", path, nil, &snapshots); err != nil {
+		return nil, fmt.Errorf("ibkr: Greeks snapshot for %s: %w", p.occSymbol, err)
+	}
+	for _, snap := range snapshots {
+		if g := internal.NewGreeksFromAPI(snap); g != nil {
+			return g, nil
+		}
+	}
+	return nil, fmt.Errorf("ibkr: Greeks not yet available for %s (gateway still populating)", p.occSymbol)
+}
+
+// LimitBuyToOpen places a GTC limit buy order to enter a new long position.
+func (p *OptionsProduct) LimitBuyToOpen(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
+	return p.placeOrder(ctx, clientID, "BUY", numContracts, limitPrice)
+}
+
+// LimitSellToOpen places a GTC limit sell order to enter a new short position.
+func (p *OptionsProduct) LimitSellToOpen(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
+	return p.placeOrder(ctx, clientID, "SELL", numContracts, limitPrice)
+}
+
+// LimitBuyToClose places a GTC limit buy order to close an existing short position.
+func (p *OptionsProduct) LimitBuyToClose(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
+	return p.placeOrder(ctx, clientID, "BUY", numContracts, limitPrice)
+}
+
+// LimitSellToClose places a GTC limit sell order to close an existing long position.
+func (p *OptionsProduct) LimitSellToClose(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
+	return p.placeOrder(ctx, clientID, "SELL", numContracts, limitPrice)
+}
+
+func (p *OptionsProduct) placeOrder(ctx context.Context, clientID uuid.UUID, side string, qty, price decimal.Decimal) (_ exchange.Order, status error) {
+	cstatus, loaded := p.clientIDStatusMap.LoadOrStore(clientID, newClientIDStatus())
+	cstatus.mu.Lock()
+	defer cstatus.mu.Unlock()
+
+	if loaded {
+		if cstatus.err != nil {
+			return nil, cstatus.err
+		}
+		if cstatus.order != nil {
+			return cstatus.order, nil
+		}
+	}
+	defer func() {
+		cstatus.err = status
+	}()
+
+	serverOrderID, err := p.client.PlaceOptionOrder(ctx, p.underlying, p.conid, side, qty, price, clientID.String())
 	if err != nil {
 		return nil, err
 	}
 
-	underlyingConid, err := v.resolveConid(ctx, symbol)
+	order := &internal.Order{
+		OrderID:       serverOrderID,
+		ClientOrderID: clientID.String(),
+		ConID:         p.conid,
+		Symbol:        p.underlying,
+		SecType:       "OPT",
+		Side:          side,
+		Status:        "Submitted",
+		LimitPrice:    price,
+		OrderedQty:    qty,
+	}
+	cstatus.order = order
+	return order, nil
+}
+
+// Get returns the current state of an order by server ID.
+func (p *OptionsProduct) Get(ctx context.Context, serverID string) (exchange.OrderDetail, error) {
+	orderID, err := strconv.ParseInt(serverID, 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("ibkr: GetOptionsProduct: could not resolve conid for %q: %w", symbol, err)
+		return nil, err
 	}
 
-	// Convert expiry date to the IBKR month code format (e.g. "DEC26").
-	month := strings.ToUpper(expiry.Format("Jan06"))
-
-	infoPath := fmt.Sprintf(
-		"/v1/api/iserver/secdef/info?conid=%d&sectype=OPT&month=%s&right=%s&strike=%s&exchange=SMART",
-		underlyingConid, month, right, strike.String(),
-	)
-	var entries []*apiSecDefInfoEntry
-	if err := v.client.doRequest(ctx, "GET", infoPath, nil, &entries); err != nil {
-		return nil, fmt.Errorf("ibkr: secdef/info for %q: %w", contractID, err)
+	for cid, cstatus := range p.clientIDStatusMap.Range {
+		_ = cid
+		cstatus.mu.Lock()
+		if cstatus.order != nil && cstatus.order.OrderID == orderID {
+			o := cstatus.order
+			cstatus.mu.Unlock()
+			return o, nil
+		}
+		cstatus.mu.Unlock()
 	}
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("ibkr: no contract found for %q: %w", contractID, os.ErrNotExist)
-	}
-	e := entries[0]
 
-	multiplier := decimal.NewFromInt(100)
-	if e.Multiplier != "" {
-		if m, err2 := decimal.NewFromString(e.Multiplier); err2 == nil {
-			multiplier = m
+	orders, err := p.client.GetOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range orders {
+		if o.OrderID == orderID {
+			return o, nil
 		}
 	}
+	return nil, os.ErrNotExist
+}
 
-	optType := "CALL"
-	if right == "P" {
-		optType = "PUT"
+// Cancel cancels an open order by its server ID.
+func (p *OptionsProduct) Cancel(ctx context.Context, serverID string) error {
+	orderID, err := strconv.ParseInt(serverID, 10, 64)
+	if err != nil {
+		return err
 	}
+	return p.client.CancelOrder(ctx, orderID)
+}
 
-	return &gobs.OptionContract{
-		Symbol:     contractID,
-		ContractID: strconv.Itoa(e.Conid),
-		Underlying: symbol,
-		OptionType:         optType,
-		Strike:             strike,
-		Expiry:             expiry,
-		ContractSize:       multiplier,
-	}, nil
+// goWatchOrderUpdates subscribes to the per-conid orders topic and updates the
+// cached order snapshot for any order whose cOID matches a known clientID.
+func (p *OptionsProduct) goWatchOrderUpdates(ctx context.Context) {
+	defer p.wg.Done()
+
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ibkr: CAUGHT PANIC in OptionsProduct.goWatchOrderUpdates", "panic", r, "symbol", p.occSymbol)
+			slog.Error(string(debug.Stack()))
+			panic(r)
+		}
+	}()
+
+	sub, err := topic.Subscribe(p.client.GetOptionOrdersTopic(p.conid), 0, true)
+	if err != nil {
+		slog.Error("ibkr: could not subscribe to option order updates topic", "symbol", p.occSymbol, "err", err)
+		return
+	}
+	defer sub.Close()
+
+	stopf := context.AfterFunc(ctx, sub.Close)
+	defer stopf()
+
+	for ctx.Err() == nil {
+		order, err := sub.Receive()
+		if err != nil {
+			return
+		}
+		cid := order.ClientID()
+		if cid == uuid.Nil {
+			continue
+		}
+		cstatus, ok := p.clientIDStatusMap.Load(cid)
+		if !ok {
+			continue
+		}
+		cstatus.mu.Lock()
+		cstatus.order = order
+		cstatus.mu.Unlock()
+	}
 }

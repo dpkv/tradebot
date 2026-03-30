@@ -48,11 +48,15 @@ type Client struct {
 	balanceUpdatesTopic *topic.Topic[*internal.Balance]
 
 	// marketOrderUpdateMap holds a per-symbol topic that goWatchOrders
-	// publishes to on every poll cycle.
+	// publishes to on every poll cycle (used for STK orders).
 	marketOrderUpdateMap syncmap.Map[string, *topic.Topic[*internal.Order]]
 
+	// marketOptionOrderUpdateMap holds a per-conid topic that goWatchOrders
+	// publishes to for OPT orders. Keyed by the option conid.
+	marketOptionOrderUpdateMap syncmap.Map[int, *topic.Topic[*internal.Order]]
+
 	// marketPriceUpdateMap holds a per-symbol topic that goWatchPrices
-	// publishes to on every poll cycle.
+	// publishes to on every poll cycle. For options the key is the OCC symbol.
 	marketPriceUpdateMap syncmap.Map[string, *topic.Topic[*internal.Quote]]
 }
 
@@ -227,6 +231,28 @@ func (c *Client) GetSymbolPricesTopic(symbol string) *topic.Topic[*internal.Quot
 	return t
 }
 
+// GetOptionOrdersTopic returns the per-conid orders topic for an option
+// contract, creating it if needed. OptionsProduct subscribes to this to
+// receive order update notifications.
+func (c *Client) GetOptionOrdersTopic(conid int) *topic.Topic[*internal.Order] {
+	t := topic.New[*internal.Order]()
+	if existing, loaded := c.marketOptionOrderUpdateMap.LoadOrStore(conid, t); loaded {
+		return existing
+	}
+	return t
+}
+
+// WatchOptionConid registers an option contract for price polling. The OCC
+// symbol is used as the map key (unique per contract). Idempotent.
+func (c *Client) WatchOptionConid(occSymbol string, conid int) {
+	t := topic.New[*internal.Quote]()
+	if _, loaded := c.marketPriceUpdateMap.LoadOrStore(occSymbol, t); loaded {
+		return // already watching
+	}
+	c.wg.Add(1)
+	go c.goWatchPrices(c.lifeCtx, occSymbol, conid)
+}
+
 // doRequest executes an HTTP request against the gateway and decodes the JSON
 // response body into dst. If body is non-nil it is sent as JSON.
 func (c *Client) doRequest(ctx context.Context, method, path string, body, dst any) error {
@@ -348,19 +374,30 @@ func decodePlaceOrderResponses(data json.RawMessage) ([]apiPlaceOrderResponse, e
 	return nil, nil
 }
 
+// PlaceOptionOrder places a GTC limit order for an options contract and
+// returns the server-assigned order ID. underlying is the stock ticker (e.g.
+// "AAPL"); conid is the option contract's conid (not the underlying's).
+func (c *Client) PlaceOptionOrder(ctx context.Context, underlying string, conid int, side string, qty, price decimal.Decimal, cOID string) (int64, error) {
+	return c.placeOrderWithSecType(ctx, underlying, conid, "OPT", side, qty, price, cOID)
+}
+
 // PlaceOrder places a limit order and returns the server-assigned order ID.
 // If the gateway issues a reply challenge, it is auto-confirmed.
 // Order operations are serialized via orderMu because the CP Gateway returns
 // 503 when multiple order mutations are in flight concurrently.
 func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side string, qty, price decimal.Decimal, cOID string) (int64, error) {
+	return c.placeOrderWithSecType(ctx, symbol, conid, "STK", side, qty, price, cOID)
+}
+
+func (c *Client) placeOrderWithSecType(ctx context.Context, ticker string, conid int, secType, side string, qty, price decimal.Decimal, cOID string) (int64, error) {
 	c.orderMu.Lock()
 	defer c.orderMu.Unlock()
 
 	req := &apiPlaceOrderRequest{
 		AccountID:  c.creds.AccountID,
 		ConID:      conid,
-		SecType:    strconv.Itoa(conid) + ":STK",
-		Ticker:     symbol,
+		SecType:    strconv.Itoa(conid) + ":" + secType,
+		Ticker:     ticker,
 		ClientOID:  cOID,
 		OrderType:  "LMT",
 		Price:      price.Round(2).InexactFloat64(),
@@ -552,12 +589,22 @@ func (c *Client) goWatchOrders(ctx context.Context) {
 				continue
 			}
 			for _, order := range orders {
-				t, ok := c.marketOrderUpdateMap.Load(order.Symbol)
-				if !ok {
-					continue
-				}
-				if err := t.Send(order); err != nil {
-					slog.Warn("ibkr: could not publish order update", "symbol", order.Symbol, "orderID", order.OrderID, "err", err)
+				if order.SecType == "OPT" {
+					t, ok := c.marketOptionOrderUpdateMap.Load(order.ConID)
+					if !ok {
+						continue
+					}
+					if err := t.Send(order); err != nil {
+						slog.Warn("ibkr: could not publish option order update", "conid", order.ConID, "orderID", order.OrderID, "err", err)
+					}
+				} else {
+					t, ok := c.marketOrderUpdateMap.Load(order.Symbol)
+					if !ok {
+						continue
+					}
+					if err := t.Send(order); err != nil {
+						slog.Warn("ibkr: could not publish order update", "symbol", order.Symbol, "orderID", order.OrderID, "err", err)
+					}
 				}
 			}
 		}
