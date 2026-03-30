@@ -5,6 +5,8 @@ package ibkr
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +43,56 @@ type apiSecDefInfoEntry struct {
 	Strike       float64 `json:"strike"`
 	Right        string  `json:"right"`      // "C" or "P"
 	Multiplier   string  `json:"multiplier"` // typically "100"
+}
+
+// GetOptionsProduct resolves a single option contract by its OCC symbol,
+// calling secdef/info to obtain the exact IBKR conid and contract details.
+func (c *Client) GetOptionsProduct(ctx context.Context, occSymbol string) (*gobs.OptionContract, error) {
+	symbol, right, expiry, strike, err := parseOCCContractID(occSymbol)
+	if err != nil {
+		return nil, err
+	}
+
+	underlyingConid, err := c.ResolveConid(ctx, symbol)
+	if err != nil {
+		return nil, fmt.Errorf("ibkr: GetOptionsProduct: could not resolve conid for %q: %w", symbol, err)
+	}
+
+	month := strings.ToUpper(expiry.Format("Jan06"))
+	infoPath := fmt.Sprintf(
+		"/v1/api/iserver/secdef/info?conid=%d&sectype=OPT&month=%s&right=%s&strike=%s&exchange=SMART",
+		underlyingConid, month, right, strike.String(),
+	)
+	var entries []*apiSecDefInfoEntry
+	if err := c.doRequest(ctx, "GET", infoPath, nil, &entries); err != nil {
+		return nil, fmt.Errorf("ibkr: secdef/info for %q: %w", occSymbol, err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("ibkr: no contract found for %q: %w", occSymbol, os.ErrNotExist)
+	}
+	e := entries[0]
+
+	multiplier := decimal.NewFromInt(100)
+	if e.Multiplier != "" {
+		if m, err2 := decimal.NewFromString(e.Multiplier); err2 == nil {
+			multiplier = m
+		}
+	}
+
+	optType := "CALL"
+	if right == "P" {
+		optType = "PUT"
+	}
+
+	return &gobs.OptionContract{
+		Symbol:       occSymbol,
+		ContractID:   strconv.Itoa(e.Conid),
+		Underlying:   symbol,
+		OptionType:   optType,
+		Strike:       strike,
+		Expiry:       expiry,
+		ContractSize: multiplier,
+	}, nil
 }
 
 // GetOptionChain returns all available option contracts for the given

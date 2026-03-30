@@ -9,9 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
@@ -121,7 +119,7 @@ func (v *Exchange) GetSpotProduct(ctx context.Context, base, quote string) (*gob
 		return nil, fmt.Errorf("ibkr: could not resolve conid for %q: %w", base, err)
 	}
 
-	price, err := v.fetchMidPrice(ctx, conid)
+	price, err := v.client.FetchMidPrice(ctx, conid)
 	if err != nil {
 		// Non-fatal — return the product without a price.
 		slog.Warn("ibkr: could not fetch price for GetSpotProduct (returning zero)", "symbol", base, "err", err)
@@ -191,91 +189,10 @@ func (v *Exchange) GetOptionChain(ctx context.Context, underlying string) ([]*go
 	return v.client.GetOptionChain(ctx, underlying)
 }
 
-// occContractID returns the compact OCC option symbol for the given contract,
-// e.g. "AAPL261218C00200000". The suffix is always 15 chars: expiry as YYMMDD,
-// right (C/P), strike × 1000 zero-padded to 8 digits.
-func occContractID(symbol string, expiry time.Time, right string, strike decimal.Decimal) string {
-	strikePennies := strike.Mul(decimal.NewFromInt(1000)).IntPart()
-	return fmt.Sprintf("%s%s%s%08d", symbol, expiry.Format("060102"), right, strikePennies)
-}
-
-// parseOCCContractID parses a compact OCC option symbol back into its
-// components. The suffix is always 15 chars, so the symbol is everything
-// before that. Returns an error if the string is malformed.
-func parseOCCContractID(contractID string) (symbol, right string, expiry time.Time, strike decimal.Decimal, err error) {
-	const suffixLen = 15 // YYMMDD(6) + right(1) + strike(8)
-	if len(contractID) <= suffixLen {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: too short", contractID)
-	}
-	split := len(contractID) - suffixLen
-	symbol = contractID[:split]
-	suffix := contractID[split:]
-	expiry, err = time.Parse("060102", suffix[:6])
-	if err != nil {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: bad expiry: %w", contractID, err)
-	}
-	right = string(suffix[6])
-	if right != "C" && right != "P" {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: right must be C or P", contractID)
-	}
-	pennies, err := strconv.ParseInt(suffix[7:], 10, 64)
-	if err != nil {
-		return "", "", time.Time{}, decimal.Zero, fmt.Errorf("ibkr: invalid OCC symbol %q: bad strike: %w", contractID, err)
-	}
-	strike = decimal.NewFromInt(pennies).Div(decimal.NewFromInt(1000))
-	return symbol, right, expiry, strike, nil
-}
-
 // GetOptionsProduct returns a metadata snapshot for the option contract
-// identified by its OCC Symbol. It calls secdef/info to resolve the exact
-// IBKR conid, which is stored in ContractID. Analogous to GetSpotProduct.
+// identified by its OCC symbol. Delegates to Client.GetOptionsProduct.
 func (v *Exchange) GetOptionsProduct(ctx context.Context, occSymbol string) (*gobs.OptionContract, error) {
-	symbol, right, expiry, strike, err := parseOCCContractID(occSymbol)
-	if err != nil {
-		return nil, err
-	}
-
-	underlyingConid, err := v.resolveConid(ctx, symbol)
-	if err != nil {
-		return nil, fmt.Errorf("ibkr: GetOptionsProduct: could not resolve conid for %q: %w", symbol, err)
-	}
-
-	month := strings.ToUpper(expiry.Format("Jan06"))
-
-	infoPath := fmt.Sprintf(
-		"/v1/api/iserver/secdef/info?conid=%d&sectype=OPT&month=%s&right=%s&strike=%s&exchange=SMART",
-		underlyingConid, month, right, strike.String(),
-	)
-	var entries []*apiSecDefInfoEntry
-	if err := v.client.doRequest(ctx, "GET", infoPath, nil, &entries); err != nil {
-		return nil, fmt.Errorf("ibkr: secdef/info for %q: %w", occSymbol, err)
-	}
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("ibkr: no contract found for %q: %w", occSymbol, os.ErrNotExist)
-	}
-	e := entries[0]
-
-	multiplier := decimal.NewFromInt(100)
-	if e.Multiplier != "" {
-		if m, err2 := decimal.NewFromString(e.Multiplier); err2 == nil {
-			multiplier = m
-		}
-	}
-
-	optType := "CALL"
-	if right == "P" {
-		optType = "PUT"
-	}
-
-	return &gobs.OptionContract{
-		Symbol:       occSymbol,
-		ContractID:   strconv.Itoa(e.Conid),
-		Underlying:   symbol,
-		OptionType:   optType,
-		Strike:       strike,
-		Expiry:       expiry,
-		ContractSize: multiplier,
-	}, nil
+	return v.client.GetOptionsProduct(ctx, occSymbol)
 }
 
 func (v *Exchange) OpenOptionsProduct(ctx context.Context, occSymbol string) (exchange.OptionsProduct, error) {
@@ -291,20 +208,3 @@ func (v *Exchange) OpenOptionsProduct(ctx context.Context, occSymbol string) (ex
 	return NewOptionsProduct(ctx, v.client, contract)
 }
 
-// fetchMidPrice makes a one-off snapshot request for the given conid and
-// returns the mid-price. Used by GetSpotProduct.
-func (v *Exchange) fetchMidPrice(ctx context.Context, conid int) (decimal.Decimal, error) {
-	path := fmt.Sprintf("/v1/api/iserver/marketdata/snapshot?conids=%d&fields=31,84,86", conid)
-	var snapshots []*internal.APISnapshot
-	if err := v.client.doRequest(ctx, "GET", path, nil, &snapshots); err != nil {
-		return decimal.Zero, err
-	}
-	for _, snap := range snapshots {
-		q := internal.NewQuoteFromAPI(snap)
-		if q != nil {
-			price, _ := q.PricePoint()
-			return price, nil
-		}
-	}
-	return decimal.Zero, fmt.Errorf("ibkr: snapshot returned no price data for conid %d", conid)
-}

@@ -157,6 +157,7 @@ func main() {
 		new(subcmdibkr.GetBalance),
 		new(subcmdibkr.PollPrices),
 		new(subcmdibkr.PollOrders),
+		new(subcmdibkr.ListOptionChain),
 	}
 
 	cmds := []cli.Command{

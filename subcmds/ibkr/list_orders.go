@@ -21,6 +21,7 @@ import (
 
 type ListOrders struct {
 	secretsPath string
+	secType     string
 	symbol      string
 	side        string
 	status      string
@@ -29,6 +30,7 @@ type ListOrders struct {
 func (c *ListOrders) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset := flag.NewFlagSet("list-orders", flag.ContinueOnError)
 	fset.StringVar(&c.secretsPath, "secrets-file", defaults.SecretsPath(), "path to secrets JSON file")
+	fset.StringVar(&c.secType, "sec-type", "", "filter by security type: STK or OPT (all if not set)")
 	fset.StringVar(&c.symbol, "symbol", "", "filter by ticker symbol (case-insensitive)")
 	fset.StringVar(&c.side, "side", "", "filter by side: BUY or SELL (case-insensitive)")
 	fset.StringVar(&c.status, "status", "", "filter by status, e.g. Filled, Submitted (case-insensitive)")
@@ -62,13 +64,17 @@ func (c *ListOrders) run(ctx context.Context, args []string) error {
 		return err
 	}
 
+	secType := strings.ToUpper(c.secType)
 	symbol := strings.ToUpper(c.symbol)
 	side := strings.ToUpper(c.side)
 	status := strings.ToLower(c.status)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ORDER_ID\tCLIENT_ID\tSYMBOL\tSIDE\tSTATUS\tLIMIT_PRICE\tORDERED_QTY\tFILLED_QTY\tAVG_FILL_PRICE\tLAST_EXEC_TIME")
+	fmt.Fprintln(w, "ORDER_ID\tCLIENT_ID\tSEC_TYPE\tSYMBOL\tSIDE\tSTATUS\tLIMIT_PRICE\tORDERED_QTY\tFILLED_QTY\tAVG_FILL_PRICE\tLAST_EXEC_TIME")
 	for _, o := range orders {
+		if secType != "" && strings.ToUpper(o.SecType) != secType {
+			continue
+		}
 		if symbol != "" && strings.ToUpper(o.Symbol) != symbol {
 			continue
 		}
@@ -82,8 +88,8 @@ func (c *ListOrders) run(ctx context.Context, args []string) error {
 		if o.LastExecutionTimeMilli != 0 {
 			ts = time.UnixMilli(o.LastExecutionTimeMilli).Format(time.DateTime)
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			o.OrderID, o.ClientOrderID, o.Symbol, o.Side, o.Status,
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			o.OrderID, o.ClientOrderID, o.SecType, o.Symbol, o.Side, o.Status,
 			o.LimitPrice, o.OrderedQty, o.FilledQty, o.AvgFillPrice, ts)
 	}
 	return w.Flush()

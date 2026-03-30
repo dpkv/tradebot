@@ -520,6 +520,24 @@ func (c *Client) GetOrders(ctx context.Context) ([]*internal.Order, error) {
 	return orders, nil
 }
 
+// FetchMidPrice makes a one-off market data snapshot request for the given
+// conid and returns the mid-price.
+func (c *Client) FetchMidPrice(ctx context.Context, conid int) (decimal.Decimal, error) {
+	path := fmt.Sprintf("/v1/api/iserver/marketdata/snapshot?conids=%d&fields=31,84,86", conid)
+	var snapshots []*internal.APISnapshot
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &snapshots); err != nil {
+		return decimal.Zero, err
+	}
+	for _, snap := range snapshots {
+		q := internal.NewQuoteFromAPI(snap)
+		if q != nil {
+			price, _ := q.PricePoint()
+			return price, nil
+		}
+	}
+	return decimal.Zero, fmt.Errorf("ibkr: snapshot returned no price data for conid %d", conid)
+}
+
 // GetBalance fetches the current portfolio summary and converts it to a Balance.
 func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
 	path := "/v1/api/portfolio/" + c.creds.AccountID + "/summary"
