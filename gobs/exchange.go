@@ -81,3 +81,25 @@ type Account struct {
 type Accounts struct {
 	Accounts []*Account
 }
+
+type OptionContract struct {
+	// ContractID uniquely identifies the contract, e.g. "AAPL_20261218_C00200000".
+	ContractID string
+
+	Underlying string
+	OptionType string // "CALL" or "PUT"
+
+	Strike decimal.Decimal
+	Expiry time.Time
+
+	// ContractSize is the number of underlying shares per contract (typically 100).
+	ContractSize decimal.Decimal
+
+	// Snapshot pricing — populated by GetOptionsChain / GetOptionsProduct.
+	Price          decimal.Decimal
+	Bid            decimal.Decimal
+	Ask            decimal.Decimal
+	Volume         decimal.Decimal
+	OpenInterest   decimal.Decimal
+	ImpliedVolatility decimal.Decimal
+}

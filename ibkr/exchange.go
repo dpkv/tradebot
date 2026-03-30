@@ -183,6 +183,20 @@ func (v *Exchange) resolveConid(ctx context.Context, symbol string) (int, error)
 	return conid, nil
 }
 
+func (v *Exchange) SupportsOptions() bool { return true }
+
+func (v *Exchange) GetOptionsChain(_ context.Context, _ string) ([]*gobs.OptionContract, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+func (v *Exchange) GetOptionsProduct(_ context.Context, _ string) (*gobs.OptionContract, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+func (v *Exchange) OpenOptionsProduct(_ context.Context, _ string) (exchange.OptionsProduct, error) {
+	return nil, errors.New("not yet implemented")
+}
+
 // fetchMidPrice makes a one-off snapshot request for the given conid and
 // returns the mid-price. Used by GetSpotProduct.
 func (v *Exchange) fetchMidPrice(ctx context.Context, conid int) (decimal.Decimal, error) {

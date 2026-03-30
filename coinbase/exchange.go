@@ -680,3 +680,17 @@ func (ex *Exchange) GetCandles(ctx context.Context, productID string, from time.
 func (ex *Exchange) IsDone(status string) bool {
 	return slices.Contains(doneStatuses, status)
 }
+
+func (ex *Exchange) SupportsOptions() bool { return false }
+
+func (ex *Exchange) GetOptionsChain(_ context.Context, _ string) ([]*gobs.OptionContract, error) {
+	return nil, errors.ErrUnsupported
+}
+
+func (ex *Exchange) GetOptionsProduct(_ context.Context, _ string) (*gobs.OptionContract, error) {
+	return nil, errors.ErrUnsupported
+}
+
+func (ex *Exchange) OpenOptionsProduct(_ context.Context, _ string) (exchange.OptionsProduct, error) {
+	return nil, errors.ErrUnsupported
+}

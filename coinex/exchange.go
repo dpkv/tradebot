@@ -4,6 +4,7 @@ package coinex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -135,4 +136,18 @@ func (v *Exchange) GetOrder(ctx context.Context, productID string, orderID strin
 		return nil, err
 	}
 	return order, nil
+}
+
+func (v *Exchange) SupportsOptions() bool { return false }
+
+func (v *Exchange) GetOptionsChain(_ context.Context, _ string) ([]*gobs.OptionContract, error) {
+	return nil, errors.ErrUnsupported
+}
+
+func (v *Exchange) GetOptionsProduct(_ context.Context, _ string) (*gobs.OptionContract, error) {
+	return nil, errors.ErrUnsupported
+}
+
+func (v *Exchange) OpenOptionsProduct(_ context.Context, _ string) (exchange.OptionsProduct, error) {
+	return nil, errors.ErrUnsupported
 }
