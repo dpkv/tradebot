@@ -30,7 +30,8 @@ type OptionsProduct struct {
 
 	wg sync.WaitGroup
 
-	client *Client
+	exchange *Exchange
+	client   *Client
 
 	// Contract identity.
 	occSymbol    string
@@ -49,7 +50,7 @@ var _ exchange.OptionsProduct = &OptionsProduct{}
 // NewOptionsProduct creates an OptionsProduct from a resolved gobs.OptionContract
 // and starts its background goroutine. WatchOptionConid must have been called
 // on the client before NewOptionsProduct so that the price topic exists.
-func NewOptionsProduct(ctx context.Context, client *Client, contract *gobs.OptionContract) (*OptionsProduct, error) {
+func NewOptionsProduct(ctx context.Context, exch *Exchange, contract *gobs.OptionContract) (*OptionsProduct, error) {
 	conid, err := strconv.Atoi(contract.ContractID)
 	if err != nil {
 		return nil, fmt.Errorf("ibkr: OptionsProduct: invalid conid %q in contract %s", contract.ContractID, contract.Symbol)
@@ -59,7 +60,8 @@ func NewOptionsProduct(ctx context.Context, client *Client, contract *gobs.Optio
 	p := &OptionsProduct{
 		lifeCtx:      lifeCtx,
 		lifeCancel:   lifeCancel,
-		client:       client,
+		exchange:     exch,
+		client:       exch.client,
 		occSymbol:    contract.Symbol,
 		conid:        conid,
 		underlying:   contract.Underlying,
@@ -145,6 +147,15 @@ func (p *OptionsProduct) LimitSellToClose(ctx context.Context, clientID uuid.UUI
 }
 
 func (p *OptionsProduct) placeOrder(ctx context.Context, clientID uuid.UUID, side string, qty, price decimal.Decimal) (_ exchange.Order, status error) {
+	// Check persisted orders first — crash recovery path.
+	if order, ok := p.exchange.findOrder(clientID); ok {
+		cstatus, _ := p.clientIDStatusMap.LoadOrStore(clientID, newClientIDStatus())
+		cstatus.mu.Lock()
+		cstatus.order = order
+		cstatus.mu.Unlock()
+		return order, nil
+	}
+
 	cstatus, loaded := p.clientIDStatusMap.LoadOrStore(clientID, newClientIDStatus())
 	cstatus.mu.Lock()
 	defer cstatus.mu.Unlock()
@@ -259,5 +270,9 @@ func (p *OptionsProduct) goWatchOrderUpdates(ctx context.Context) {
 		cstatus.mu.Lock()
 		cstatus.order = order
 		cstatus.mu.Unlock()
+
+		if order.IsDone() {
+			p.exchange.persistOrder(ctx, order)
+		}
 	}
 }

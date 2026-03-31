@@ -52,7 +52,7 @@ func (c *PollPrices) run(ctx context.Context, args []string) error {
 		return fmt.Errorf("secrets file has no ibkr credentials")
 	}
 
-	exch, err := ibkrpkg.NewExchange(ctx, secrets.IBKR, nil)
+	exch, err := ibkrpkg.NewExchange(ctx, nil, secrets.IBKR, nil)
 	if err != nil {
 		return fmt.Errorf("could not create ibkr exchange: %w", err)
 	}

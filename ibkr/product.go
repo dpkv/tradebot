@@ -52,7 +52,8 @@ type Product struct {
 
 	wg sync.WaitGroup
 
-	client *Client
+	exchange *Exchange
+	client   *Client
 
 	symbol string
 	conid  int
@@ -68,12 +69,13 @@ var _ exchange.Product = &Product{}
 // NewProduct creates a Product for the given symbol and starts its background
 // goroutine. WatchSymbol must have been called on the client before NewProduct
 // so that the price and order topics exist.
-func NewProduct(ctx context.Context, client *Client, symbol string, conid int) (*Product, error) {
+func NewProduct(ctx context.Context, exch *Exchange, symbol string, conid int) (*Product, error) {
 	lifeCtx, lifeCancel := context.WithCancelCause(context.Background())
 	p := &Product{
 		lifeCtx:    lifeCtx,
 		lifeCancel: lifeCancel,
-		client:     client,
+		exchange:   exch,
+		client:     exch.client,
 		symbol:     symbol,
 		conid:      conid,
 	}
@@ -137,6 +139,15 @@ func (p *Product) LimitSell(ctx context.Context, clientID uuid.UUID, size, price
 }
 
 func (p *Product) placeOrder(ctx context.Context, clientID uuid.UUID, side string, size, price decimal.Decimal) (_ exchange.Order, status error) {
+	// Check persisted orders first — crash recovery path.
+	if order, ok := p.exchange.findOrder(clientID); ok {
+		cstatus, _ := p.clientIDStatusMap.LoadOrStore(clientID, newClientIDStatus())
+		cstatus.mu.Lock()
+		cstatus.order = order
+		cstatus.mu.Unlock()
+		return order, nil
+	}
+
 	cstatus, loaded := p.clientIDStatusMap.LoadOrStore(clientID, newClientIDStatus())
 	cstatus.mu.Lock()
 	defer cstatus.mu.Unlock()
@@ -259,5 +270,9 @@ func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 		cstatus.mu.Lock()
 		cstatus.order = order
 		cstatus.mu.Unlock()
+
+		if order.IsDone() {
+			p.exchange.persistOrder(ctx, order)
+		}
 	}
 }

@@ -302,7 +302,7 @@ func (s *Server) Start(ctx context.Context) (status error) {
 			opts := &ibkr.Options{
 				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
 			}
-			exchange, err := ibkr.NewExchange(ctx, secrets.IBKR, opts)
+			exchange, err := ibkr.NewExchange(ctx, s.db, secrets.IBKR, opts)
 			if err != nil {
 				return fmt.Errorf("could not create ibkr exchange: %w", err)
 			}

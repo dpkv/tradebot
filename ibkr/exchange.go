@@ -15,6 +15,8 @@ import (
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/ibkr/internal"
 	"github.com/bvk/tradebot/syncmap"
+	"github.com/bvkgo/kv"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/visvasity/topic"
 )
@@ -23,6 +25,12 @@ import (
 // Portal Gateway.
 type Exchange struct {
 	client *Client
+
+	datastore *Datastore
+
+	// orderMap holds all known orders keyed by client order UUID. Populated
+	// from the datastore on startup and updated as orders complete.
+	orderMap syncmap.Map[uuid.UUID, *internal.Order]
 
 	// conidCache maps stock symbol → conid. Populated lazily on first
 	// OpenSpotProduct or GetSpotProduct call for each symbol.
@@ -36,7 +44,7 @@ var _ exchange.Exchange = &Exchange{}
 
 // NewExchange creates a new Exchange, starts the background client goroutines,
 // and returns it. The caller must call Close() when done.
-func NewExchange(ctx context.Context, creds *Credentials, opts *Options) (_ *Exchange, status error) {
+func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *Options) (_ *Exchange, status error) {
 	client, err := New(ctx, creds, opts)
 	if err != nil {
 		return nil, err
@@ -51,7 +59,44 @@ func NewExchange(ctx context.Context, creds *Credentials, opts *Options) (_ *Exc
 		client:     client,
 		conidCache: make(map[string]int),
 	}
+
+	if db != nil {
+		v.datastore = NewDatastore(db)
+
+		// Repopulate orderMap from persisted orders for crash recovery.
+		orders, err := v.datastore.LoadOrders(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ibkr: could not load persisted orders: %w", err)
+		}
+		for _, o := range orders {
+			if id, err := uuid.Parse(o.ClientOrderID); err == nil {
+				v.orderMap.Store(id, o)
+			}
+		}
+		slog.Info("ibkr: loaded persisted orders", "count", len(orders))
+	}
+
 	return v, nil
+}
+
+// findOrder returns a previously persisted order for the given client UUID, if any.
+func (v *Exchange) findOrder(clientID uuid.UUID) (*internal.Order, bool) {
+	return v.orderMap.Load(clientID)
+}
+
+// persistOrder saves a completed order to the datastore and updates orderMap.
+// No-op if no database was provided at construction.
+func (v *Exchange) persistOrder(ctx context.Context, order *internal.Order) {
+	if v.datastore == nil {
+		return
+	}
+	if err := v.datastore.SaveOrder(ctx, order); err != nil {
+		slog.Warn("ibkr: could not persist order", "clientOrderID", order.ClientOrderID, "err", err)
+		return
+	}
+	if id, err := uuid.Parse(order.ClientOrderID); err == nil {
+		v.orderMap.Store(id, order)
+	}
 }
 
 // Close stops the background client goroutines.
@@ -95,7 +140,7 @@ func (v *Exchange) OpenSpotProduct(ctx context.Context, productID string) (excha
 	// Start price polling for this symbol if not already running.
 	v.client.WatchSymbol(productID, conid)
 
-	p, err := NewProduct(ctx, v.client, productID, conid)
+	p, err := NewProduct(ctx, v, productID, conid)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +250,7 @@ func (v *Exchange) OpenOptionsProduct(ctx context.Context, occSymbol string) (ex
 		return nil, fmt.Errorf("ibkr: invalid conid %q for %s: %w", contract.ContractID, occSymbol, err)
 	}
 	v.client.WatchOptionConid(occSymbol, conid)
-	return NewOptionsProduct(ctx, v.client, contract)
+	return NewOptionsProduct(ctx, v, contract)
 }
 
 func (v *Exchange) GetOrders(ctx context.Context) ([]*internal.Order, error) {
