@@ -119,6 +119,7 @@
     .dim { color: #6c7086; }
     .mono { font-family: 'Cascadia Code', 'Fira Code', monospace; }
 
+    .status-presubmitted { color: #cba6f7; }
     .status-submitted { color: #fab387; }
     .status-filled    { color: #a6e3a1; }
     .status-cancelled { color: #6c7086; }
@@ -204,6 +205,7 @@
       </select>
       <select id="f-status" onchange="renderOrders()">
         <option value="">All Statuses</option>
+        <option value="PreSubmitted">PreSubmitted</option>
         <option value="Submitted">Submitted</option>
         <option value="Filled">Filled</option>
         <option value="Cancelled">Cancelled</option>
