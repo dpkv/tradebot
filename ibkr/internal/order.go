@@ -69,8 +69,10 @@ type Order struct {
 	OrderID       int64
 	ClientOrderID string // UUID string stored as cOID
 
-	Symbol string // equity ticker, e.g. "AAPL"
-	Side   string // "BUY" or "SELL"
+	ConID   int    // IBKR contract ID — used to route option order updates
+	Symbol  string // ticker, e.g. "AAPL"
+	SecType string // "STK", "OPT", etc.
+	Side    string // "BUY" or "SELL"
 
 	Status string // IBKR status, e.g. "Filled", "Submitted", "Cancelled"
 
@@ -147,7 +149,9 @@ func NewOrderFromAPI(a *APIOrder) *Order {
 	return &Order{
 		OrderID:                a.OrderID,
 		ClientOrderID:          a.ClientOrderID,
+		ConID:                  a.ConID,
 		Symbol:                 a.Ticker,
+		SecType:                a.SecType,
 		Side:                   strings.ToUpper(a.Side),
 		Status:                 a.Status,
 		LastExecutionTimeMilli: a.LastExecutionTime,

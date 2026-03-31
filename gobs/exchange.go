@@ -81,3 +81,28 @@ type Account struct {
 type Accounts struct {
 	Accounts []*Account
 }
+
+type OptionContract struct {
+	// Symbol is the OCC option symbol, e.g. "AAPL261218C00200000".
+	Symbol string
+
+	// ContractID is the exchange-native identifier for this contract.
+	ContractID string
+
+	Underlying string
+	OptionType string // "CALL" or "PUT"
+
+	Strike decimal.Decimal
+	Expiry time.Time
+
+	// ContractSize is the number of underlying shares per contract (typically 100).
+	ContractSize decimal.Decimal
+
+	// Snapshot pricing — populated by GetOptionChain / GetOptionsProduct.
+	Price             decimal.Decimal
+	Bid               decimal.Decimal
+	Ask               decimal.Decimal
+	Volume            decimal.Decimal
+	OpenInterest      decimal.Decimal
+	ImpliedVolatility decimal.Decimal
+}
