@@ -32,6 +32,10 @@ type Exchange struct {
 	// from the datastore on startup and updated as orders complete.
 	orderMap syncmap.Map[uuid.UUID, *internal.Order]
 
+	// serverIDMap is a secondary index keyed by IBKR numeric order ID, used
+	// by Product.Get to find old filled orders after a restart.
+	serverIDMap syncmap.Map[int64, *internal.Order]
+
 	// conidCache maps stock symbol → conid. Populated lazily on first
 	// OpenSpotProduct or GetSpotProduct call for each symbol.
 	conidMu    sync.Mutex
@@ -72,6 +76,7 @@ func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *
 			if id, err := uuid.Parse(o.ClientOrderID); err == nil {
 				v.orderMap.Store(id, o)
 			}
+			v.serverIDMap.Store(o.OrderID, o)
 		}
 		slog.Info("ibkr: loaded persisted orders", "count", len(orders))
 	}
@@ -82,6 +87,11 @@ func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *
 // findOrder returns a previously persisted order for the given client UUID, if any.
 func (v *Exchange) findOrder(clientID uuid.UUID) (*internal.Order, bool) {
 	return v.orderMap.Load(clientID)
+}
+
+// findOrderByServerID returns a previously persisted order by IBKR numeric order ID.
+func (v *Exchange) findOrderByServerID(orderID int64) (*internal.Order, bool) {
+	return v.serverIDMap.Load(orderID)
 }
 
 // persistOrder saves a completed order to the datastore and updates orderMap.
@@ -97,6 +107,7 @@ func (v *Exchange) persistOrder(ctx context.Context, order *internal.Order) {
 	if id, err := uuid.Parse(order.ClientOrderID); err == nil {
 		v.orderMap.Store(id, order)
 	}
+	v.serverIDMap.Store(order.OrderID, order)
 }
 
 // Close stops the background client goroutines.

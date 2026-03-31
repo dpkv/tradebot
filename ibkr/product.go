@@ -207,7 +207,7 @@ func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetai
 		cstatus.mu.Unlock()
 	}
 
-	// Slow path: poll the exchange.
+	// Slow path: poll the live gateway.
 	orders, err := p.client.GetOrders(ctx)
 	if err != nil {
 		return nil, err
@@ -216,6 +216,11 @@ func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetai
 		if o.OrderID == orderID {
 			return o, nil
 		}
+	}
+
+	// Last resort: check persisted orders (filled orders drop off the gateway cache).
+	if o, ok := p.exchange.findOrderByServerID(orderID); ok {
+		return o, nil
 	}
 	return nil, os.ErrNotExist
 }

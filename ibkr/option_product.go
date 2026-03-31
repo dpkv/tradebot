@@ -219,6 +219,11 @@ func (p *OptionsProduct) Get(ctx context.Context, serverID string) (exchange.Ord
 			return o, nil
 		}
 	}
+
+	// Last resort: check persisted orders (filled orders drop off the gateway cache).
+	if o, ok := p.exchange.findOrderByServerID(orderID); ok {
+		return o, nil
+	}
 	return nil, os.ErrNotExist
 }
 
