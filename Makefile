@@ -16,7 +16,8 @@ HOST_TZ ?= $(shell cat /etc/timezone 2>/dev/null || readlink /etc/localtime 2>/d
 GIT_BRANCH_SAFE := $(shell git rev-parse --abbrev-ref HEAD | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
 GIT_COMMIT_DATE_COMPACT := $(shell git log -1 --format=%cd --date=format:%Y%m%d)
 GIT_COMMIT_SHORT := $(shell git rev-parse --short=7 HEAD)
-TRADEBOT_IMAGE_TAG := $(GIT_BRANCH_SAFE)-$(GIT_COMMIT_DATE_COMPACT)-$(GIT_COMMIT_SHORT)
+GIT_DIRTY := $(shell git diff --quiet && git diff --cached --quiet || date +-%H%M-dirty)
+TRADEBOT_IMAGE_TAG := $(GIT_BRANCH_SAFE)-$(GIT_COMMIT_DATE_COMPACT)-$(GIT_COMMIT_SHORT)$(GIT_DIRTY)
 
 .PHONY: all
 all: go-all go-test go-test-long;

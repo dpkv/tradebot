@@ -208,3 +208,19 @@ func (v *Exchange) OpenOptionsProduct(ctx context.Context, occSymbol string) (ex
 	return NewOptionsProduct(ctx, v.client, contract)
 }
 
+func (v *Exchange) GetOrders(ctx context.Context) ([]*internal.Order, error) {
+	return v.client.GetOrders(ctx)
+}
+
+func (v *Exchange) GetAccountSummary(ctx context.Context) (*AccountSummary, error) {
+	return v.client.GetAccountSummary(ctx)
+}
+
+func (v *Exchange) GetPositions(ctx context.Context) ([]*Position, error) {
+	return v.client.GetPositions(ctx)
+}
+
+func (v *Exchange) GetOptionContractInfo(ctx context.Context, conid int) (*gobs.OptionContract, error) {
+	return v.client.GetOptionContractInfo(ctx, conid)
+}
+

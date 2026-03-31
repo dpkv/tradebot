@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IBKR — Tradebot</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #cdd6f4;
+      min-height: 100vh;
+      font-size: 13px;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 1.5rem;
+      height: 52px;
+      background: #181b23;
+      border-bottom: 1px solid #2a2d3a;
+      position: sticky; top: 0; z-index: 10;
+    }
+    .header-left { display: flex; align-items: center; gap: .75rem; }
+    .header-left a { color: #6c7086; text-decoration: none; font-size: .8rem; }
+    .header-left a:hover { color: #cdd6f4; }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    .header-right { display: flex; align-items: center; gap: 1rem; }
+    #last-updated { font-size: .75rem; color: #6c7086; }
+    #auto-refresh {
+      background: #181b23; border: 1px solid #2a2d3a; color: #6c7086;
+      padding: .3rem .6rem; border-radius: 6px; font-size: .8rem; outline: none; cursor: pointer;
+    }
+    #auto-refresh:focus { border-color: #89b4fa; }
+    button.refresh {
+      background: none; border: 1px solid #45475a; color: #cdd6f4;
+      padding: .3rem .75rem; border-radius: 6px; cursor: pointer; font-size: .8rem;
+    }
+    button.refresh:hover { border-color: #89b4fa; color: #89b4fa; }
+    #error-banner {
+      display: none;
+      background: #45213a; color: #f38ba8; padding: .5rem 1.5rem;
+      font-size: .8rem; border-bottom: 1px solid #f38ba855;
+    }
+
+    /* ── Balance cards ──────────────────────────────────── */
+    .balance-row {
+      display: flex; gap: 1rem; padding: 1rem 1.5rem;
+      overflow-x: auto; background: #13151c;
+      border-bottom: 1px solid #2a2d3a;
+    }
+    .bal-card {
+      background: #181b23; border: 1px solid #2a2d3a; border-radius: 8px;
+      padding: .75rem 1.25rem; min-width: 150px; flex-shrink: 0;
+    }
+    .bal-card .label { font-size: .7rem; color: #6c7086; text-transform: uppercase; letter-spacing: .05em; }
+    .bal-card .value { font-size: 1.1rem; font-weight: 600; margin-top: .2rem; color: #a6e3a1; }
+    .bal-card .currency { font-size: .7rem; color: #6c7086; }
+
+    /* ── Section layout ─────────────────────────────────── */
+    .section { padding: 1rem 1.5rem; }
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: .75rem;
+    }
+    .section-header h2 { font-size: .9rem; font-weight: 600; color: #89b4fa; }
+    .count { font-size: .75rem; color: #6c7086; }
+
+    /* ── Filters ────────────────────────────────────────── */
+    .filters { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; align-items: center; }
+    .filters select, .filters input {
+      background: #181b23; border: 1px solid #2a2d3a; color: #cdd6f4;
+      padding: .3rem .6rem; border-radius: 6px; font-size: .8rem; outline: none;
+    }
+    .filters select:focus, .filters input:focus { border-color: #89b4fa; }
+    .filters input[type="text"] { width: 140px; }
+    .filters input[type="date"] {
+      width: 130px;
+      color-scheme: dark;
+    }
+    .filters label { font-size: .75rem; color: #6c7086; }
+
+    /* ── Tables ─────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #2a2d3a; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      background: #181b23; color: #6c7086; font-size: .7rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em;
+      padding: .5rem .75rem; text-align: left; white-space: nowrap;
+      border-bottom: 1px solid #2a2d3a;
+      cursor: pointer; user-select: none;
+    }
+    thead th:hover { color: #cdd6f4; }
+    thead th.sort-asc::after  { content: ' ▲'; color: #89b4fa; }
+    thead th.sort-desc::after { content: ' ▼'; color: #89b4fa; }
+    tbody tr { border-bottom: 1px solid #1e2030; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #1e2030; }
+    td { padding: .45rem .75rem; white-space: nowrap; }
+    .empty { color: #6c7086; font-style: italic; padding: 1.5rem; text-align: center; }
+
+    /* ── Cell styles ────────────────────────────────────── */
+    .tag {
+      display: inline-block; padding: .15rem .45rem; border-radius: 4px;
+      font-size: .7rem; font-weight: 600; letter-spacing: .03em;
+    }
+    .tag-stk  { background: #1e3a5f; color: #89b4fa; }
+    .tag-opt  { background: #3a2a5f; color: #cba6f7; }
+    .tag-buy  { background: #1e3a2a; color: #a6e3a1; }
+    .tag-sell { background: #3a1e1e; color: #f38ba8; }
+    .tag-call { background: #1e2d1e; color: #a6e3a1; }
+    .tag-put  { background: #2d1e1e; color: #f38ba8; }
+    .pos { color: #a6e3a1; }
+    .neg { color: #f38ba8; }
+    .dim { color: #6c7086; }
+    .mono { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+
+    .status-submitted { color: #fab387; }
+    .status-filled    { color: #a6e3a1; }
+    .status-cancelled { color: #6c7086; }
+    .status-inactive  { color: #6c7086; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <a href="/">← Home</a>
+      <h1>IBKR</h1>
+    </div>
+    <div class="header-right">
+      <span id="last-updated"></span>
+      <select id="auto-refresh" onchange="onAutoRefreshChange()">
+        <option value="0">No auto-refresh</option>
+        <option value="15">Every 15s</option>
+        <option value="30">Every 30s</option>
+        <option value="60">Every 1m</option>
+        <option value="300">Every 5m</option>
+        <option value="900">Every 15m</option>
+        <option value="3600" selected>Every 1h</option>
+      </select>
+      <button class="refresh" onclick="refresh()">↻ Refresh</button>
+    </div>
+  </header>
+
+  <div id="error-banner"></div>
+
+  <!-- Balance cards -->
+  <div class="balance-row" id="balance-row">
+    <div class="bal-card"><div class="label">Loading…</div></div>
+  </div>
+
+  <!-- Positions -->
+  <div class="section">
+    <div class="section-header">
+      <h2>Positions</h2>
+      <span class="count" id="positions-count"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="positions-table">
+        <thead>
+          <tr>
+            <th data-col="sec_type"      data-type="str">Sec Type</th>
+            <th data-col="symbol"        data-type="str">Symbol</th>
+            <th data-col="underlying"    data-type="str">Underlying</th>
+            <th data-col="option_type"   data-type="str">Type</th>
+            <th data-col="strike"        data-type="num">Strike</th>
+            <th data-col="expiry"        data-type="str">Expiry</th>
+            <th data-col="qty"           data-type="num">Qty</th>
+            <th data-col="avg_cost"      data-type="num">Avg Cost</th>
+            <th data-col="mkt_price"     data-type="num">Mkt Price</th>
+            <th data-col="mkt_value"     data-type="num">Mkt Value</th>
+            <th data-col="unrealized_pnl" data-type="num">Unrealized P&amp;L</th>
+            <th data-col="realized_pnl"  data-type="num">Realized P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody id="positions-body">
+          <tr><td colspan="12" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Orders -->
+  <div class="section">
+    <div class="section-header">
+      <h2>Orders</h2>
+      <span class="count" id="orders-count"></span>
+    </div>
+    <div class="filters">
+      <select id="f-sectype" onchange="renderOrders()">
+        <option value="">All Types</option>
+        <option value="STK">STK</option>
+        <option value="OPT">OPT</option>
+      </select>
+      <input id="f-symbol" type="text" placeholder="Symbol / underlying…" oninput="renderOrders()">
+      <select id="f-side" onchange="renderOrders()">
+        <option value="">All Sides</option>
+        <option value="BUY">BUY</option>
+        <option value="SELL">SELL</option>
+      </select>
+      <select id="f-status" onchange="renderOrders()">
+        <option value="">All Statuses</option>
+        <option value="Submitted">Submitted</option>
+        <option value="Filled">Filled</option>
+        <option value="Cancelled">Cancelled</option>
+        <option value="Inactive">Inactive</option>
+      </select>
+      <label>Last Exec from</label>
+      <input id="f-exec-from" type="date" onchange="renderOrders()">
+      <label>to</label>
+      <input id="f-exec-to"   type="date" onchange="renderOrders()">
+    </div>
+    <div class="table-wrap">
+      <table id="orders-table">
+        <thead>
+          <tr>
+            <th data-col="order_id"       data-type="num">Order ID</th>
+            <th data-col="sec_type"       data-type="str">Sec Type</th>
+            <th data-col="symbol"         data-type="str">Symbol</th>
+            <th data-col="underlying"     data-type="str">Underlying</th>
+            <th data-col="option_type"    data-type="str">Type</th>
+            <th data-col="strike"         data-type="num">Strike</th>
+            <th data-col="expiry"         data-type="str">Expiry</th>
+            <th data-col="side"           data-type="str">Side</th>
+            <th data-col="status"         data-type="str">Status</th>
+            <th data-col="limit_price"    data-type="num">Limit Price</th>
+            <th data-col="ordered_qty"    data-type="num">Qty</th>
+            <th data-col="filled_qty"     data-type="num">Filled</th>
+            <th data-col="avg_fill_price" data-type="num">Avg Fill</th>
+            <th data-col="last_exec_time" data-type="str">Last Exec</th>
+          </tr>
+        </thead>
+        <tbody id="orders-body">
+          <tr><td colspan="14" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let balanceData   = null;
+    let positionsData = [];
+    let ordersData    = [];
+
+    // sort state: { col, dir } per table  (dir: 1=asc, -1=desc)
+    const posSort = { col: null, dir: 1 };
+    const ordSort = { col: null, dir: 1 };
+
+    function fmt(v, decimals = 2) {
+      if (v == null) return '—';
+      const n = parseFloat(v);
+      if (isNaN(n)) return v;
+      return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    }
+
+    function pnlClass(v) {
+      const n = parseFloat(v);
+      if (isNaN(n) || n === 0) return '';
+      return n > 0 ? 'pos' : 'neg';
+    }
+
+    function statusClass(s) {
+      return 'status-' + (s || '').toLowerCase();
+    }
+
+    async function fetchJSON(path) {
+      const r = await fetch(path);
+      if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+      return r.json();
+    }
+
+    function showError(msg) {
+      const b = document.getElementById('error-banner');
+      b.textContent = msg;
+      b.style.display = 'block';
+      setTimeout(() => { b.style.display = 'none'; }, 8000);
+    }
+
+    // ── Sorting helpers ───────────────────────────────────────────────────────
+
+    // Returns a comparator for the given column and type.
+    function makeCmp(col, type, dir) {
+      return (a, b) => {
+        let av = a[col], bv = b[col];
+        if (type === 'num') {
+          av = parseFloat(av) || 0;
+          bv = parseFloat(bv) || 0;
+          return dir * (av - bv);
+        }
+        av = (av || '').toString().toLowerCase();
+        bv = (bv || '').toString().toLowerCase();
+        return dir * av.localeCompare(bv);
+      };
+    }
+
+    // Wire up sortable headers for a table; state object must have {col, dir}.
+    function initSortHeaders(tableId, state, renderFn) {
+      const table = document.getElementById(tableId);
+      table.querySelectorAll('thead th[data-col]').forEach(th => {
+        th.addEventListener('click', () => {
+          const col = th.dataset.col;
+          if (state.col === col) {
+            state.dir *= -1;
+          } else {
+            state.col = col;
+            state.dir = 1;
+          }
+          renderFn();
+        });
+      });
+    }
+
+    // Update header classes to show sort arrow.
+    function updateSortHeaders(tableId, state) {
+      const table = document.getElementById(tableId);
+      table.querySelectorAll('thead th[data-col]').forEach(th => {
+        th.classList.remove('sort-asc', 'sort-desc');
+        if (th.dataset.col === state.col) {
+          th.classList.add(state.dir === 1 ? 'sort-asc' : 'sort-desc');
+        }
+      });
+    }
+
+    function sortedData(data, state, tableId) {
+      if (!state.col) return data;
+      const table = document.getElementById(tableId);
+      const th = table.querySelector(`thead th[data-col="${state.col}"]`);
+      const type = th ? th.dataset.type : 'str';
+      return [...data].sort(makeCmp(state.col, type, state.dir));
+    }
+
+    // ── Balance ───────────────────────────────────────────────────────────────
+    async function fetchBalance() {
+      try {
+        balanceData = await fetchJSON('/api/ibkr/balance');
+        renderBalance();
+      } catch(e) { showError('Balance: ' + e.message); }
+    }
+
+    function renderBalance() {
+      if (!balanceData) return;
+      const d = balanceData;
+      const cur = d.currency || 'USD';
+      const cards = [
+        { label: 'Net Liquidation', value: d.net_liquidation },
+        { label: 'Available Funds', value: d.available_funds },
+        { label: 'Cash Balance',    value: d.cash_balance    },
+        { label: 'Settled Cash',    value: d.settled_cash    },
+        { label: 'Buying Power',    value: d.buying_power    },
+      ];
+      document.getElementById('balance-row').innerHTML = cards.map(c => `
+        <div class="bal-card">
+          <div class="label">${c.label}</div>
+          <div class="value">${fmt(c.value)}</div>
+          <div class="currency">${cur}</div>
+        </div>`).join('');
+    }
+
+    // ── Positions ─────────────────────────────────────────────────────────────
+    async function fetchPositions() {
+      try {
+        positionsData = await fetchJSON('/api/ibkr/positions');
+        renderPositions();
+      } catch(e) { showError('Positions: ' + e.message); }
+    }
+
+    function renderPositions() {
+      const tbody = document.getElementById('positions-body');
+      updateSortHeaders('positions-table', posSort);
+
+      // Augment with display symbol for sorting
+      const data = (positionsData || []).map(p => ({
+        ...p,
+        symbol: p.sec_type === 'OPT' ? (p.occ_symbol || p.ticker) : p.ticker,
+      }));
+
+      const sorted = sortedData(data, posSort, 'positions-table');
+
+      document.getElementById('positions-count').textContent =
+        sorted.length + ' position' + (sorted.length !== 1 ? 's' : '');
+
+      if (!sorted.length) {
+        tbody.innerHTML = '<tr><td colspan="12" class="empty">No positions</td></tr>';
+        return;
+      }
+      tbody.innerHTML = sorted.map(p => {
+        const isOpt = p.sec_type === 'OPT';
+        const underlying = isOpt ? (p.underlying || '') : '';
+        const optType = isOpt ? p.option_type : '';
+        const strike  = isOpt ? fmt(p.strike, 2) : '';
+        const expiry  = isOpt ? (p.expiry || '') : '';
+        const typeTag = isOpt ? `<span class="tag tag-${optType?.toLowerCase() === 'call' ? 'call' : 'put'}">${optType}</span>` : '';
+        const secTag  = `<span class="tag tag-${p.sec_type?.toLowerCase()}">${p.sec_type}</span>`;
+        const pnl     = p.unrealized_pnl;
+        return `<tr>
+          <td>${secTag}</td>
+          <td class="mono">${p.symbol}</td>
+          <td class="dim">${underlying}</td>
+          <td>${typeTag}</td>
+          <td>${strike}</td>
+          <td class="dim">${expiry}</td>
+          <td class="${parseFloat(p.qty) < 0 ? 'neg' : ''}">${fmt(p.qty, 4)}</td>
+          <td>${fmt(p.avg_cost)}</td>
+          <td>${fmt(p.mkt_price)}</td>
+          <td>${fmt(p.mkt_value)}</td>
+          <td class="${pnlClass(pnl)}">${fmt(pnl)}</td>
+          <td class="${pnlClass(p.realized_pnl)}">${fmt(p.realized_pnl)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ── Orders ────────────────────────────────────────────────────────────────
+    async function fetchOrders() {
+      try {
+        ordersData = await fetchJSON('/api/ibkr/orders');
+        renderOrders();
+      } catch(e) { showError('Orders: ' + e.message); }
+    }
+
+    // Parse "YYYY-MM-DD HH:MM:SS" → Date (returns null if empty/invalid).
+    function parseDateTime(s) {
+      if (!s) return null;
+      const d = new Date(s.replace(' ', 'T'));
+      return isNaN(d) ? null : d;
+    }
+
+    function renderOrders() {
+      const tbody   = document.getElementById('orders-body');
+      const sectype = document.getElementById('f-sectype').value.toUpperCase();
+      const symbol  = document.getElementById('f-symbol').value.trim().toUpperCase();
+      const side    = document.getElementById('f-side').value.toUpperCase();
+      const status  = document.getElementById('f-status').value.toLowerCase();
+      const execFrom = document.getElementById('f-exec-from').value; // "YYYY-MM-DD"
+      const execTo   = document.getElementById('f-exec-to').value;
+
+      updateSortHeaders('orders-table', ordSort);
+
+      let data = ordersData || [];
+      if (sectype)   data = data.filter(o => (o.sec_type || '').toUpperCase() === sectype);
+      if (symbol)    data = data.filter(o =>
+        (o.symbol || '').toUpperCase().includes(symbol) ||
+        (o.underlying || '').toUpperCase().includes(symbol));
+      if (side)      data = data.filter(o => (o.side || '').toUpperCase() === side);
+      if (status)    data = data.filter(o => (o.status || '').toLowerCase() === status);
+      if (execFrom)  data = data.filter(o => {
+        const d = parseDateTime(o.last_exec_time);
+        return d && d >= new Date(execFrom);
+      });
+      if (execTo) data = data.filter(o => {
+        const d = parseDateTime(o.last_exec_time);
+        // include the full "to" day
+        const end = new Date(execTo);
+        end.setDate(end.getDate() + 1);
+        return d && d < end;
+      });
+
+      const sorted = sortedData(data, ordSort, 'orders-table');
+
+      document.getElementById('orders-count').textContent =
+        sorted.length + ' order' + (sorted.length !== 1 ? 's' : '');
+
+      if (!sorted.length) {
+        tbody.innerHTML = '<tr><td colspan="14" class="empty">No orders</td></tr>';
+        return;
+      }
+      tbody.innerHTML = sorted.map(o => {
+        const isOpt   = o.sec_type === 'OPT';
+        const secTag  = `<span class="tag tag-${(o.sec_type||'').toLowerCase()}">${o.sec_type}</span>`;
+        const sideTag = `<span class="tag tag-${(o.side||'').toLowerCase()}">${o.side}</span>`;
+        const typeTag = isOpt && o.option_type
+          ? `<span class="tag tag-${o.option_type.toLowerCase() === 'call' ? 'call' : 'put'}">${o.option_type}</span>`
+          : '';
+        return `<tr>
+          <td class="mono dim">${o.order_id}</td>
+          <td>${secTag}</td>
+          <td class="mono">${o.symbol || ''}</td>
+          <td class="dim">${o.underlying || ''}</td>
+          <td>${typeTag}</td>
+          <td>${isOpt ? fmt(o.strike, 2) : ''}</td>
+          <td class="dim">${isOpt ? (o.expiry || '') : ''}</td>
+          <td>${sideTag}</td>
+          <td class="${statusClass(o.status)}">${o.status}</td>
+          <td>${fmt(o.limit_price)}</td>
+          <td>${fmt(o.ordered_qty, 0)}</td>
+          <td>${fmt(o.filled_qty, 0)}</td>
+          <td>${fmt(o.avg_fill_price)}</td>
+          <td class="dim">${o.last_exec_time || ''}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ── Refresh ───────────────────────────────────────────────────────────────
+    async function refresh() {
+      await Promise.all([fetchBalance(), fetchPositions(), fetchOrders()]);
+      document.getElementById('last-updated').textContent =
+        'Updated ' + new Date().toLocaleTimeString();
+    }
+
+    initSortHeaders('positions-table', posSort, renderPositions);
+    initSortHeaders('orders-table',    ordSort, renderOrders);
+
+    let autoRefreshTimer = null;
+
+    function onAutoRefreshChange() {
+      clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
+      const secs = parseInt(document.getElementById('auto-refresh').value, 10);
+      if (secs > 0) autoRefreshTimer = setInterval(refresh, secs * 1000);
+    }
+
+    refresh();
+    onAutoRefreshChange();
+  </script>
+</body>
+</html>
