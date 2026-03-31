@@ -167,6 +167,10 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 	t.handlerMap[api.ExchangeGetProductPath] = httpPostJSONHandler(t.doGetProduct)
 	t.handlerMap[api.ExchangeUpdateProductPath] = httpPostJSONHandler(t.doExchangeUpdateProduct)
 
+	t.handlerMap["/api/ibkr/balance"] = ibkrJSONHandler(t.handleIBKRBalance)
+	t.handlerMap["/api/ibkr/orders"] = ibkrJSONHandler(t.handleIBKROrders)
+	t.handlerMap["/api/ibkr/positions"] = ibkrJSONHandler(t.handleIBKRPositions)
+
 	return t, nil
 }
 

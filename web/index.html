@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tradebot</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #cdd6f4;
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 2rem;
+      height: 56px;
+      background: #181b23;
+      border-bottom: 1px solid #2a2d3a;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; letter-spacing: .02em; }
+    nav a {
+      color: #89b4fa;
+      text-decoration: none;
+      font-size: .9rem;
+      font-weight: 500;
+      padding: .3rem .8rem;
+      border: 1px solid #89b4fa33;
+      border-radius: 6px;
+      transition: background .15s;
+    }
+    nav a:hover { background: #89b4fa22; }
+    main {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 6rem 2rem;
+      gap: 1rem;
+    }
+    main h2 { font-size: 2rem; font-weight: 700; color: #cdd6f4; }
+    main p  { color: #6c7086; font-size: 1rem; }
+    .cards {
+      display: flex;
+      gap: 1.5rem;
+      margin-top: 2.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .card {
+      background: #181b23;
+      border: 1px solid #2a2d3a;
+      border-radius: 12px;
+      padding: 1.5rem 2rem;
+      min-width: 180px;
+      text-align: center;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color .15s, transform .1s;
+    }
+    .card:hover { border-color: #89b4fa; transform: translateY(-2px); }
+    .card .icon { font-size: 2rem; margin-bottom: .5rem; }
+    .card .label { font-size: .85rem; color: #6c7086; margin-top: .25rem; }
+    .card h3 { font-size: 1.1rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Tradebot</h1>
+    <nav>
+      <a href="/ibkr/">IBKR</a>
+    </nav>
+  </header>
+  <main>
+    <h2>Tradebot Dashboard</h2>
+    <p>Select an exchange to view account details.</p>
+    <div class="cards">
+      <a class="card" href="/ibkr/">
+        <div class="icon">📈</div>
+        <h3>IBKR</h3>
+        <div class="label">Interactive Brokers</div>
+      </a>
+    </div>
+  </main>
+</body>
+</html>

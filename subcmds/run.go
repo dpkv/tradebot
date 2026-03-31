@@ -28,6 +28,7 @@ import (
 	"github.com/bvk/tradebot/server"
 	"github.com/bvk/tradebot/subcmds/cmdutil"
 	"github.com/bvk/tradebot/subcmds/defaults"
+	"github.com/bvk/tradebot/web"
 	"github.com/bvkgo/kv/kvhttp"
 	"github.com/bvkgo/kvbadger"
 	"github.com/dgraph-io/badger/v4"
@@ -350,6 +351,9 @@ func (c *Run) run(ctx context.Context, args []string) error {
 			s.RemoveHandler(k)
 		}
 	}()
+
+	// Serve static web UI.
+	s.AddHandler("/", http.FileServer(http.FS(web.FS)))
 
 	// Following /pid handler is required by the -background flag to successfully
 	// identify service initialization.
