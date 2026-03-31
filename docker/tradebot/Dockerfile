@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build
 FROM alpine:latest
 
 # ca-certificates for HTTPS; tzdata so TZ=Region/City works (Alpine has no zoneinfo otherwise).
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add bash ca-certificates tzdata
 
 # Copy the binary from builder
 COPY --from=builder /src/tradebot /usr/local/bin/tradebot
