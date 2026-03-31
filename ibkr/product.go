@@ -61,6 +61,7 @@ type Product struct {
 	// clientIDStatusMap maps the caller's UUID to the status of the order
 	// placed with that UUID as cOID. Populated by LimitBuy/LimitSell and
 	// updated by goWatchOrderUpdates.
+	// TODO: We should cleanup the oldest orders.
 	clientIDStatusMap syncmap.Map[uuid.UUID, *clientIDStatus]
 }
 

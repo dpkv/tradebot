@@ -42,6 +42,7 @@ type OptionsProduct struct {
 	expiry       time.Time
 	contractSize decimal.Decimal
 
+	// TODO: We should cleanup the oldest orders.
 	clientIDStatusMap syncmap.Map[uuid.UUID, *clientIDStatus]
 }
 
