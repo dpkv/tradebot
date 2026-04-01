@@ -352,7 +352,9 @@ func decodePlaceOrderResponses(data json.RawMessage) ([]apiPlaceOrderResponse, e
 // If the gateway issues a reply challenge, it is auto-confirmed.
 // Order operations are serialized via orderMu because the CP Gateway returns
 // 503 when multiple order mutations are in flight concurrently.
-func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side string, qty, price decimal.Decimal, cOID string) (int64, error) {
+// outsideRTH controls whether the order can execute outside regular trading
+// hours (pre-market and after-hours sessions).
+func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side string, qty, price decimal.Decimal, cOID string, outsideRTH bool) (int64, error) {
 	c.orderMu.Lock()
 	defer c.orderMu.Unlock()
 
@@ -367,7 +369,7 @@ func (c *Client) PlaceOrder(ctx context.Context, symbol string, conid int, side 
 		Side:       side,
 		Quantity:   qty.InexactFloat64(),
 		TIF:        "GTC",
-		OutsideRTH: false,
+		OutsideRTH: outsideRTH,
 	}
 	path := "/v1/api/iserver/account/" + c.creds.AccountID + "/orders"
 
