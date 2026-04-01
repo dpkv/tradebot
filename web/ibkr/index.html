@@ -124,6 +124,40 @@
     .status-filled    { color: #a6e3a1; }
     .status-cancelled { color: #6c7086; }
     .status-inactive  { color: #6c7086; }
+
+    /* ── Multi-select status dropdown ───────────────────── */
+    .multi-select { position: relative; }
+    .multi-select-btn {
+      background: #181b23; border: 1px solid #2a2d3a; color: #cdd6f4;
+      padding: .3rem .6rem; border-radius: 6px; font-size: .8rem; cursor: pointer;
+      display: flex; align-items: center; gap: .35rem; white-space: nowrap;
+    }
+    .multi-select-btn:hover, .multi-select-btn.open { border-color: #89b4fa; }
+    .multi-select-arrow { color: #6c7086; font-size: .65rem; }
+    .multi-select-dropdown {
+      display: none; position: absolute; top: calc(100% + 4px); left: 0;
+      background: #181b23; border: 1px solid #2a2d3a; border-radius: 6px;
+      padding: .35rem 0; min-width: 150px; z-index: 100;
+      box-shadow: 0 4px 16px #00000077;
+    }
+    .multi-select-dropdown.open { display: block; }
+    .multi-select-dropdown label {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .3rem .75rem; cursor: pointer; font-size: .8rem; color: #cdd6f4;
+      white-space: nowrap;
+    }
+    .multi-select-dropdown label:hover { background: #1e2030; }
+    .multi-select-dropdown input[type="checkbox"] { accent-color: #89b4fa; cursor: pointer; }
+
+    /* ── Date shortcut buttons ──────────────────────────── */
+    .date-shortcuts { display: flex; gap: .3rem; align-items: center; }
+    .shortcut-btn {
+      background: #181b23; border: 1px solid #2a2d3a; color: #6c7086;
+      padding: .2rem .5rem; border-radius: 4px; font-size: .75rem; cursor: pointer;
+      white-space: nowrap;
+    }
+    .shortcut-btn:hover { border-color: #45475a; color: #cdd6f4; }
+    .shortcut-btn.active { border-color: #89b4fa; color: #89b4fa; background: #1a2340; }
   </style>
 </head>
 <body>
@@ -203,18 +237,30 @@
         <option value="BUY">BUY</option>
         <option value="SELL">SELL</option>
       </select>
-      <select id="f-status" onchange="renderOrders()">
-        <option value="">All Statuses</option>
-        <option value="PreSubmitted">PreSubmitted</option>
-        <option value="Submitted">Submitted</option>
-        <option value="Filled">Filled</option>
-        <option value="Cancelled">Cancelled</option>
-        <option value="Inactive">Inactive</option>
-      </select>
-      <label>Last Exec from</label>
-      <input id="f-exec-from" type="date" onchange="renderOrders()">
+      <div class="multi-select" id="status-select">
+        <button class="multi-select-btn" onclick="toggleStatusDropdown(event)">
+          <span id="status-label">All Statuses</span>
+          <span class="multi-select-arrow">▾</span>
+        </button>
+        <div class="multi-select-dropdown" id="status-dropdown">
+          <label><input type="checkbox" value="PreSubmitted" onchange="onStatusChange()"> PreSubmitted</label>
+          <label><input type="checkbox" value="Submitted"    onchange="onStatusChange()"> Submitted</label>
+          <label><input type="checkbox" value="Filled"       onchange="onStatusChange()"> Filled</label>
+          <label><input type="checkbox" value="Cancelled"    onchange="onStatusChange()"> Cancelled</label>
+          <label><input type="checkbox" value="Inactive"     onchange="onStatusChange()"> Inactive</label>
+        </div>
+      </div>
+      <label>Last Exec</label>
+      <div class="date-shortcuts">
+        <button class="shortcut-btn" data-shortcut="today"      onclick="setDateShortcut('today')">Today</button>
+        <button class="shortcut-btn" data-shortcut="yesterday"  onclick="setDateShortcut('yesterday')">Yesterday</button>
+        <button class="shortcut-btn" data-shortcut="this-week"  onclick="setDateShortcut('this-week')">This Week</button>
+        <button class="shortcut-btn" data-shortcut="last-week"  onclick="setDateShortcut('last-week')">Last Week</button>
+      </div>
+      <label>from</label>
+      <input id="f-exec-from" type="date" oninput="clearDateShortcut(); renderOrders()">
       <label>to</label>
-      <input id="f-exec-to"   type="date" onchange="renderOrders()">
+      <input id="f-exec-to"   type="date" oninput="clearDateShortcut(); renderOrders()">
     </div>
     <div class="table-wrap">
       <table id="orders-table">
@@ -415,6 +461,89 @@
       }).join('');
     }
 
+    // ── Status multi-select ───────────────────────────────────────────────────
+
+    function toggleStatusDropdown(e) {
+      e.stopPropagation();
+      const btn = document.querySelector('#status-select .multi-select-btn');
+      const dd  = document.getElementById('status-dropdown');
+      const open = dd.classList.toggle('open');
+      btn.classList.toggle('open', open);
+    }
+
+    document.addEventListener('click', () => {
+      document.getElementById('status-dropdown').classList.remove('open');
+      document.querySelector('#status-select .multi-select-btn').classList.remove('open');
+    });
+
+    function getSelectedStatuses() {
+      const checks = document.querySelectorAll('#status-dropdown input[type="checkbox"]');
+      return Array.from(checks).filter(cb => cb.checked).map(cb => cb.value.toLowerCase());
+    }
+
+    function onStatusChange() {
+      const selected = getSelectedStatuses();
+      const label = document.getElementById('status-label');
+      if (selected.length === 0) {
+        label.textContent = 'All Statuses';
+      } else if (selected.length <= 2) {
+        label.textContent = selected.map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(', ');
+      } else {
+        label.textContent = selected.length + ' statuses';
+      }
+      renderOrders();
+    }
+
+    // ── Date shortcuts ────────────────────────────────────────────────────────
+
+    function toDateStr(d) {
+      // Format as YYYY-MM-DD in local time.
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function setDateShortcut(key) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      let from, to;
+
+      if (key === 'today') {
+        from = to = today;
+      } else if (key === 'yesterday') {
+        const y = new Date(today);
+        y.setDate(y.getDate() - 1);
+        from = to = y;
+      } else if (key === 'this-week') {
+        // Monday of the current week.
+        const dow = today.getDay(); // 0=Sun
+        const mon = new Date(today);
+        mon.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+        from = mon; to = today;
+      } else if (key === 'last-week') {
+        const dow = today.getDay();
+        const lastMon = new Date(today);
+        lastMon.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1) - 7);
+        const lastSun = new Date(lastMon);
+        lastSun.setDate(lastMon.getDate() + 6);
+        from = lastMon; to = lastSun;
+      }
+
+      document.getElementById('f-exec-from').value = toDateStr(from);
+      document.getElementById('f-exec-to').value   = toDateStr(to);
+
+      document.querySelectorAll('.shortcut-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.shortcut === key);
+      });
+
+      renderOrders();
+    }
+
+    function clearDateShortcut() {
+      document.querySelectorAll('.shortcut-btn').forEach(btn => btn.classList.remove('active'));
+    }
+
     // ── Orders ────────────────────────────────────────────────────────────────
     async function fetchOrders() {
       try {
@@ -431,11 +560,11 @@
     }
 
     function renderOrders() {
-      const tbody   = document.getElementById('orders-body');
-      const sectype = document.getElementById('f-sectype').value.toUpperCase();
-      const symbol  = document.getElementById('f-symbol').value.trim().toUpperCase();
-      const side    = document.getElementById('f-side').value.toUpperCase();
-      const status  = document.getElementById('f-status').value.toLowerCase();
+      const tbody    = document.getElementById('orders-body');
+      const sectype  = document.getElementById('f-sectype').value.toUpperCase();
+      const symbol   = document.getElementById('f-symbol').value.trim().toUpperCase();
+      const side     = document.getElementById('f-side').value.toUpperCase();
+      const statuses = getSelectedStatuses();
       const execFrom = document.getElementById('f-exec-from').value; // "YYYY-MM-DD"
       const execTo   = document.getElementById('f-exec-to').value;
 
@@ -446,8 +575,8 @@
       if (symbol)    data = data.filter(o =>
         (o.symbol || '').toUpperCase().includes(symbol) ||
         (o.underlying || '').toUpperCase().includes(symbol));
-      if (side)      data = data.filter(o => (o.side || '').toUpperCase() === side);
-      if (status)    data = data.filter(o => (o.status || '').toLowerCase() === status);
+      if (side)           data = data.filter(o => (o.side || '').toUpperCase() === side);
+      if (statuses.length) data = data.filter(o => statuses.includes((o.status || '').toLowerCase()));
       if (execFrom)  data = data.filter(o => {
         const d = parseDateTime(o.last_exec_time);
         return d && d >= new Date(execFrom);
@@ -514,6 +643,7 @@
       if (secs > 0) autoRefreshTimer = setInterval(refresh, secs * 1000);
     }
 
+    setDateShortcut('today');
     refresh();
     onAutoRefreshChange();
   </script>
