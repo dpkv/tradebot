@@ -50,6 +50,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 	// exchange.
 	var live []*exchange.SimpleOrder
 	for _, order := range v.dupOrderMap() {
+		slog.Debug("limiter order state at start", "limiter", v, "order-id", order.ServerOrderID, "status", order.Status, "done", order.Done, "done-reason", order.DoneReason, "filled-size", order.FilledSize, "create-time", order.CreateTime.Time)
 		if !order.Done {
 			live = append(live, order)
 		}
@@ -66,7 +67,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 	if nlive != 0 {
 		activeOrderID = live[0].ServerOrderID
 		activeOrderAt = live[0].CreateTime.Time
-		slog.Warn("reusing existing order as the active order", "limiter", v, "point", v.point, "order-id", activeOrderID)
+		slog.Warn("reusing existing order as the active order", "limiter", v, "point", v.point, "order-id", activeOrderID, "order-status", live[0].Status, "order-age", time.Since(activeOrderAt))
 	}
 
 	dirty := 0
@@ -141,10 +142,13 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 			tickerPrice, _ := ticker.PricePoint()
 
 			if v.IsSell() {
+				inRange := tickerPrice.GreaterThan(v.point.Cancel)
+				slog.Debug("limiter sell tick", "limiter", v, "price", tickerPrice, "sell-price", v.point.Price, "cancel", v.point.Cancel, "in-range", inRange, "active-order", activeOrderID, "pending", v.PendingSize())
 				if tickerPrice.LessThanOrEqual(v.point.Cancel) {
 					// Cancel only after CancelOffsetTimeout since placement when cancel
 					// price is breached.
 					if activeOrderID != "" && activeOrderAt.Add(CancelOffsetTimeout).Before(now) {
+						slog.Debug("limiter sell: cancelling order — price at or below cancel threshold", "limiter", v, "price", tickerPrice, "cancel", v.point.Cancel, "order-id", activeOrderID, "order-age", time.Since(activeOrderAt))
 						if err := v.cancel(localCtx, rt.Product, activeOrderID); err != nil {
 							return err
 						}
@@ -153,7 +157,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 						activeOrderAt = time.Time{}
 					}
 				}
-				if tickerPrice.GreaterThan(v.point.Cancel) {
+				if inRange {
 					if activeOrderID == "" {
 						id, err := v.create(localCtx, rt)
 						if err != nil {
@@ -162,16 +166,23 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 						dirty++
 						activeOrderID = id
 						activeOrderAt = now
+					} else {
+						slog.Debug("limiter sell: price in range, waiting for active order to complete", "limiter", v, "price", tickerPrice, "active-order", activeOrderID, "order-age", time.Since(activeOrderAt))
 					}
+				} else {
+					slog.Debug("limiter sell: price out of range — no action", "limiter", v, "price", tickerPrice, "cancel", v.point.Cancel)
 				}
 				continue
 			}
 
 			if v.IsBuy() {
+				inRange := tickerPrice.GreaterThanOrEqual(v.point.Price) && tickerPrice.LessThan(v.point.Cancel)
+				slog.Debug("limiter buy tick", "limiter", v, "price", tickerPrice, "buy-price", v.point.Price, "cancel", v.point.Cancel, "in-range", inRange, "active-order", activeOrderID, "pending", v.PendingSize())
 				if tickerPrice.GreaterThanOrEqual(v.point.Cancel) {
 					// Cancel only after CancelOffsetTimeout since placement when cancel
 					// price is breached.
 					if activeOrderID != "" && activeOrderAt.Add(CancelOffsetTimeout).Before(now) {
+						slog.Debug("limiter buy: cancelling order — price at or above cancel threshold", "limiter", v, "price", tickerPrice, "cancel", v.point.Cancel, "order-id", activeOrderID, "order-age", time.Since(activeOrderAt))
 						if err := v.cancel(localCtx, rt.Product, activeOrderID); err != nil {
 							return err
 						}
@@ -180,7 +191,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 						activeOrderAt = time.Time{}
 					}
 				}
-				if tickerPrice.GreaterThanOrEqual(v.point.Price) && tickerPrice.LessThan(v.point.Cancel) {
+				if inRange {
 					if activeOrderID == "" {
 						id, err := v.create(localCtx, rt)
 						if err != nil {
@@ -189,7 +200,11 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 						dirty++
 						activeOrderID = id
 						activeOrderAt = now
+					} else {
+						slog.Debug("limiter buy: price in range, waiting for active order to complete", "limiter", v, "price", tickerPrice, "active-order", activeOrderID, "order-age", time.Since(activeOrderAt))
 					}
+				} else {
+					slog.Debug("limiter buy: price out of range — no action", "limiter", v, "price", tickerPrice, "buy-price", v.point.Price, "cancel", v.point.Cancel)
 				}
 				continue
 			}
@@ -247,11 +262,11 @@ func (v *Limiter) create(ctx context.Context, rt *trader.Runtime) (string, error
 	if v.IsSell() {
 		s := time.Now()
 		order, err = rt.Product.LimitSell(ctx, clientOrderID, size, v.point.Price)
-		latency = time.Now().Sub(s)
+		latency = time.Since(s)
 	} else {
 		s := time.Now()
 		order, err = rt.Product.LimitBuy(ctx, clientOrderID, size, v.point.Price)
-		latency = time.Now().Sub(s)
+		latency = time.Since(s)
 	}
 	if err != nil {
 		if rt.Exchange.CanDedupOnClientUUID() {

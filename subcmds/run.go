@@ -4,6 +4,7 @@ package subcmds
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,6 +38,18 @@ import (
 	"github.com/visvasity/ntpsync"
 	"github.com/visvasity/sglog"
 )
+
+// runConfig holds fields that can be set via config.json in the data directory.
+// CLI flags take precedence — a field is only applied from config.json if the
+// corresponding flag was left at its zero value.
+type runConfig struct {
+	LogDebug             bool          `json:"log_debug"`
+	NoPprof              bool          `json:"no_pprof"`
+	NoResume             bool          `json:"no_resume"`
+	NoFetchCandles       bool          `json:"no_fetch_candles"`
+	MaxFetchTimeLatency  time.Duration `json:"max_fetch_time_latency"`
+	MaxHttpClientTimeout time.Duration `json:"max_http_client_timeout"`
+}
 
 type Run struct {
 	cmdutil.ServerFlags
@@ -269,6 +282,36 @@ func (c *Run) run(ctx context.Context, args []string) error {
 
 	slog.SetDefault(slog.New(backend.Handler()))
 	log.Printf("using data directory %s, log directory %s and secrets file %s", dataDir, c.logDir, c.secretsPath)
+
+	// Load optional config.json from the data directory. CLI flags take
+	// precedence — config.json only sets fields left at their zero value.
+	configPath := filepath.Join(dataDir, "config.json")
+	if data, err := os.ReadFile(configPath); err == nil {
+		var cfg runConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			log.Printf("could not parse config.json (ignored): %v", err)
+		} else {
+			if !c.logDebug && cfg.LogDebug {
+				c.logDebug = true
+				log.Printf("debug logging enabled via config.json")
+			}
+			if !c.noPprof && cfg.NoPprof {
+				c.noPprof = cfg.NoPprof
+			}
+			if !c.noResume && cfg.NoResume {
+				c.noResume = cfg.NoResume
+			}
+			if !c.noFetchCandles && cfg.NoFetchCandles {
+				c.noFetchCandles = cfg.NoFetchCandles
+			}
+			if c.maxFetchTimeLatency == 0 && cfg.MaxFetchTimeLatency != 0 {
+				c.maxFetchTimeLatency = cfg.MaxFetchTimeLatency
+			}
+			if c.maxHttpClientTimeout == 0 && cfg.MaxHttpClientTimeout != 0 {
+				c.maxHttpClientTimeout = cfg.MaxHttpClientTimeout
+			}
+		}
+	}
 
 	if c.logDebug {
 		backend.SetLevel(slog.LevelDebug)

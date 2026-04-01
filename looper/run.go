@@ -139,7 +139,7 @@ func (v *Looper) Run(ctx context.Context, rt *trader.Runtime) error {
 			<-ctx.Done()
 			return context.Cause(ctx)
 		}
-		slog.Info("", "looper", v, "next-action", action, "bought", bought, "sold", sold, "numBuys", numBuys, "pbuy", pbuy, "numSells", numSells, "psell", psell, "nbuys", nbuys, "nsells", nsells, "holdings", holdings)
+		slog.Debug("looper state", "looper", v, "next-action", action, "bought", bought, "sold", sold, "numBuys", numBuys, "pbuy", pbuy, "numSells", numSells, "psell", psell, "nbuys", nbuys, "nsells", nsells, "holdings", holdings)
 
 		switch action {
 		default: // STOP
