@@ -173,7 +173,7 @@ func (p *OptionsProduct) placeOrder(ctx context.Context, clientID uuid.UUID, sid
 		cstatus.err = status
 	}()
 
-	serverOrderID, err := p.client.PlaceOptionOrder(ctx, p.underlying, p.conid, side, qty, price, clientID.String())
+	serverOrderID, err := p.client.PlaceOptionOrder(ctx, p.underlying, p.conid, side, qty, price, clientID.String(), false)
 	if err != nil {
 		return nil, err
 	}

@@ -151,7 +151,7 @@ func (v *Exchange) OpenSpotProduct(ctx context.Context, productID string) (excha
 	// Start price polling for this symbol if not already running.
 	v.client.WatchSymbol(productID, conid)
 
-	p, err := NewProduct(ctx, v, productID, conid)
+	p, err := NewProduct(ctx, v, productID, conid, true)
 	if err != nil {
 		return nil, err
 	}

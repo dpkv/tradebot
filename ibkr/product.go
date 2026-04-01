@@ -58,6 +58,10 @@ type Product struct {
 	symbol string
 	conid  int
 
+	// outsideRTH controls whether orders placed by this product can execute
+	// outside regular trading hours (pre-market and after-hours sessions).
+	outsideRTH bool
+
 	// clientIDStatusMap maps the caller's UUID to the status of the order
 	// placed with that UUID as cOID. Populated by LimitBuy/LimitSell and
 	// updated by goWatchOrderUpdates.
@@ -69,8 +73,9 @@ var _ exchange.Product = &Product{}
 
 // NewProduct creates a Product for the given symbol and starts its background
 // goroutine. WatchSymbol must have been called on the client before NewProduct
-// so that the price and order topics exist.
-func NewProduct(ctx context.Context, exch *Exchange, symbol string, conid int) (*Product, error) {
+// so that the price and order topics exist. outsideRTH controls whether orders
+// can execute outside regular trading hours.
+func NewProduct(ctx context.Context, exch *Exchange, symbol string, conid int, outsideRTH bool) (*Product, error) {
 	lifeCtx, lifeCancel := context.WithCancelCause(context.Background())
 	p := &Product{
 		lifeCtx:    lifeCtx,
@@ -79,6 +84,7 @@ func NewProduct(ctx context.Context, exch *Exchange, symbol string, conid int) (
 		client:     exch.client,
 		symbol:     symbol,
 		conid:      conid,
+		outsideRTH: outsideRTH,
 	}
 
 	p.wg.Add(1)
@@ -168,7 +174,7 @@ func (p *Product) placeOrder(ctx context.Context, clientID uuid.UUID, side strin
 		cstatus.err = status
 	}()
 
-	serverOrderID, err := p.client.PlaceOrder(ctx, p.symbol, p.conid, side, size, price, clientID.String())
+	serverOrderID, err := p.client.PlaceOrder(ctx, p.symbol, p.conid, side, size, price, clientID.String(), p.outsideRTH)
 	if err != nil {
 		return nil, err
 	}

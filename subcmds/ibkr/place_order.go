@@ -29,6 +29,7 @@ type PlaceOrder struct {
 	qty           string
 	limitPrice    string
 	clientOrderID string
+	outsideRTH    bool
 }
 
 func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
@@ -40,6 +41,7 @@ func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset.StringVar(&c.qty, "qty", "", "number of shares (STK) or contracts (OPT)")
 	fset.StringVar(&c.limitPrice, "limit-price", "", "limit price")
 	fset.StringVar(&c.clientOrderID, "client-order-id", "", "idempotency UUID (generated if not set)")
+	fset.BoolVar(&c.outsideRTH, "outside-rth", false, "allow order to execute outside regular trading hours")
 	return "place-order", fset, cli.CmdFunc(c.run)
 }
 
@@ -107,7 +109,7 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("could not resolve conid for %q: %w", c.symbol, err)
 		}
-		serverOrderID, err = client.PlaceOrder(ctx, c.symbol, conid, c.side, qty, price, clientID.String())
+		serverOrderID, err = client.PlaceOrder(ctx, c.symbol, conid, c.side, qty, price, clientID.String(), c.outsideRTH)
 		if err != nil {
 			return err
 		}
@@ -120,7 +122,7 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("invalid conid %q for %s: %w", contract.ContractID, c.symbol, err)
 		}
-		serverOrderID, err = client.PlaceOptionOrder(ctx, contract.Underlying, conid, c.side, qty, price, clientID.String())
+		serverOrderID, err = client.PlaceOptionOrder(ctx, contract.Underlying, conid, c.side, qty, price, clientID.String(), c.outsideRTH)
 		if err != nil {
 			return err
 		}
