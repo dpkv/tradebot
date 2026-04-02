@@ -485,6 +485,33 @@ func (c *Client) GetOrders(ctx context.Context) ([]*internal.Order, error) {
 	return orders, nil
 }
 
+// unsubscribeAllMarketData calls the gateway's unsubscribeall endpoint to
+// drop all active market data subscriptions. The next snapshot poll will
+// re-establish them. This is used to recover from a stale subscription where
+// the gateway stops returning price data without returning an error.
+func (c *Client) unsubscribeAllMarketData(ctx context.Context) error {
+	return c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/marketdata/unsubscribeall", nil, nil)
+}
+
+// FetchMidPrice makes a one-off market data snapshot request for the given
+// conid and returns the mid-price.
+func (c *Client) FetchMidPrice(ctx context.Context, conid int) (decimal.Decimal, error) {
+	path := fmt.Sprintf("/v1/api/iserver/marketdata/snapshot?conids=%d&fields=31,84,86", conid)
+	var snapshots []*internal.APISnapshot
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &snapshots); err != nil {
+		return decimal.Zero, err
+	}
+	for _, snap := range snapshots {
+		q := internal.NewQuoteFromAPI(snap)
+		if q != nil {
+			price, _ := q.PricePoint()
+			return price, nil
+		}
+	}
+	return decimal.Zero, fmt.Errorf("ibkr: snapshot returned no price data for conid %d", conid)
+}
+
+
 // GetBalance fetches the current portfolio summary and converts it to a Balance.
 func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
 	path := "/v1/api/portfolio/" + c.creds.AccountID + "/summary"
@@ -587,6 +614,11 @@ func (c *Client) goWatchPrices(ctx context.Context, symbol string, conid int) {
 
 	path := fmt.Sprintf("/v1/api/iserver/marketdata/snapshot?conids=%d&fields=31,84,86", conid)
 
+	const stalePriceWarnInterval = 2 * time.Minute
+	startTime := time.Now()
+	var lastPublished time.Time
+	var lastStaleWarn time.Time
+
 	for ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
@@ -597,13 +629,37 @@ func (c *Client) goWatchPrices(ctx context.Context, symbol string, conid int) {
 				slog.Warn("ibkr: could not poll price snapshot (will retry)", "symbol", symbol, "err", err)
 				continue
 			}
+			nPublished := 0
 			for _, snap := range snapshots {
 				q := internal.NewQuoteFromAPI(snap)
 				if q == nil {
-					continue // gateway not yet populated for this conid
+					slog.Debug("ibkr: price snapshot returned no usable price data", "symbol", symbol, "conid", snap.ConID, "bid", snap.BidStr, "ask", snap.AskStr, "last", snap.LastStr, "updated", snap.Updated)
+					continue
 				}
 				if err := t.Send(q); err != nil {
 					slog.Warn("ibkr: could not publish price update", "symbol", symbol, "err", err)
+					continue
+				}
+				nPublished++
+				lastPublished = time.Now()
+			}
+			slog.Debug("ibkr: price snapshot polled", "symbol", symbol, "snapshots", len(snapshots), "published", nPublished)
+
+			// If no valid price has been received for stalePriceWarnInterval,
+			// unsubscribe all market data so the next poll re-establishes the
+			// subscription. This recovers from the CP Gateway silently dropping
+			// the subscription (common on paper accounts).
+			if nPublished == 0 && time.Since(lastStaleWarn) >= stalePriceWarnInterval {
+				since := lastPublished
+				if since.IsZero() {
+					since = startTime
+				}
+				if time.Since(since) >= stalePriceWarnInterval {
+					slog.Warn("ibkr: no price data from gateway — re-subscribing market data", "symbol", symbol, "last-published", lastPublished, "since", since)
+					if err := c.unsubscribeAllMarketData(ctx); err != nil {
+						slog.Warn("ibkr: could not unsubscribe market data (will retry)", "symbol", symbol, "err", err)
+					}
+					lastStaleWarn = time.Now()
 				}
 			}
 		}
