@@ -17,6 +17,7 @@ import (
 )
 
 const SaveClientIDOffsetSize = 10
+
 // CancelOffsetTimeout is the minimum age of an order before it may be cancelled
 // when the cancel price is breached (reduces cancel churn).
 const CancelOffsetTimeout = 24 * time.Hour
@@ -277,13 +278,35 @@ func (v *Limiter) cancel(ctx context.Context, product exchange.Product, activeOr
 		slog.Error("cancel limit order has failed", "limiter", v, "point", v.point, "order-id", activeOrderID, "err", err)
 		return err
 	}
+	var firstNotFoundAt time.Time
+	var notFoundCount int
 	for {
 		detail, err := product.Get(ctx, activeOrderID)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				if firstNotFoundAt.IsZero() {
+					firstNotFoundAt = time.Now()
+				}
+				notFoundCount++
+				if notFoundCount < 5 || time.Since(firstNotFoundAt) < time.Minute {
+					slog.Warn("canceled order not found on exchange (will retry)", "order-id", activeOrderID, "retries", notFoundCount, "elapsed", time.Since(firstNotFoundAt).Round(time.Second))
+					time.Sleep(time.Second)
+					continue
+				}
+				// Order has been missing for at least 5 retries and 1 minute — treat as cancelled.
+				if sorder, ok := v.orderMap.Load(activeOrderID); ok {
+					sorder.Done = true
+					sorder.DoneReason = "NOTFOUND/CANCELED"
+				}
+				slog.Warn("canceled order not found on exchange (treating as done)", "order-id", activeOrderID, "retries", notFoundCount, "elapsed", time.Since(firstNotFoundAt).Round(time.Second))
+				return nil
+			}
 			slog.Warn("could not fetch canceled order (will retry)", "order-id", activeOrderID, "err", err)
 			time.Sleep(time.Second)
 			continue
 		}
+		firstNotFoundAt = time.Time{}
+		notFoundCount = 0
 		if !detail.IsDone() {
 			slog.Warn("canceled order is still not done (will retry)", "order-id", activeOrderID)
 			time.Sleep(time.Second)
