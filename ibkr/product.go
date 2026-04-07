@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/ibkr/internal"
@@ -31,6 +32,14 @@ type clientIDStatus struct {
 	// goWatchOrderUpdates publishes the first matching update or PlaceOrder
 	// returns.
 	order *internal.Order
+}
+
+// cancelEntry tracks a pending cancel request for an order, counting
+// consecutive observations where the order was not yet done.
+type cancelEntry struct {
+	mu        sync.Mutex
+	at        time.Time
+	missCount int
 }
 
 func newClientIDStatus() *clientIDStatus {
@@ -65,6 +74,12 @@ type Product struct {
 	// placed with that UUID as cOID. Populated by LimitBuy/LimitSell and
 	// updated by goWatchOrderUpdates.
 	clientIDStatusMap syncmap.Map[uuid.UUID, *clientIDStatus]
+
+	// pendingCancels maps orderID to a cancelEntry tracking when the cancel
+	// was sent and how many consecutive not-done observations have occurred.
+	// Used to synthesize a "Cancelled" update when the order drops off the
+	// live orders list before goWatchOrders can observe its cancelled status.
+	pendingCancels syncmap.Map[int64, *cancelEntry]
 }
 
 var _ exchange.Product = &Product{}
@@ -182,15 +197,13 @@ func (p *Product) placeOrder(ctx context.Context, clientID uuid.UUID, side strin
 	return order, nil
 }
 
-// Get returns the current state of an order by server ID. It first checks the
-// local clientIDStatusMap, then falls back to polling the exchange.
-func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetail, error) {
-	orderID, err := strconv.ParseInt(serverID, 10, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	// Fast path: find in clientIDStatusMap.
+// findOrder looks up an order by IBKR numeric orderID across all three
+// lookup paths. When found via the slow path (live gateway), it caches the
+// result in clientIDStatusMap so subsequent calls can use the fast path —
+// this is important for the restart case where clientIDStatusMap is initially
+// empty and the limiter reuses an active order from a previous run.
+func (p *Product) findOrder(ctx context.Context, orderID int64) (*internal.Order, error) {
+	// Fast path: clientIDStatusMap.
 	for cid, cstatus := range p.clientIDStatusMap.Range {
 		_ = cid
 		cstatus.mu.Lock()
@@ -209,19 +222,138 @@ func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetai
 	}
 	for _, o := range orders {
 		if o.OrderID == orderID {
+			if cid := o.ClientID(); cid != uuid.Nil {
+				cstatus, _ := p.clientIDStatusMap.LoadOrStore(cid, newClientIDStatus())
+				cstatus.mu.Lock()
+				cstatus.order = o
+				cstatus.mu.Unlock()
+			}
 			return o, nil
 		}
 	}
 	return nil, os.ErrNotExist
 }
 
-// Cancel cancels an open order by its server ID.
+// Get returns the current state of an order by server ID. When a cancel has
+// been requested via Cancel and the order remains not-done (or disappears from
+// the exchange) for at least 5 observations and 1 minute, Get synthesizes a
+// "Cancelled" update, publishes it to the orders topic, and returns it so the
+// caller's polling loop can exit without special-casing os.ErrNotExist.
+func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetail, error) {
+	orderID, err := strconv.ParseInt(serverID, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	order, err := p.findOrder(ctx, orderID)
+	if err != nil && !isNotExist(err) {
+		return nil, err // real error (e.g. network), propagate
+	}
+
+	if order != nil && order.IsDone() {
+		p.pendingCancels.Delete(orderID)
+		return order, nil
+	}
+
+	// Order is not done (stale status) or not found on the exchange.
+	// If no cancel is pending, return as-is.
+	entry, pending := p.pendingCancels.Load(orderID)
+	if !pending {
+		if order != nil {
+			return order, nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	entry.mu.Lock()
+	entry.missCount++
+	count := entry.missCount
+	cancelAt := entry.at
+	entry.mu.Unlock()
+
+	if count < 5 || time.Since(cancelAt) < time.Minute {
+		if order != nil {
+			slog.Warn("ibkr: order not done after cancel (will retry)", "orderID", orderID, "retries", count, "elapsed", time.Since(cancelAt).Round(time.Second))
+			return order, nil
+		}
+		slog.Warn("ibkr: canceled order not found on exchange (will retry)", "orderID", orderID, "retries", count, "elapsed", time.Since(cancelAt).Round(time.Second))
+		return nil, os.ErrNotExist
+	}
+
+	return p.synthesizeCancelled(orderID, count, cancelAt)
+}
+
+// synthesizeCancelled builds a fake "Cancelled" order snapshot, updates the
+// local caches, and publishes it to the orders topic so goWatchOrderUpdates
+// processes it (persisting it and unblocking anything waiting on the order).
+func (p *Product) synthesizeCancelled(orderID int64, missCount int, cancelAt time.Time) (*internal.Order, error) {
+	// Recover the client order ID from the cached status map so that
+	// goWatchOrderUpdates and updateOrderMap can match the update correctly.
+	var clientOrderID string
+	for cid, cstatus := range p.clientIDStatusMap.Range {
+		cstatus.mu.Lock()
+		if cstatus.order != nil && cstatus.order.OrderID == orderID {
+			clientOrderID = cid.String()
+			cstatus.mu.Unlock()
+			break
+		}
+		cstatus.mu.Unlock()
+	}
+
+	synthetic := &internal.Order{
+		OrderID:       orderID,
+		ClientOrderID: clientOrderID,
+		Symbol:        p.symbol,
+		Status:        "Cancelled",
+	}
+
+	// Update clientIDStatusMap so the fast path returns the synthetic order
+	// on any subsequent Get calls before goWatchOrderUpdates processes the topic.
+	if clientOrderID != "" {
+		if cid, err := uuid.Parse(clientOrderID); err == nil {
+			if cstatus, ok := p.clientIDStatusMap.Load(cid); ok {
+				cstatus.mu.Lock()
+				cstatus.order = synthetic
+				cstatus.mu.Unlock()
+			}
+		}
+	}
+
+	// Publish to the symbol orders topic so goWatchOrderUpdates picks it up
+	// and calls persistOrder, populating serverIDMap for future lookups.
+	t := p.client.GetSymbolOrdersTopic(p.symbol)
+	if err := t.Send(synthetic); err != nil {
+		slog.Warn("ibkr: could not publish synthetic cancelled order update", "orderID", orderID, "err", err)
+	}
+
+	// Also store directly in serverIDMap so the last-resort path in findOrder
+	// finds it immediately, before the topic message is consumed.
+	p.exchange.serverIDMap.Store(orderID, synthetic)
+	p.pendingCancels.Delete(orderID)
+
+	slog.Warn("ibkr: synthesized cancelled status for order missing from exchange",
+		"orderID", orderID, "symbol", p.symbol,
+		"retries", missCount, "elapsed", time.Since(cancelAt).Round(time.Second))
+	return synthetic, nil
+}
+
+func isNotExist(err error) bool {
+	return err == os.ErrNotExist
+}
+
+// Cancel cancels an open order by its server ID and records the cancel time
+// so Get can synthesize a "Cancelled" update if the order drops off the
+// live orders list before goWatchOrders observes its cancelled status.
 func (p *Product) Cancel(ctx context.Context, serverID string) error {
 	orderID, err := strconv.ParseInt(serverID, 10, 64)
 	if err != nil {
 		return err
 	}
-	return p.client.CancelOrder(ctx, orderID)
+	if err := p.client.CancelOrder(ctx, orderID); err != nil {
+		return err
+	}
+	p.pendingCancels.Store(orderID, &cancelEntry{at: time.Now()})
+	return nil
 }
 
 // goWatchOrderUpdates subscribes to the per-symbol orders topic published by
