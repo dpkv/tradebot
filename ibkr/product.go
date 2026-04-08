@@ -71,6 +71,14 @@ type Product struct {
 	// outside regular trading hours (pre-market and after-hours sessions).
 	outsideRTH bool
 
+	// onBuyFill, if non-nil, is called once when a BUY order reaches Filled.
+	onBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)
+
+	// notifiedFills tracks order IDs for which onBuyFill has already fired,
+	// preventing duplicate notifications when the exchange returns the same
+	// filled order across multiple poll cycles.
+	notifiedFills syncmap.Map[int64, struct{}]
+
 	// clientIDStatusMap maps the caller's UUID to the status of the order
 	// placed with that UUID as cOID. Populated by LimitBuy/LimitSell and
 	// updated by goWatchOrderUpdates.
@@ -90,7 +98,7 @@ var _ exchange.Product = &Product{}
 // goroutine. WatchSymbol must have been called on the client before NewProduct
 // so that the price and order topics exist. outsideRTH controls whether orders
 // can execute outside regular trading hours.
-func NewProduct(ctx context.Context, exch *Exchange, symbol string, conid int, outsideRTH bool) (*Product, error) {
+func NewProduct(ctx context.Context, exch *Exchange, symbol string, conid int, outsideRTH bool, onBuyFill func(context.Context, string, string, decimal.Decimal, decimal.Decimal)) (*Product, error) {
 	lifeCtx, lifeCancel := context.WithCancelCause(context.Background())
 	p := &Product{
 		lifeCtx:    lifeCtx,
@@ -100,6 +108,7 @@ func NewProduct(ctx context.Context, exch *Exchange, symbol string, conid int, o
 		symbol:     symbol,
 		conid:      conid,
 		outsideRTH: outsideRTH,
+		onBuyFill:  onBuyFill,
 	}
 
 	p.wg.Add(1)
@@ -417,6 +426,12 @@ func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 
 		if order.IsDone() {
 			p.exchange.persistOrder(ctx, order)
+
+			if p.onBuyFill != nil && order.OrderSide() == "BUY" && order.FilledQty.IsPositive() {
+				if _, alreadyNotified := p.notifiedFills.LoadOrStore(order.OrderID, struct{}{}); !alreadyNotified {
+					p.onBuyFill(ctx, "STK", p.symbol, order.FilledQty, order.AvgFillPrice)
+				}
+			}
 		}
 	}
 }

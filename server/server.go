@@ -36,6 +36,7 @@ import (
 	"github.com/bvk/tradebot/watcher"
 	"github.com/bvkgo/kv"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/visvasity/cli"
 )
 
@@ -301,6 +302,9 @@ func (s *Server) Start(ctx context.Context) (status error) {
 		if secrets.IBKR != nil {
 			opts := &ibkr.Options{
 				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
+				OnBuyFill: func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal) {
+					s.SendMessage(ctx, time.Now(), "A buy of %s is completed successfully at price %s in product %s (ibkr/%s).", filledQty.String(), avgPrice.StringFixed(3), symbol, productType)
+				},
 			}
 			exchange, err := ibkr.NewExchange(ctx, s.db, secrets.IBKR, opts)
 			if err != nil {

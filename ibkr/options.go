@@ -2,7 +2,12 @@
 
 package ibkr
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 // Options configures the behavior of the IBKR exchange client.
 type Options struct {
@@ -31,6 +36,11 @@ type Options struct {
 	// polled to refresh the balance.
 	// Default: 30s.
 	PollBalancesInterval time.Duration
+
+	// OnBuyFill, if non-nil, is called once when a BUY order reaches Filled
+	// status. productType is "STK", "CALL", or "PUT". Called from a
+	// background goroutine; must not block.
+	OnBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)
 }
 
 func (o *Options) setDefaults() {

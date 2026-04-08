@@ -42,6 +42,8 @@ type Exchange struct {
 	conidCache map[string]int
 
 	productMap syncmap.Map[string, *Product]
+
+	onBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)
 }
 
 var _ exchange.Exchange = &Exchange{}
@@ -62,6 +64,7 @@ func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *
 	v := &Exchange{
 		client:     client,
 		conidCache: make(map[string]int),
+		onBuyFill:  opts.OnBuyFill,
 	}
 
 	if db != nil {
@@ -151,7 +154,7 @@ func (v *Exchange) OpenSpotProduct(ctx context.Context, productID string) (excha
 	// Start price polling for this symbol if not already running.
 	v.client.WatchSymbol(productID, conid)
 
-	p, err := NewProduct(ctx, v, productID, conid, true)
+	p, err := NewProduct(ctx, v, productID, conid, true, v.onBuyFill)
 	if err != nil {
 		return nil, err
 	}

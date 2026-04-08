@@ -42,6 +42,12 @@ type OptionsProduct struct {
 	expiry       time.Time
 	contractSize decimal.Decimal
 
+	// onBuyFill, if non-nil, is called once when a BUY order reaches Filled.
+	onBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)
+
+	// notifiedFills tracks order IDs for which onBuyFill has already fired.
+	notifiedFills syncmap.Map[int64, struct{}]
+
 	// TODO: We should cleanup the oldest orders.
 	clientIDStatusMap syncmap.Map[uuid.UUID, *clientIDStatus]
 }
@@ -70,6 +76,7 @@ func NewOptionsProduct(ctx context.Context, exch *Exchange, contract *gobs.Optio
 		strike:       contract.Strike,
 		expiry:       contract.Expiry,
 		contractSize: contract.ContractSize,
+		onBuyFill:    exch.onBuyFill,
 	}
 
 	p.wg.Add(1)
@@ -279,6 +286,12 @@ func (p *OptionsProduct) goWatchOrderUpdates(ctx context.Context) {
 
 		if order.IsDone() {
 			p.exchange.persistOrder(ctx, order)
+
+			if p.onBuyFill != nil && order.OrderSide() == "BUY" && order.FilledQty.IsPositive() {
+				if _, alreadyNotified := p.notifiedFills.LoadOrStore(order.OrderID, struct{}{}); !alreadyNotified {
+					p.onBuyFill(ctx, p.optionType, p.occSymbol, order.FilledQty, order.AvgFillPrice)
+				}
+			}
 		}
 	}
 }
