@@ -57,6 +57,14 @@ go-test-long: go-all
 docker-build-tradebot:
 	$(DOCKER) build -f docker/tradebot/Dockerfile -t $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG) .
 
+.PHONY: docker-build-tradebot-live
+docker-build-tradebot-live: docker-build-tradebot
+	$(DOCKER) tag $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG) $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG)-live
+
+.PHONY: docker-build-tradebot-paper
+docker-build-tradebot-paper: docker-build-tradebot
+	$(DOCKER) tag $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG) $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG)-paper
+
 .PHONY: docker-build-ibkr-cp-gw
 docker-build-ibkr-cp-gw:
 	$(DOCKER) build -f docker/ibkr-cp-gw/Dockerfile -t $(IMAGE_IBKR_CP_GW):latest .
