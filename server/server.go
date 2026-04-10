@@ -303,7 +303,7 @@ func (s *Server) Start(ctx context.Context) (status error) {
 			opts := &ibkr.Options{
 				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
 				OnBuyFill: func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal) {
-					s.SendMessage(ctx, time.Now(), "A buy of %s is completed successfully at price %s in product %s (ibkr/%s).", filledQty.String(), avgPrice.StringFixed(3), symbol, productType)
+					s.SendMessage(ctx, time.Now(), "IBKR %s buy filled: %s %s @ %s.", productType, filledQty.String(), symbol, avgPrice.StringFixed(3))
 				},
 			}
 			exchange, err := ibkr.NewExchange(ctx, s.db, secrets.IBKR, opts)
