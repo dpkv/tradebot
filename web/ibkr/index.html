@@ -243,8 +243,8 @@
           <span class="multi-select-arrow">▾</span>
         </button>
         <div class="multi-select-dropdown" id="status-dropdown">
-          <label><input type="checkbox" value="PreSubmitted" onchange="onStatusChange()"> PreSubmitted</label>
-          <label><input type="checkbox" value="Submitted"    onchange="onStatusChange()"> Submitted</label>
+          <label><input type="checkbox" value="PreSubmitted" checked onchange="onStatusChange()"> PreSubmitted</label>
+          <label><input type="checkbox" value="Submitted"    checked onchange="onStatusChange()"> Submitted</label>
           <label><input type="checkbox" value="Filled"       onchange="onStatusChange()"> Filled</label>
           <label><input type="checkbox" value="Cancelled"    onchange="onStatusChange()"> Cancelled</label>
           <label><input type="checkbox" value="Inactive"     onchange="onStatusChange()"> Inactive</label>
@@ -296,7 +296,7 @@
 
     // sort state: { col, dir } per table  (dir: 1=asc, -1=desc)
     const posSort = { col: null, dir: 1 };
-    const ordSort = { col: null, dir: 1 };
+    const ordSort = { col: 'limit_price', dir: 1 };
 
     function fmt(v, decimals = 2) {
       if (v == null) return '—';
@@ -481,7 +481,7 @@
       return Array.from(checks).filter(cb => cb.checked).map(cb => cb.value.toLowerCase());
     }
 
-    function onStatusChange() {
+    function updateStatusLabel() {
       const selected = getSelectedStatuses();
       const label = document.getElementById('status-label');
       if (selected.length === 0) {
@@ -491,6 +491,10 @@
       } else {
         label.textContent = selected.length + ' statuses';
       }
+    }
+
+    function onStatusChange() {
+      updateStatusLabel();
       renderOrders();
     }
 
@@ -643,7 +647,8 @@
       if (secs > 0) autoRefreshTimer = setInterval(refresh, secs * 1000);
     }
 
-    setDateShortcut('today');
+    updateStatusLabel();
+    setDateShortcut('this-week');
     refresh();
     onAutoRefreshChange();
   </script>
