@@ -12,16 +12,18 @@ import (
 	"github.com/visvasity/topic"
 )
 
-// Exchange is a simulated exchange for backtesting. It tracks balances,
-// registers known products, and creates MockProducts on demand.
+// Exchange is a simulated exchange for backtesting. It is the single source of
+// truth for balances across all products. Products call reserve/release/settle
+// for all fund movements so cross-product balance correctness is maintained.
 type Exchange struct {
 	name    string
 	feeRate decimal.Decimal
 
 	mu           sync.Mutex
-	balances     map[string]decimal.Decimal      // currency → available balance
-	productDefs  map[string]*gobs.Product        // productID → metadata
-	openProducts map[string]*Product             // productID → open MockProduct
+	balance      map[string]decimal.Decimal // currency → total balance
+	available    map[string]decimal.Decimal // currency → available (unreserved) balance
+	productDefs  map[string]*gobs.Product   // productID → metadata
+	openProducts map[string]*Product        // productID → open MockProduct
 	balTopic     *topic.Topic[exchange.BalanceUpdate]
 }
 
@@ -36,21 +38,23 @@ func NewExchange(name string, feeRate decimal.Decimal, balances map[string]decim
 		defs[p.ProductID] = p
 	}
 	bal := make(map[string]decimal.Decimal, len(balances))
+	avail := make(map[string]decimal.Decimal, len(balances))
 	for k, v := range balances {
 		bal[k] = v
+		avail[k] = v
 	}
 	return &Exchange{
 		name:         name,
 		feeRate:      feeRate,
-		balances:     bal,
+		balance:      bal,
+		available:    avail,
 		productDefs:  defs,
 		openProducts: make(map[string]*Product),
 		balTopic:     topic.New[exchange.BalanceUpdate](),
 	}
 }
 
-func (e *Exchange) ExchangeName() string { return e.name }
-
+func (e *Exchange) ExchangeName() string       { return e.name }
 func (e *Exchange) CanDedupOnClientUUID() bool { return false }
 
 func (e *Exchange) Close() error {
@@ -82,7 +86,7 @@ func (e *Exchange) OpenSpotProduct(ctx context.Context, productID string) (excha
 	if !ok {
 		return nil, fmt.Errorf("product %q is not registered in mock exchange", productID)
 	}
-	p := newProduct(def, e.feeRate, e.applyFill)
+	p := newProduct(def, e.feeRate, e)
 	e.openProducts[productID] = p
 	return p, nil
 }
@@ -109,40 +113,64 @@ func (e *Exchange) GetOrder(ctx context.Context, productID string, serverID stri
 	return p.Get(ctx, serverID)
 }
 
-// Balances returns a snapshot of current balances (currency → amount).
-func (e *Exchange) Balances() map[string]decimal.Decimal {
+// Balances returns a snapshot of total and available balances per currency.
+func (e *Exchange) Balances() (total, available map[string]decimal.Decimal) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	out := make(map[string]decimal.Decimal, len(e.balances))
-	for k, v := range e.balances {
-		out[k] = v
+	tot := make(map[string]decimal.Decimal, len(e.balance))
+	avail := make(map[string]decimal.Decimal, len(e.available))
+	for k, v := range e.balance {
+		tot[k] = v
 	}
-	return out
+	for k, v := range e.available {
+		avail[k] = v
+	}
+	return tot, avail
 }
 
-// applyFill is called by MockProduct when an order fills. It debits/credits
-// balances and emits a BalanceUpdate for each affected currency.
-func (e *Exchange) applyFill(side string, size, price, fee decimal.Decimal, base, quote string) error {
+// reserve deducts amount from available balance for currency.
+// Returns ErrNoFund if insufficient available balance.
+func (e *Exchange) reserve(currency string, amount decimal.Decimal) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	value := size.Mul(price)
+	if e.available[currency].LessThan(amount) {
+		return exchange.ErrNoFund
+	}
+	e.available[currency] = e.available[currency].Sub(amount)
+	e.balTopic.Send(&exchange.SimpleBalance{Symbol: currency, FreeBalance: e.available[currency]})
+	return nil
+}
+
+// release restores amount to available balance for currency (called on cancel).
+func (e *Exchange) release(currency string, amount decimal.Decimal) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.available[currency] = e.available[currency].Add(amount)
+	e.balTopic.Send(&exchange.SimpleBalance{Symbol: currency, FreeBalance: e.available[currency]})
+}
+
+// settle applies a fill: transfers actual balances and makes proceeds available.
+// Reserved funds were already deducted from available at order placement.
+func (e *Exchange) settle(side, base, quote string, size, price, fee decimal.Decimal) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	if strings.EqualFold(side, "buy") {
-		cost := value.Add(fee)
-		if e.balances[quote].LessThan(cost) {
-			return exchange.ErrNoFund
-		}
-		e.balances[quote] = e.balances[quote].Sub(cost)
-		e.balances[base] = e.balances[base].Add(size)
+		// Reserved quote (size*price + fee) is now consumed; receive base.
+		cost := size.Mul(price).Add(fee)
+		e.balance[quote] = e.balance[quote].Sub(cost)
+		e.balance[base] = e.balance[base].Add(size)
+		e.available[base] = e.available[base].Add(size)
 	} else {
-		if e.balances[base].LessThan(size) {
-			return exchange.ErrNoFund
-		}
-		e.balances[base] = e.balances[base].Sub(size)
-		e.balances[quote] = e.balances[quote].Add(value.Sub(fee))
+		// Reserved base (size) is now consumed; proceeds go to quote.
+		proceeds := size.Mul(price).Sub(fee)
+		e.balance[base] = e.balance[base].Sub(size)
+		e.balance[quote] = e.balance[quote].Add(proceeds)
+		e.available[quote] = e.available[quote].Add(proceeds)
 	}
 
-	e.balTopic.Send(&exchange.SimpleBalance{Symbol: base, FreeBalance: e.balances[base]})
-	e.balTopic.Send(&exchange.SimpleBalance{Symbol: quote, FreeBalance: e.balances[quote]})
-	return nil
+	e.balTopic.Send(&exchange.SimpleBalance{Symbol: base, FreeBalance: e.available[base]})
+	e.balTopic.Send(&exchange.SimpleBalance{Symbol: quote, FreeBalance: e.available[quote]})
 }
