@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bvk/tradebot/datafeed"
 	"github.com/bvk/tradebot/exchange"
@@ -43,6 +44,10 @@ type Product struct {
 	// The engine waits on this before sending any ticks.
 	subscribedOnce sync.Once
 	subscribedCh   chan struct{}
+
+	// orderChanged receives a signal on every placeOrder or Cancel call so the
+	// engine can wait for order-count quiescence after a fill.
+	orderChanged chan struct{}
 }
 
 var _ exchange.Product = (*Product)(nil)
@@ -59,6 +64,7 @@ func newProduct(def *gobs.Product, feeRate decimal.Decimal, ex *Exchange) *Produ
 		priceTopic:   topic.New[exchange.PriceUpdate](),
 		orderTopic:   topic.New[exchange.OrderUpdate](),
 		subscribedCh: make(chan struct{}),
+		orderChanged: make(chan struct{}, 1),
 	}
 }
 
@@ -139,6 +145,10 @@ func (p *Product) placeOrder(_ context.Context, side string, clientID uuid.UUID,
 	p.orders[serverID] = &limitOrder{order: order, limitPrice: price, size: size, reserved: reserved}
 	p.mu.Unlock()
 
+	select {
+	case p.orderChanged <- struct{}{}:
+	default:
+	}
 	return order, nil
 }
 
@@ -175,6 +185,10 @@ func (p *Product) Cancel(_ context.Context, serverID string) error {
 			p.ex.release(p.def.BaseCurrencyID, lo.reserved)
 		}
 		p.orderTopic.Send(lo.order)
+		select {
+		case p.orderChanged <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
@@ -217,11 +231,25 @@ func (p *Product) ProcessTick(tick datafeed.Tick) int {
 }
 
 // openOrderCount returns the number of open (not yet filled or cancelled) orders.
-// O(1) — used by the engine's post-fill polling loop.
 func (p *Product) openOrderCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.orders)
+}
+
+// waitForStableOrders blocks until no order mutations have occurred for one
+// millisecond, indicating the strategy has finished placing reactive orders.
+func (p *Product) waitForStableOrders(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.orderChanged:
+			// order mutated; reset the quiet window
+		case <-time.After(100 * time.Millisecond):
+			return nil
+		}
+	}
 }
 
 // shouldFill returns true when a limit order at limitPrice should fill at tickPrice.

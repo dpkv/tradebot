@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"time"
 
 	"github.com/bvk/tradebot/datafeed"
 )
@@ -41,7 +40,10 @@ func (e *Engine) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		e.product.ProcessTick(tick)
-		time.Sleep(100 * time.Millisecond)
+		if fills := e.product.ProcessTick(tick); fills > 0 {
+			if err := e.product.waitForStableOrders(ctx); err != nil {
+				return err
+			}
+		}
 	}
 }
