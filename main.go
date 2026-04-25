@@ -12,6 +12,7 @@ import (
 
 	"github.com/bvk/tradebot/envfile"
 	"github.com/bvk/tradebot/subcmds"
+	"github.com/bvk/tradebot/subcmds/backtest"
 	"github.com/bvk/tradebot/subcmds/coinbase"
 	"github.com/bvk/tradebot/subcmds/coinex"
 	"github.com/bvk/tradebot/subcmds/configure/alerts"
@@ -147,6 +148,10 @@ func main() {
 		new(coinex.RunTest),
 	}
 
+	backtestCmds := []cli.Command{
+		new(backtest.Waller),
+	}
+
 	cmds := []cli.Command{
 		new(subcmds.Run),
 		new(subcmds.Status),
@@ -163,6 +168,7 @@ func main() {
 		cli.NewGroup("coinbase", "Coinbase exchange operations", coinbaseCmds...),
 		cli.NewGroup("coinex", "CoinEx exchange operations", coinexCmds...),
 		cli.NewGroup("setup", "Setup operations", setupCmds...),
+		cli.NewGroup("backtest", "Backtest trading strategies", backtestCmds...),
 	}
 	if err := cli.Run(context.Background(), cmds, os.Args[1:]); err != nil {
 		log.Fatal(err)
