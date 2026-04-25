@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/bvk/tradebot/datafeed"
 )
@@ -20,9 +21,15 @@ func NewEngine(feed datafeed.DataFeed, product *Product) *Engine {
 	return &Engine{feed: feed, product: product}
 }
 
-// Run loops until the feed is exhausted or ctx is cancelled.
+// Run waits for the strategy to subscribe, then loops until the feed is
+// exhausted or ctx is cancelled. After each tick with fills, it waits until
+// the strategy has placed reactive orders before processing the next tick.
 // Returns nil when the feed reaches EOF (normal end of backtest).
 func (e *Engine) Run(ctx context.Context) error {
+	if err := e.product.WaitForSubscriber(ctx); err != nil {
+		return err
+	}
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -35,5 +42,6 @@ func (e *Engine) Run(ctx context.Context) error {
 			return err
 		}
 		e.product.ProcessTick(tick)
+		time.Sleep(100 * time.Millisecond)
 	}
 }

@@ -15,8 +15,8 @@ import (
 	"github.com/visvasity/topic"
 )
 
-// limitOrder holds an open limit order, its target price, and the amount
-// reserved from available balance when the order was placed.
+// limitOrder holds a limit order, its target price, and the amount reserved
+// from available balance when the order was placed.
 type limitOrder struct {
 	order      *exchange.SimpleOrder
 	limitPrice decimal.Decimal
@@ -27,16 +27,22 @@ type limitOrder struct {
 // Product is a simulated exchange product. Balance state lives entirely in the
 // Exchange; Product calls reserve/release/settle for all fund movements.
 type Product struct {
-	def      *gobs.Product
-	feeRate  decimal.Decimal
-	ex       *Exchange
+	def     *gobs.Product
+	feeRate decimal.Decimal
+	ex      *Exchange
 
-	mu       sync.Mutex
-	orders   map[string]*limitOrder
-	lastTick datafeed.Tick
+	mu         sync.Mutex
+	orders     map[string]*limitOrder // open orders only
+	doneOrders map[string]*limitOrder // filled or cancelled orders
+	lastTick   datafeed.Tick
 
 	priceTopic *topic.Topic[exchange.PriceUpdate]
 	orderTopic *topic.Topic[exchange.OrderUpdate]
+
+	// subscribedCh is closed when the first price subscriber registers.
+	// The engine waits on this before sending any ticks.
+	subscribedOnce sync.Once
+	subscribedCh   chan struct{}
 }
 
 var _ exchange.Product = (*Product)(nil)
@@ -45,12 +51,14 @@ var serverIDCounter atomic.Uint64
 
 func newProduct(def *gobs.Product, feeRate decimal.Decimal, ex *Exchange) *Product {
 	return &Product{
-		def:        def,
-		feeRate:    feeRate,
-		ex:         ex,
-		orders:     make(map[string]*limitOrder),
-		priceTopic: topic.New[exchange.PriceUpdate](),
-		orderTopic: topic.New[exchange.OrderUpdate](),
+		def:          def,
+		feeRate:      feeRate,
+		ex:           ex,
+		orders:       make(map[string]*limitOrder),
+		doneOrders:   make(map[string]*limitOrder),
+		priceTopic:   topic.New[exchange.PriceUpdate](),
+		orderTopic:   topic.New[exchange.OrderUpdate](),
+		subscribedCh: make(chan struct{}),
 	}
 }
 
@@ -62,19 +70,33 @@ func (p *Product) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.orders = nil
+	p.doneOrders = nil
 	return nil
 }
 
 func (p *Product) GetPriceUpdates() (*topic.Receiver[exchange.PriceUpdate], error) {
-	r, err := topic.Subscribe(p.priceTopic, 1, true /* includeLast */)
+	r, err := topic.Subscribe(p.priceTopic, 0 /* unbounded */, true /* includeLast */)
 	if err != nil {
 		return nil, fmt.Errorf("could not subscribe to price updates: %w", err)
 	}
+	p.subscribedOnce.Do(func() { close(p.subscribedCh) })
 	return r, nil
 }
 
+// WaitForSubscriber blocks until the first price subscriber registers or ctx
+// is cancelled. The engine calls this before sending any ticks to ensure the
+// strategy has set up its event loop.
+func (p *Product) WaitForSubscriber(ctx context.Context) error {
+	select {
+	case <-p.subscribedCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (p *Product) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], error) {
-	r, err := topic.Subscribe(p.orderTopic, 1, true /* includeLast */)
+	r, err := topic.Subscribe(p.orderTopic, 0 /* unbounded */, true /* includeLast */)
 	if err != nil {
 		return nil, fmt.Errorf("could not subscribe to order updates: %w", err)
 	}
@@ -124,11 +146,13 @@ func (p *Product) Get(_ context.Context, serverID string) (exchange.OrderDetail,
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	lo, ok := p.orders[serverID]
-	if !ok {
-		return nil, fmt.Errorf("order %q not found", serverID)
+	if lo, ok := p.orders[serverID]; ok {
+		return lo.order, nil
 	}
-	return lo.order, nil
+	if lo, ok := p.doneOrders[serverID]; ok {
+		return lo.order, nil
+	}
+	return nil, fmt.Errorf("order %q not found", serverID)
 }
 
 func (p *Product) Cancel(_ context.Context, serverID string) error {
@@ -139,6 +163,7 @@ func (p *Product) Cancel(_ context.Context, serverID string) error {
 		lo.order.Status = "CANCELLED"
 		lo.order.DoneReason = "CANCELLED"
 		delete(p.orders, serverID)
+		p.doneOrders[serverID] = lo
 	}
 	p.mu.Unlock()
 
@@ -155,8 +180,8 @@ func (p *Product) Cancel(_ context.Context, serverID string) error {
 }
 
 // ProcessTick is called by the Engine on each price tick. It publishes a price
-// update and checks all open orders for fills.
-func (p *Product) ProcessTick(tick datafeed.Tick) {
+// update, checks all open orders for fills, and returns the number of fills.
+func (p *Product) ProcessTick(tick datafeed.Tick) int {
 	p.priceTopic.Send(&exchange.SimpleTicker{
 		ServerTime: exchange.RemoteTime{Time: tick.Time},
 		Price:      tick.Price,
@@ -172,6 +197,7 @@ func (p *Product) ProcessTick(tick datafeed.Tick) {
 	}
 	for _, lo := range toFill {
 		delete(p.orders, lo.order.ServerOrderID)
+		p.doneOrders[lo.order.ServerOrderID] = lo
 	}
 	p.mu.Unlock()
 
@@ -187,6 +213,15 @@ func (p *Product) ProcessTick(tick datafeed.Tick) {
 		lo.order.FinishTime = gobs.RemoteTime{Time: tick.Time}
 		p.orderTopic.Send(lo.order)
 	}
+	return len(toFill)
+}
+
+// openOrderCount returns the number of open (not yet filled or cancelled) orders.
+// O(1) — used by the engine's post-fill polling loop.
+func (p *Product) openOrderCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.orders)
 }
 
 // shouldFill returns true when a limit order at limitPrice should fill at tickPrice.
