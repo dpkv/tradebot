@@ -106,7 +106,12 @@ func printWallerPairs(actions []*gobs.Action, quote string) {
 		g := groupMap[key]
 		n := min(len(g.buys), len(g.sells))
 		buyPrice := g.buys[0].Point.Price.StringFixed(2)
-		sellPrice := g.sells[0].Point.Price.StringFixed(2)
+		var sellPrice string
+		if len(g.sells) > 0 {
+			sellPrice = g.sells[0].Point.Price.StringFixed(2)
+		} else {
+			sellPrice = "pending"
+		}
 		fmt.Printf("\nBUY@%s / SELL@%s — %d completed\n", buyPrice, sellPrice, n)
 		if n == 0 {
 			continue
