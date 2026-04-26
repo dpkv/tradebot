@@ -36,7 +36,7 @@ type BacktestFlags struct {
 	baseBalance  float64
 	quoteBalance float64
 	baseMinSize  float64
-	feeRate      float64
+	feePct      decimal.Decimal // derived from strategy's fee-pct, not a CLI flag
 }
 
 func (f *BacktestFlags) SetFlags(fset *flag.FlagSet) {
@@ -51,7 +51,6 @@ func (f *BacktestFlags) SetFlags(fset *flag.FlagSet) {
 	fset.Float64Var(&f.baseBalance, "base-balance", 0, "starting base currency balance (e.g. BTC amount)")
 	fset.Float64Var(&f.quoteBalance, "quote-balance", 0, "starting quote currency balance (e.g. USD amount)")
 	fset.Float64Var(&f.baseMinSize, "base-min-size", 0, "minimum base order size")
-	fset.Float64Var(&f.feeRate, "fee-rate", 0.006, "exchange fee rate (e.g. 0.006 for 0.6%)")
 }
 
 func (f *BacktestFlags) check() error {
@@ -165,7 +164,7 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
 		base:  decimal.NewFromFloat(f.baseBalance),
 		quote: decimal.NewFromFloat(f.quoteBalance),
 	}
-	mockEx := mockexchange.NewExchange(f.exchangeName, decimal.NewFromFloat(f.feeRate), balances, []*gobs.Product{productDef})
+	mockEx := mockexchange.NewExchange(f.exchangeName, f.feePct, balances, []*gobs.Product{productDef})
 	defer mockEx.Close()
 
 	ep, err := mockEx.OpenSpotProduct(ctx, f.product)

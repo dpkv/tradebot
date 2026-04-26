@@ -32,6 +32,7 @@ func (c *Waller) Run(ctx context.Context, args []string) error {
 	if len(pairs) == 0 {
 		return fmt.Errorf("could not determine buy/sell pairs from spec")
 	}
+	c.flags.feePct = c.spec.FeePct()
 	uid := uuid.New().String()
 	w, err := waller.New(uid, c.flags.exchangeName, c.flags.product, pairs)
 	if err != nil {

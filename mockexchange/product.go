@@ -30,7 +30,7 @@ type limitOrder struct {
 // Exchange; Product calls reserve/release/settle for all fund movements.
 type Product struct {
 	def     *gobs.Product
-	feeRate decimal.Decimal
+	feePct decimal.Decimal
 	ex      *Exchange
 
 	mu         sync.Mutex
@@ -55,10 +55,10 @@ var _ exchange.Product = (*Product)(nil)
 
 var serverIDCounter atomic.Uint64
 
-func newProduct(def *gobs.Product, feeRate decimal.Decimal, ex *Exchange) *Product {
+func newProduct(def *gobs.Product, feePct decimal.Decimal, ex *Exchange) *Product {
 	return &Product{
 		def:          def,
-		feeRate:      feeRate,
+		feePct:      feePct,
 		ex:           ex,
 		orders:       make(map[string]*limitOrder),
 		doneOrders:   make(map[string]*limitOrder),
@@ -124,7 +124,7 @@ func (p *Product) placeOrder(_ context.Context, side string, clientID uuid.UUID,
 	var reserved decimal.Decimal
 	if strings.EqualFold(side, "buy") {
 		reserveCurrency = p.def.QuoteCurrencyID
-		reserved = size.Mul(price).Mul(decimal.NewFromInt(1).Add(p.feeRate))
+		reserved = size.Mul(price).Mul(decimal.NewFromInt(1).Add(p.feePct.Div(decimal.NewFromInt(100))))
 	} else {
 		reserveCurrency = p.def.BaseCurrencyID
 		reserved = size
@@ -217,7 +217,7 @@ func (p *Product) ProcessTick(tick datafeed.Tick) int {
 	p.mu.Unlock()
 
 	for _, lo := range toFill {
-		fee := lo.size.Mul(lo.limitPrice).Mul(p.feeRate)
+		fee := lo.size.Mul(lo.limitPrice).Mul(p.feePct.Div(decimal.NewFromInt(100)))
 		p.ex.settle(lo.order.Side, p.def.BaseCurrencyID, p.def.QuoteCurrencyID, lo.size, lo.limitPrice, fee)
 		lo.order.FilledSize = lo.size
 		lo.order.FilledPrice = lo.limitPrice

@@ -17,7 +17,7 @@ import (
 // for all fund movements so cross-product balance correctness is maintained.
 type Exchange struct {
 	name    string
-	feeRate decimal.Decimal
+	feePct decimal.Decimal
 
 	mu           sync.Mutex
 	balance      map[string]decimal.Decimal // currency → total balance
@@ -30,9 +30,9 @@ type Exchange struct {
 var _ exchange.Exchange = (*Exchange)(nil)
 
 // NewExchange creates a simulated exchange with the given initial balances and
-// known product definitions. feeRate is applied on each simulated fill
+// known product definitions. feePct is applied on each simulated fill
 // (e.g. 0.006 for 0.6%).
-func NewExchange(name string, feeRate decimal.Decimal, balances map[string]decimal.Decimal, products []*gobs.Product) *Exchange {
+func NewExchange(name string, feePct decimal.Decimal, balances map[string]decimal.Decimal, products []*gobs.Product) *Exchange {
 	defs := make(map[string]*gobs.Product, len(products))
 	for _, p := range products {
 		defs[p.ProductID] = p
@@ -45,7 +45,7 @@ func NewExchange(name string, feeRate decimal.Decimal, balances map[string]decim
 	}
 	return &Exchange{
 		name:         name,
-		feeRate:      feeRate,
+		feePct:      feePct,
 		balance:      bal,
 		available:    avail,
 		productDefs:  defs,
@@ -86,7 +86,7 @@ func (e *Exchange) OpenSpotProduct(ctx context.Context, productID string) (excha
 	if !ok {
 		return nil, fmt.Errorf("product %q is not registered in mock exchange", productID)
 	}
-	p := newProduct(def, e.feeRate, e)
+	p := newProduct(def, e.feePct, e)
 	e.openProducts[productID] = p
 	return p, nil
 }
