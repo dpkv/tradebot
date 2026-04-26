@@ -3,6 +3,7 @@ package mockexchange
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -250,6 +251,22 @@ func (p *Product) waitForStableOrders(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// FilledOrders returns all filled (not cancelled) orders sorted by finish time.
+func (p *Product) FilledOrders() []*exchange.SimpleOrder {
+	p.mu.Lock()
+	var fills []*exchange.SimpleOrder
+	for _, lo := range p.doneOrders {
+		if lo.order.Status == "FILLED" {
+			fills = append(fills, lo.order)
+		}
+	}
+	p.mu.Unlock()
+	slices.SortFunc(fills, func(a, b *exchange.SimpleOrder) int {
+		return a.FinishTime.Time.Compare(b.FinishTime.Time)
+	})
+	return fills
 }
 
 // shouldFill returns true when a limit order at limitPrice should fill at tickPrice.
