@@ -196,6 +196,7 @@ func (v *SimpleOrder) AddUpdate(update OrderUpdate) (int, error) {
 		v.Status = update.OrderStatus()
 		if x, ok := update.(*SimpleOrder); ok {
 			v.DoneReason = x.DoneReason
+			v.FinishTime = x.FinishTime
 		} else {
 			v.DoneReason = update.OrderStatus()
 		}
