@@ -42,7 +42,7 @@ func (c *Waller) Run(ctx context.Context, args []string) error {
 		return err
 	}
 	quote := strings.SplitN(c.flags.product, "-", 2)[1]
-	printWallerPairs(w.Actions(), quote)
+	printWallerPairs(w.Actions(), w.PairsByKey(), quote)
 	return nil
 }
 
@@ -74,7 +74,7 @@ Example:
 `
 }
 
-func printWallerPairs(actions []*gobs.Action, quote string) {
+func printWallerPairs(actions []*gobs.Action, pairsByKey map[string]*point.Pair, quote string) {
 	if len(actions) == 0 {
 		return
 	}
@@ -102,16 +102,17 @@ func printWallerPairs(actions []*gobs.Action, quote string) {
 	}
 
 	fmt.Printf("\n=== Buy/Sell Pairs ===\n")
+	var unknownKeys []string
 	for _, key := range groupOrder {
 		g := groupMap[key]
 		n := min(len(g.buys), len(g.sells))
-		buyPrice := g.buys[0].Point.Price.StringFixed(2)
-		var sellPrice string
-		if len(g.sells) > 0 {
-			sellPrice = g.sells[0].Point.Price.StringFixed(2)
-		} else {
-			sellPrice = "pending"
+		p, ok := pairsByKey[key]
+		if !ok {
+			unknownKeys = append(unknownKeys, key)
+			continue
 		}
+		buyPrice := p.Buy.Price.StringFixed(2)
+		sellPrice := p.Sell.Price.StringFixed(2)
 		fmt.Printf("\nBUY@%s / SELL@%s — %d completed\n", buyPrice, sellPrice, n)
 		if n == 0 {
 			continue
@@ -129,6 +130,12 @@ func printWallerPairs(actions []*gobs.Action, quote string) {
 		}
 		if len(g.buys) > n {
 			fmt.Printf("  (%d buys pending sell)\n", len(g.buys)-n)
+		}
+	}
+	if len(unknownKeys) > 0 {
+		fmt.Printf("\nWARNING: %d action group(s) had no matching pair and were skipped:\n", len(unknownKeys))
+		for _, key := range unknownKeys {
+			fmt.Printf("  %s\n", key)
 		}
 	}
 }

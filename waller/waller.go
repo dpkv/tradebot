@@ -140,6 +140,15 @@ func (w *Waller) Pairs() []*point.Pair {
 	return ps
 }
 
+// PairsByKey returns a map from looper pairing key to its buy/sell pair.
+func (w *Waller) PairsByKey() map[string]*point.Pair {
+	m := make(map[string]*point.Pair, len(w.loopers))
+	for _, l := range w.loopers {
+		m[l.UID()] = l.Pair()
+	}
+	return m
+}
+
 func (w *Waller) Actions() []*gobs.Action {
 	var actions []*gobs.Action
 	for _, l := range w.loopers {
