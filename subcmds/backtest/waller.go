@@ -114,7 +114,7 @@ func printWallerPairs(actions []*gobs.Action, pairsByKey map[string]*point.Pair,
 		buyPrice := p.Buy.Price.StringFixed(2)
 		sellPrice := p.Sell.Price.StringFixed(2)
 		fmt.Printf("\nBUY@%s / SELL@%s — %d completed\n", buyPrice, sellPrice, n)
-		if n == 0 {
+		if len(g.buys) == 0 {
 			continue
 		}
 		fmt.Printf("  %-4s  %-19s  %-19s  %s\n", "#", "Buy Time", "Sell Time", "Gain ("+quote+")")
@@ -128,8 +128,12 @@ func printWallerPairs(actions []*gobs.Action, pairsByKey map[string]*point.Pair,
 				actionFinishTime(sell.Orders).Format("2006-01-02 15:04:05"),
 				gain.StringFixed(2))
 		}
-		if len(g.buys) > n {
-			fmt.Printf("  (%d buys pending sell)\n", len(g.buys)-n)
+		for i := n; i < len(g.buys); i++ {
+			fmt.Printf("  %-4d  %-19s  %-19s  %s\n",
+				i+1,
+				actionFinishTime(g.buys[i].Orders).Format("2006-01-02 15:04:05"),
+				"pending",
+				"-")
 		}
 	}
 	if len(unknownKeys) > 0 {
