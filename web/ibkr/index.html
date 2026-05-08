@@ -252,6 +252,7 @@
       </div>
       <label>Last Exec</label>
       <div class="date-shortcuts">
+        <button class="shortcut-btn" data-shortcut="all-time"   onclick="setDateShortcut('all-time')">All Time</button>
         <button class="shortcut-btn" data-shortcut="today"      onclick="setDateShortcut('today')">Today</button>
         <button class="shortcut-btn" data-shortcut="yesterday"  onclick="setDateShortcut('yesterday')">Yesterday</button>
         <button class="shortcut-btn" data-shortcut="this-week"  onclick="setDateShortcut('this-week')">This Week</button>
@@ -513,7 +514,15 @@
       today.setHours(0, 0, 0, 0);
       let from, to;
 
-      if (key === 'today') {
+      if (key === 'all-time') {
+        document.getElementById('f-exec-from').value = '';
+        document.getElementById('f-exec-to').value   = '';
+        document.querySelectorAll('.shortcut-btn').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.shortcut === key);
+        });
+        renderOrders();
+        return;
+      } else if (key === 'today') {
         from = to = today;
       } else if (key === 'yesterday') {
         const y = new Date(today);
@@ -648,7 +657,7 @@
     }
 
     updateStatusLabel();
-    setDateShortcut('this-week');
+    setDateShortcut('all-time');
     refresh();
     onAutoRefreshChange();
   </script>
