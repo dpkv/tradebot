@@ -5,5 +5,5 @@ package web
 
 import "embed"
 
-//go:embed index.html ibkr
+//go:embed index.html icon.svg ibkr
 var FS embed.FS
