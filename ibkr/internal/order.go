@@ -127,7 +127,7 @@ func (o *Order) ExecutedFee() decimal.Decimal {
 
 func (o *Order) IsDone() bool {
 	switch strings.ToLower(o.Status) {
-	case "filled", "cancelled", "inactive":
+	case "filled", "cancelled":
 		return true
 	}
 	return false
