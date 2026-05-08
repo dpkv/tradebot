@@ -4,6 +4,7 @@ package ibkr
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -47,25 +48,45 @@ type Position struct {
 }
 
 // GetPositions fetches all current portfolio positions from the gateway.
+// IBKR sometimes returns stale cached data with empty tickers on the first
+// call; retry up to 3 times with a 2s delay until all tickers are populated.
 func (c *Client) GetPositions(ctx context.Context) ([]*Position, error) {
 	path := "/v1/api/portfolio/" + c.creds.AccountID + "/positions/0"
-	var entries []*apiPositionEntry
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &entries); err != nil {
-		return nil, err
-	}
-	positions := make([]*Position, 0, len(entries))
-	for _, e := range entries {
-		positions = append(positions, &Position{
-			ConID:         e.ConID,
-			Ticker:        e.Ticker,
-			SecType:       e.SecType,
-			Qty:           decimal.NewFromFloat(e.Position),
-			AvgCost:       decimal.NewFromFloat(e.AvgCost),
-			MktPrice:      decimal.NewFromFloat(e.MktPrice),
-			MktValue:      decimal.NewFromFloat(e.MktValue),
-			UnrealizedPnl: decimal.NewFromFloat(e.UnrealizedPnl),
-			RealizedPnl:   decimal.NewFromFloat(e.RealizedPnl),
-		})
+	var positions []*Position
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+		var entries []*apiPositionEntry
+		if err := c.doRequest(ctx, http.MethodGet, path, nil, &entries); err != nil {
+			return nil, err
+		}
+		positions = make([]*Position, 0, len(entries))
+		missingTicker := false
+		for _, e := range entries {
+			if e.Ticker == "" {
+				missingTicker = true
+			}
+			positions = append(positions, &Position{
+				ConID:         e.ConID,
+				Ticker:        e.Ticker,
+				SecType:       e.SecType,
+				Qty:           decimal.NewFromFloat(e.Position),
+				AvgCost:       decimal.NewFromFloat(e.AvgCost),
+				MktPrice:      decimal.NewFromFloat(e.MktPrice),
+				MktValue:      decimal.NewFromFloat(e.MktValue),
+				UnrealizedPnl: decimal.NewFromFloat(e.UnrealizedPnl),
+				RealizedPnl:   decimal.NewFromFloat(e.RealizedPnl),
+			})
+		}
+		if !missingTicker {
+			return positions, nil
+		}
+		slog.Warn("ibkr: positions response has empty tickers; retrying", "attempt", attempt+1)
 	}
 	return positions, nil
 }
