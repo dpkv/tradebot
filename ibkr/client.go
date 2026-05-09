@@ -492,6 +492,31 @@ func (c *Client) CancelOrder(ctx context.Context, orderID int64) error {
 	return c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }
 
+// GetOrdersRaw returns the raw JSON bytes from the IBKR orders endpoint with
+// no parsing or field filtering, useful for inspecting the full API response.
+func (c *Client) GetOrdersRaw(ctx context.Context) ([]byte, error) {
+	var raw json.RawMessage
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/account/orders", nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// GetTradesRaw returns the raw JSON bytes from the IBKR trades endpoint with
+// no parsing or field filtering, useful for inspecting fill timestamps.
+// days controls how far back to fetch (1-7); 0 means use the API default.
+func (c *Client) GetTradesRaw(ctx context.Context, days int) ([]byte, error) {
+	path := "/v1/api/iserver/account/trades"
+	if days > 0 {
+		path += fmt.Sprintf("?days=%d", days)
+	}
+	var raw json.RawMessage
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // GetOrders fetches all live orders from the gateway and converts them to the
 // flat Order type. The gateway's orders endpoint can return 503 while the
 // session's order cache is cold; this retries up to 5 times with a 2-second

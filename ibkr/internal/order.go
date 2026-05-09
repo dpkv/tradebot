@@ -77,6 +77,12 @@ type Order struct {
 	Status string // IBKR status, e.g. "Filled", "Submitted", "Cancelled"
 
 	LastExecutionTimeMilli int64
+	// FillObservedAt is the wall-clock time (Unix millis) when this bot first
+	// observed the order as Done. Set once in goWatchOrderUpdates and never
+	// overwritten. Used as FinishedAt instead of LastExecutionTimeMilli, which
+	// can be stale because filled orders drop off the IBKR orders list before
+	// the next poll captures the updated timestamp.
+	FillObservedAt int64
 
 	LimitPrice   decimal.Decimal
 	OrderedQty   decimal.Decimal
@@ -138,8 +144,13 @@ func (o *Order) OrderStatus() string {
 }
 
 func (o *Order) FinishedAt() gobs.RemoteTime {
-	if o.IsDone() && o.LastExecutionTimeMilli != 0 {
-		return gobs.RemoteTime{Time: time.UnixMilli(o.LastExecutionTimeMilli)}
+	if o.IsDone() {
+		if o.FillObservedAt != 0 {
+			return gobs.RemoteTime{Time: time.UnixMilli(o.FillObservedAt)}
+		}
+		if o.LastExecutionTimeMilli != 0 {
+			return gobs.RemoteTime{Time: time.UnixMilli(o.LastExecutionTimeMilli)}
+		}
 	}
 	return gobs.RemoteTime{}
 }

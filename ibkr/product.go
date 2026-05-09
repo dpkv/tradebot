@@ -425,6 +425,11 @@ func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 		cstatus.mu.Unlock()
 
 		if order.IsDone() {
+			if existing, ok := p.exchange.findOrderByServerID(order.OrderID); ok && existing.FillObservedAt != 0 {
+				order.FillObservedAt = existing.FillObservedAt
+			} else if order.FillObservedAt == 0 {
+				order.FillObservedAt = time.Now().UnixMilli()
+			}
 			p.exchange.persistOrder(ctx, order)
 
 			if p.onBuyFill != nil && order.OrderSide() == "BUY" && order.FilledQty.IsPositive() {

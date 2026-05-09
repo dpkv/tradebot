@@ -151,6 +151,8 @@ func main() {
 
 	ibkrCmds := []cli.Command{
 		new(subcmdibkr.ListOrders),
+		new(subcmdibkr.RawOrders),
+		new(subcmdibkr.RawTrades),
 		new(subcmdibkr.PlaceOrder),
 		new(subcmdibkr.GetOrder),
 		new(subcmdibkr.CancelOrder),
