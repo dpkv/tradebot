@@ -83,6 +83,9 @@ type Order struct {
 	// can be stale because filled orders drop off the IBKR orders list before
 	// the next poll captures the updated timestamp.
 	FillObservedAt int64
+	// Commission is the fee charged for this order, populated from the trades
+	// API after the order fills. Zero until the trades API is queried.
+	Commission decimal.Decimal
 
 	LimitPrice   decimal.Decimal
 	OrderedQty   decimal.Decimal
@@ -125,10 +128,8 @@ func (o *Order) ExecutedValue() decimal.Decimal {
 	return o.FilledQty.Mul(o.AvgFillPrice)
 }
 
-// ExecutedFee returns zero. The IBKR orders list API does not include
-// commission data. Use the Flex Query API for accurate fee reporting.
 func (o *Order) ExecutedFee() decimal.Decimal {
-	return decimal.Zero
+	return o.Commission
 }
 
 func (o *Order) IsDone() bool {

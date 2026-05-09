@@ -492,6 +492,33 @@ func (c *Client) CancelOrder(ctx context.Context, orderID int64) error {
 	return c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }
 
+// APITrade is a single execution record from GET /v1/api/iserver/account/trades.
+type APITrade struct {
+	ExecutionID   string          `json:"execution_id"`
+	OrderRef      string          `json:"order_ref"`   // matches ClientOrderID
+	OrderID       int64           `json:"order_id"`
+	Symbol        string          `json:"symbol"`
+	Side          string          `json:"side"`        // "B" or "S"
+	Size          decimal.Decimal `json:"size"`
+	Price         decimal.Decimal `json:"price"`
+	Commission    decimal.Decimal `json:"commission"`
+	TradeTime     string          `json:"trade_time"`
+	TradeTimeMilli int64          `json:"trade_time_r"`
+}
+
+// GetTrades fetches recent trade executions. days controls the lookback (1-7).
+func (c *Client) GetTrades(ctx context.Context, days int) ([]*APITrade, error) {
+	path := "/v1/api/iserver/account/trades"
+	if days > 0 {
+		path += fmt.Sprintf("?days=%d", days)
+	}
+	var trades []*APITrade
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &trades); err != nil {
+		return nil, err
+	}
+	return trades, nil
+}
+
 // GetOrdersRaw returns the raw JSON bytes from the IBKR orders endpoint with
 // no parsing or field filtering, useful for inspecting the full API response.
 func (c *Client) GetOrdersRaw(ctx context.Context) ([]byte, error) {
