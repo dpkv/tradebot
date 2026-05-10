@@ -473,6 +473,8 @@
       btn.classList.toggle('open', open);
     }
 
+    document.getElementById('status-dropdown').addEventListener('click', e => e.stopPropagation());
+
     document.addEventListener('click', () => {
       document.getElementById('status-dropdown').classList.remove('open');
       document.querySelector('#status-select .multi-select-btn').classList.remove('open');
