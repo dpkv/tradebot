@@ -440,6 +440,7 @@ func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 		}
 		cstatus.mu.Lock()
 		cstatus.order = order
+		cstatus.err = nil // Clear any cached PlaceOrder error — the order was confirmed by the gateway.
 		cstatus.mu.Unlock()
 
 		if order.IsDone() {
