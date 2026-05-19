@@ -6,8 +6,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"log/slog"
 	"sync/atomic"
 	"time"
+
 
 	"github.com/bvk/tradebot/datafeed"
 	"github.com/bvk/tradebot/exchange"
@@ -29,9 +31,9 @@ type limitOrder struct {
 // Product is a simulated exchange product. Balance state lives entirely in the
 // Exchange; Product calls reserve/release/settle for all fund movements.
 type Product struct {
-	def     *gobs.Product
+	def    *gobs.Product
 	feePct decimal.Decimal
-	ex      *Exchange
+	ex     *Exchange
 
 	mu         sync.Mutex
 	orders     map[string]*limitOrder // open orders only
@@ -46,8 +48,7 @@ type Product struct {
 	subscribedOnce sync.Once
 	subscribedCh   chan struct{}
 
-	// orderChanged receives a signal on every placeOrder or Cancel call so the
-	// engine can wait for order-count quiescence after a fill.
+	// orderChanged signals the engine when an order is placed or cancelled.
 	orderChanged chan struct{}
 }
 
@@ -58,14 +59,14 @@ var serverIDCounter atomic.Uint64
 func newProduct(def *gobs.Product, feePct decimal.Decimal, ex *Exchange) *Product {
 	return &Product{
 		def:          def,
-		feePct:      feePct,
+		feePct:       feePct,
 		ex:           ex,
 		orders:       make(map[string]*limitOrder),
 		doneOrders:   make(map[string]*limitOrder),
 		priceTopic:   topic.New[exchange.PriceUpdate](),
 		orderTopic:   topic.New[exchange.OrderUpdate](),
 		subscribedCh: make(chan struct{}),
-		orderChanged: make(chan struct{}, 1),
+		orderChanged:  make(chan struct{}, 1),
 	}
 }
 
@@ -226,6 +227,7 @@ func (p *Product) ProcessTick(tick datafeed.Tick) int {
 		lo.order.Status = "FILLED"
 		lo.order.DoneReason = "FILLED"
 		lo.order.FinishTime = gobs.RemoteTime{Time: tick.Time}
+		slog.Debug("product: fill", "side", lo.order.Side, "limit_price", lo.limitPrice, "tick_price", tick.Price, "order_id", lo.order.ServerOrderID)
 		p.orderTopic.Send(lo.order)
 	}
 	return len(toFill)
@@ -238,20 +240,21 @@ func (p *Product) openOrderCount() int {
 	return len(p.orders)
 }
 
-// waitForStableOrders blocks until no order mutations have occurred for one
-// millisecond, indicating the strategy has finished placing reactive orders.
+// waitForStableOrders blocks until no order placements occur for 100ms,
+// indicating the strategy has finished reacting to the last fill.
 func (p *Product) waitForStableOrders(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-p.orderChanged:
-			// order mutated; reset the quiet window
+			// order mutated, reset the quiet window
 		case <-time.After(100 * time.Millisecond):
 			return nil
 		}
 	}
 }
+
 
 // FilledOrders returns all filled (not cancelled) orders sorted by finish time.
 func (p *Product) FilledOrders() []*exchange.SimpleOrder {

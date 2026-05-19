@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -36,7 +38,10 @@ type BacktestFlags struct {
 	baseBalance  float64
 	quoteBalance float64
 	baseMinSize  float64
-	feePct      decimal.Decimal // derived from strategy's fee-pct, not a CLI flag
+	feePct          decimal.Decimal // derived from strategy's fee-pct, not a CLI flag
+	maxTickProgress float64
+
+	debug bool
 }
 
 func (f *BacktestFlags) SetFlags(fset *flag.FlagSet) {
@@ -51,6 +56,8 @@ func (f *BacktestFlags) SetFlags(fset *flag.FlagSet) {
 	fset.Float64Var(&f.baseBalance, "base-balance", 0, "starting base currency balance (e.g. BTC amount)")
 	fset.Float64Var(&f.quoteBalance, "quote-balance", 0, "starting quote currency balance (e.g. USD amount)")
 	fset.Float64Var(&f.baseMinSize, "base-min-size", 0, "minimum base order size")
+	fset.Float64Var(&f.maxTickProgress, "max-tick-progress", 0, "max price change per tick; engine inserts sub-ticks when exceeded (0 = unlimited)")
+	fset.BoolVar(&f.debug, "debug", false, "enable debug logging")
 }
 
 func (f *BacktestFlags) check() error {
@@ -132,15 +139,20 @@ func (f *BacktestFlags) buildFeed(ctx context.Context, begin, end time.Time) (da
 	return nil, fmt.Errorf("unknown feed type %q", f.feed)
 }
 
-type noopMessenger struct{}
+type stdoutMessenger struct{}
 
-func (m *noopMessenger) SendMessage(_ context.Context, _ time.Time, _ string, _ ...interface{}) {}
+func (m *stdoutMessenger) SendMessage(_ context.Context, t time.Time, format string, args ...interface{}) {
+	fmt.Printf("[%s] %s\n", t.Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
+}
 
 // runBacktest sets up the mock exchange, feed, and engine, runs the strategy,
 // and prints a P&L summary when the feed is exhausted.
 func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
 	if err := f.check(); err != nil {
 		return err
+	}
+	if f.debug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 
 	begin, err := time.Parse(dateFormat, f.begin)
@@ -173,12 +185,13 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
 	}
 	mockProduct := ep.(*mockexchange.Product)
 	engine := mockexchange.NewEngine(feed, mockProduct)
+	engine.MaxTickProgress = decimal.NewFromFloat(f.maxTickProgress)
 
 	rt := &trader.Runtime{
 		Exchange:  mockEx,
 		Database:  kvmemdb.New(),
 		Product:   ep,
-		Messenger: &noopMessenger{},
+		Messenger: &stdoutMessenger{},
 	}
 
 	ctx, cancel := context.WithCancelCause(ctx)
