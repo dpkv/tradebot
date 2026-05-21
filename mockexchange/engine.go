@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/bvk/tradebot/datafeed"
+	"github.com/bvk/tradebot/trader"
 	"github.com/shopspring/decimal"
 )
 
@@ -20,6 +22,10 @@ type Engine struct {
 	// this, the engine emits intermediate sub-ticks stepping by MaxTickProgress
 	// so the strategy can react incrementally. Zero means unlimited.
 	MaxTickProgress decimal.Decimal
+
+	// Syncer is notified on every tick so the strategy can synchronize with
+	// tick delivery. Nil means no synchronization (production mode).
+	Syncer *trader.Syncer
 }
 
 // NewEngine creates an Engine that feeds ticks from feed into product.
@@ -28,8 +34,8 @@ func NewEngine(feed datafeed.DataFeed, product *Product) *Engine {
 }
 
 // Run waits for the strategy to subscribe, then loops until the feed is
-// exhausted or ctx is cancelled. After each tick with fills, it waits until
-// the strategy has placed reactive orders before processing the next tick.
+// exhausted or ctx is cancelled. After each tick, notifies the Syncer and
+// waits for the full strategy hierarchy to acknowledge before advancing.
 // Returns nil when the feed reaches EOF (normal end of backtest).
 func (e *Engine) Run(ctx context.Context) error {
 	if err := e.product.WaitForSubscriber(ctx); err != nil {
@@ -74,10 +80,18 @@ func (e *Engine) expand(prev, tick datafeed.Tick) []datafeed.Tick {
 	if diff.IsNegative() {
 		step = step.Neg()
 	}
-	var ticks []datafeed.Tick
+	// Collect intermediate prices first so we know the total count for time interpolation.
+	var prices []decimal.Decimal
 	for price := prev.Price.Add(step); diff.IsPositive() && price.LessThan(tick.Price) ||
 		diff.IsNegative() && price.GreaterThan(tick.Price); price = price.Add(step) {
-		ticks = append(ticks, datafeed.Tick{Time: tick.Time, Price: price})
+		prices = append(prices, price)
+	}
+	n := len(prices) + 1 // +1 for the final tick
+	duration := tick.Time.Sub(prev.Time)
+	var ticks []datafeed.Tick
+	for i, price := range prices {
+		t := prev.Time.Add(duration * time.Duration(i+1) / time.Duration(n))
+		ticks = append(ticks, datafeed.Tick{Time: t, Price: price})
 	}
 	ticks = append(ticks, tick)
 	slog.Debug("engine: expand", "prev_price", prev.Price, "curr_price", tick.Price, "diff", diff, "sub_ticks", len(ticks))
@@ -85,10 +99,19 @@ func (e *Engine) expand(prev, tick datafeed.Tick) []datafeed.Tick {
 }
 
 func (e *Engine) deliverTick(ctx context.Context, tick, prevTick datafeed.Tick) error {
+	slog.Debug("engine: tick begin", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price)
 	fills := e.product.ProcessTick(tick)
-	slog.Debug("engine: tick", "prev_price", prevTick.Price, "curr_price", tick.Price, "time", tick.Time, "fills", fills)
-	if fills == 0 {
+	slog.Debug("engine: tick fills", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price, "fills", len(fills))
+	if e.Syncer == nil {
+		slog.Debug("engine: tick end", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price)
 		return nil
 	}
-	return e.product.waitForStableOrders(ctx)
+	slog.Debug("engine: notifying syncer", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price, "fills", len(fills))
+	e.Syncer.Notify(tick.Time, fills)
+	slog.Debug("engine: waiting for syncer", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price)
+	if err := trader.WaitSyncers(ctx, []*trader.Syncer{e.Syncer}); err != nil {
+		return err
+	}
+	slog.Debug("engine: tick end", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price)
+	return nil
 }

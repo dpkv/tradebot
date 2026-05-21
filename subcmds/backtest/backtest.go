@@ -184,14 +184,17 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
 		return fmt.Errorf("could not open mock product: %w", err)
 	}
 	mockProduct := ep.(*mockexchange.Product)
+	syncer := trader.NewSyncer()
 	engine := mockexchange.NewEngine(feed, mockProduct)
 	engine.MaxTickProgress = decimal.NewFromFloat(f.maxTickProgress)
+	engine.Syncer = syncer
 
 	rt := &trader.Runtime{
 		Exchange:  mockEx,
 		Database:  kvmemdb.New(),
 		Product:   ep,
 		Messenger: &stdoutMessenger{},
+		Syncer:    syncer,
 	}
 
 	ctx, cancel := context.WithCancelCause(ctx)

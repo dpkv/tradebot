@@ -8,7 +8,6 @@ import (
 	"sync"
 	"log/slog"
 	"sync/atomic"
-	"time"
 
 
 	"github.com/bvk/tradebot/datafeed"
@@ -48,8 +47,6 @@ type Product struct {
 	subscribedOnce sync.Once
 	subscribedCh   chan struct{}
 
-	// orderChanged signals the engine when an order is placed or cancelled.
-	orderChanged chan struct{}
 }
 
 var _ exchange.Product = (*Product)(nil)
@@ -66,7 +63,6 @@ func newProduct(def *gobs.Product, feePct decimal.Decimal, ex *Exchange) *Produc
 		priceTopic:   topic.New[exchange.PriceUpdate](),
 		orderTopic:   topic.New[exchange.OrderUpdate](),
 		subscribedCh: make(chan struct{}),
-		orderChanged:  make(chan struct{}, 1),
 	}
 }
 
@@ -147,10 +143,6 @@ func (p *Product) placeOrder(_ context.Context, side string, clientID uuid.UUID,
 	p.orders[serverID] = &limitOrder{order: order, limitPrice: price, size: size, reserved: reserved}
 	p.mu.Unlock()
 
-	select {
-	case p.orderChanged <- struct{}{}:
-	default:
-	}
 	return order, nil
 }
 
@@ -187,17 +179,13 @@ func (p *Product) Cancel(_ context.Context, serverID string) error {
 			p.ex.release(p.def.BaseCurrencyID, lo.reserved)
 		}
 		p.orderTopic.Send(lo.order)
-		select {
-		case p.orderChanged <- struct{}{}:
-		default:
-		}
 	}
 	return nil
 }
 
 // ProcessTick is called by the Engine on each price tick. It publishes a price
-// update, checks all open orders for fills, and returns the number of fills.
-func (p *Product) ProcessTick(tick datafeed.Tick) int {
+// update, checks all open orders for fills, and returns the filled order IDs.
+func (p *Product) ProcessTick(tick datafeed.Tick) []string {
 	p.priceTopic.Send(&exchange.SimpleTicker{
 		ServerTime: exchange.RemoteTime{Time: tick.Time},
 		Price:      tick.Price,
@@ -217,6 +205,7 @@ func (p *Product) ProcessTick(tick datafeed.Tick) int {
 	}
 	p.mu.Unlock()
 
+	var filledIDs []string
 	for _, lo := range toFill {
 		fee := lo.size.Mul(lo.limitPrice).Mul(p.feePct.Div(decimal.NewFromInt(100)))
 		p.ex.settle(lo.order.Side, p.def.BaseCurrencyID, p.def.QuoteCurrencyID, lo.size, lo.limitPrice, fee)
@@ -229,30 +218,12 @@ func (p *Product) ProcessTick(tick datafeed.Tick) int {
 		lo.order.FinishTime = gobs.RemoteTime{Time: tick.Time}
 		slog.Debug("product: fill", "side", lo.order.Side, "limit_price", lo.limitPrice, "tick_price", tick.Price, "order_id", lo.order.ServerOrderID)
 		p.orderTopic.Send(lo.order)
+		filledIDs = append(filledIDs, lo.order.ServerOrderID)
 	}
-	return len(toFill)
-}
-
-// openOrderCount returns the number of open (not yet filled or cancelled) orders.
-func (p *Product) openOrderCount() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.orders)
-}
-
-// waitForStableOrders blocks until no order placements occur for 100ms,
-// indicating the strategy has finished reacting to the last fill.
-func (p *Product) waitForStableOrders(ctx context.Context) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-p.orderChanged:
-			// order mutated, reset the quiet window
-		case <-time.After(100 * time.Millisecond):
-			return nil
-		}
+	if len(filledIDs) > 0 {
+		slog.Debug("product: tick fills", "tick", tick.Time, "tick_price", tick.Price, "count", len(filledIDs), "order_ids", filledIDs)
 	}
+	return filledIDs
 }
 
 
