@@ -19,4 +19,5 @@ type Runtime struct {
 	Database  kv.Database
 	Product   exchange.Product
 	Messenger Messenger
+	Syncer    *Syncer
 }
