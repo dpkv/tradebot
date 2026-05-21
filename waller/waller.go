@@ -34,6 +34,9 @@ type Waller struct {
 
 	loopers []*looper.Looper
 
+	// syncers holds one Syncer per looper, populated during Run.
+	syncers []*trader.Syncer
+
 	// summary caches the job summary for full time period.
 	summary atomic.Pointer[gobs.Summary]
 }
