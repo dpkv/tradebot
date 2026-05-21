@@ -121,6 +121,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 			flushCh = time.After(time.Minute)
 
 		case update := <-orderUpdatesCh:
+			slog.Debug("limiter: order update received", "limiter", v, "point", v.point, "order-id", update.ServerID(), "status", update.OrderStatus(), "done", update.IsDone())
 			dirty++
 			order, err := v.updateOrderMap(update)
 			if err != nil {
@@ -132,10 +133,21 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 				slog.Info("limiter order is complete", "limiter", v, "point", v.point, "order-id", activeOrderID, "order-status", order.Status, "done-reason", order.DoneReason)
 				activeOrderID = ""
 			}
+			if rt.Syncer != nil {
+				rt.Syncer.OrderUpdateDone(update.ServerID())
+				slog.Debug("limiter: order update done", "limiter", v, "point", v.point, "order-id", update.ServerID(), "syncer_todo_ticks", rt.Syncer.TodoTicks(), "syncer_done_ticks", rt.Syncer.DoneTicks(), "syncer_todo_orders", rt.Syncer.TodoOrderUpdates(), "syncer_done_orders", rt.Syncer.DoneOrderUpdates())
+			}
 
 		case ticker := <-tickerCh:
 			now := time.Now()
-			tickerPrice, _ := ticker.PricePoint()
+			tickerPrice, tickTime := ticker.PricePoint()
+			slog.Debug("limiter: tick received", "limiter", v, "point", v.point, "tick_price", tickerPrice, "tick_time", tickTime.Time, "active_order", activeOrderID)
+			tickDone := func() {
+				if rt.Syncer != nil {
+					rt.Syncer.TickDone(tickTime.Time)
+					slog.Debug("limiter: tick done", "limiter", v, "point", v.point, "tick_time", tickTime.Time, "syncer_todo_ticks", rt.Syncer.TodoTicks(), "syncer_done_ticks", rt.Syncer.DoneTicks(), "syncer_todo_orders", rt.Syncer.TodoOrderUpdates(), "syncer_done_orders", rt.Syncer.DoneOrderUpdates())
+				}
+			}
 
 			if v.IsSell() {
 				if tickerPrice.LessThanOrEqual(v.point.Cancel) {
@@ -144,6 +156,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 					// operations.
 					if activeOrderID != "" && activeOrderAt.Add(CancelOffsetTimeout).Before(now) {
 						if err := v.cancel(localCtx, rt.Product, activeOrderID); err != nil {
+							tickDone()
 							return err
 						}
 						dirty++
@@ -155,6 +168,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 					if activeOrderID == "" {
 						id, err := v.create(localCtx, rt)
 						if err != nil {
+							tickDone()
 							return err
 						}
 						dirty++
@@ -162,6 +176,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 						activeOrderAt = now
 					}
 				}
+				tickDone()
 				continue
 			}
 
@@ -172,6 +187,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 					// operations.
 					if activeOrderID != "" && activeOrderAt.Add(CancelOffsetTimeout).Before(now) {
 						if err := v.cancel(localCtx, rt.Product, activeOrderID); err != nil {
+							tickDone()
 							return err
 						}
 						dirty++
@@ -183,6 +199,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 					if activeOrderID == "" {
 						id, err := v.create(localCtx, rt)
 						if err != nil {
+							tickDone()
 							return err
 						}
 						dirty++
@@ -190,6 +207,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 						activeOrderAt = now
 					}
 				}
+				tickDone()
 				continue
 			}
 		}
