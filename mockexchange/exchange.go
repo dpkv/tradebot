@@ -113,6 +113,14 @@ func (e *Exchange) GetOrder(ctx context.Context, productID string, serverID stri
 	return p.Get(ctx, serverID)
 }
 
+// NetLiquidationValue returns the total portfolio value in quote currency:
+// quote balance + base balance × price.
+func (e *Exchange) NetLiquidationValue(base, quote string, price decimal.Decimal) decimal.Decimal {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.balance[quote].Add(e.balance[base].Mul(price))
+}
+
 // Balances returns a snapshot of total and available balances per currency.
 func (e *Exchange) Balances() (total, available map[string]decimal.Decimal) {
 	e.mu.Lock()

@@ -227,6 +227,13 @@ func (p *Product) ProcessTick(tick datafeed.Tick) []string {
 }
 
 
+// LastTickPrice returns the price from the most recently processed tick.
+func (p *Product) LastTickPrice() decimal.Decimal {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastTick.Price
+}
+
 // FilledOrders returns all filled (not cancelled) orders sorted by finish time.
 func (p *Product) FilledOrders() []*exchange.SimpleOrder {
 	p.mu.Lock()

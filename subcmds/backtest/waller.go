@@ -38,11 +38,17 @@ func (c *Waller) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("could not create waller: %w", err)
 	}
-	if err := runBacktest(ctx, &c.flags, w); err != nil {
+	summary, err := runBacktest(ctx, &c.flags, w)
+	if err != nil {
 		return err
 	}
 	quote := strings.SplitN(c.flags.product, "-", 2)[1]
-	printWallerPairs(w.Actions(), w.PairsByKey(), quote)
+	actions, pairsByKey := w.Actions(), w.PairsByKey()
+	completed, open := countTrades(actions, pairsByKey)
+	printWallerPairs(actions, pairsByKey, quote)
+	summary.Print()
+	fmt.Printf("Completed trades:    %d\n", completed)
+	fmt.Printf("Open positions:      %d\n", open)
 	return nil
 }
 
@@ -74,6 +80,28 @@ Example:
 `
 }
 
+func countTrades(actions []*gobs.Action, pairsByKey map[string]*point.Pair) (completed, open int) {
+	buys := make(map[string]int)
+	sells := make(map[string]int)
+	for _, a := range actions {
+		p := point.Point(a.Point)
+		if p.Side() == "BUY" {
+			buys[a.PairingKey]++
+		} else {
+			sells[a.PairingKey]++
+		}
+	}
+	for key := range buys {
+		if _, ok := pairsByKey[key]; !ok {
+			continue
+		}
+		n := min(buys[key], sells[key])
+		completed += n
+		open += buys[key] - n
+	}
+	return
+}
+
 func printWallerPairs(actions []*gobs.Action, pairsByKey map[string]*point.Pair, quote string) {
 	if len(actions) == 0 {
 		return
@@ -101,6 +129,7 @@ func printWallerPairs(actions []*gobs.Action, pairsByKey map[string]*point.Pair,
 		}
 	}
 
+	var totalCompleted, totalOpen int
 	fmt.Printf("\n=== Buy/Sell Pairs ===\n")
 	var unknownKeys []string
 	for _, key := range groupOrder {
@@ -111,6 +140,8 @@ func printWallerPairs(actions []*gobs.Action, pairsByKey map[string]*point.Pair,
 			unknownKeys = append(unknownKeys, key)
 			continue
 		}
+		totalCompleted += n
+		totalOpen += len(g.buys) - n
 		buyPrice := p.Buy.Price.StringFixed(2)
 		sellPrice := p.Sell.Price.StringFixed(2)
 		fmt.Printf("\nBUY@%s / SELL@%s — %d completed\n", buyPrice, sellPrice, n)

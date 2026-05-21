@@ -26,6 +26,26 @@ type Engine struct {
 	// Syncer is notified on every tick so the strategy can synchronize with
 	// tick delivery. Nil means no synchronization (production mode).
 	Syncer *trader.Syncer
+
+	peakNLV        decimal.Decimal
+	minNLV         decimal.Decimal
+	maxDrawdownPct decimal.Decimal
+}
+
+// MaxDrawdownPct returns the maximum peak-to-trough decline in NLV as a
+// percentage of the peak, observed across all delivered ticks.
+func (e *Engine) MaxDrawdownPct() decimal.Decimal {
+	return e.maxDrawdownPct
+}
+
+// MinNLV returns the lowest NLV observed across all delivered ticks.
+func (e *Engine) MinNLV() decimal.Decimal {
+	return e.minNLV
+}
+
+// PeakNLV returns the highest NLV observed across all delivered ticks.
+func (e *Engine) PeakNLV() decimal.Decimal {
+	return e.peakNLV
 }
 
 // NewEngine creates an Engine that feeds ticks from feed into product.
@@ -113,5 +133,23 @@ func (e *Engine) deliverTick(ctx context.Context, tick, prevTick datafeed.Tick) 
 		return err
 	}
 	slog.Debug("engine: tick end", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price)
+	e.updateDrawdown(tick.Price)
 	return nil
+}
+
+func (e *Engine) updateDrawdown(price decimal.Decimal) {
+	def := e.product.def
+	nlv := e.product.ex.NetLiquidationValue(def.BaseCurrencyID, def.QuoteCurrencyID, price)
+	if nlv.GreaterThan(e.peakNLV) {
+		e.peakNLV = nlv
+	}
+	if e.minNLV.IsZero() || nlv.LessThan(e.minNLV) {
+		e.minNLV = nlv
+	}
+	if !e.peakNLV.IsZero() {
+		dd := e.peakNLV.Sub(nlv).Div(e.peakNLV).Mul(decimal.NewFromInt(100))
+		if dd.GreaterThan(e.maxDrawdownPct) {
+			e.maxDrawdownPct = dd
+		}
+	}
 }

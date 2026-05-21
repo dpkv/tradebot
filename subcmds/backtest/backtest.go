@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -147,9 +148,9 @@ func (m *stdoutMessenger) SendMessage(_ context.Context, t time.Time, format str
 
 // runBacktest sets up the mock exchange, feed, and engine, runs the strategy,
 // and prints a P&L summary when the feed is exhausted.
-func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
+func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*BacktestSummary, error) {
 	if err := f.check(); err != nil {
-		return err
+		return nil, err
 	}
 	if f.debug {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -157,16 +158,16 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
 
 	begin, err := time.Parse(dateFormat, f.begin)
 	if err != nil {
-		return fmt.Errorf("could not parse --begin: %w", err)
+		return nil, fmt.Errorf("could not parse --begin: %w", err)
 	}
 	end, err := time.Parse(dateFormat, f.end)
 	if err != nil {
-		return fmt.Errorf("could not parse --end: %w", err)
+		return nil, fmt.Errorf("could not parse --end: %w", err)
 	}
 
 	feed, err := f.buildFeed(ctx, begin, end)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer feed.Close()
 
@@ -181,7 +182,7 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
 
 	ep, err := mockEx.OpenSpotProduct(ctx, f.product)
 	if err != nil {
-		return fmt.Errorf("could not open mock product: %w", err)
+		return nil, fmt.Errorf("could not open mock product: %w", err)
 	}
 	mockProduct := ep.(*mockexchange.Product)
 	syncer := trader.NewSyncer()
@@ -207,17 +208,68 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) error {
 	cancel(engine.Run(ctx))
 	<-errCh
 
-	// Print P&L summary.
-	total, available := mockEx.Balances()
+	total, _ := mockEx.Balances()
+	lastPrice := mockProduct.LastTickPrice()
 	startQuote := decimal.NewFromFloat(f.quoteBalance)
-	endQuote := total[quote]
+	endQuote := total[quote].Add(total[base].Mul(lastPrice))
 	pnl := endQuote.Sub(startQuote)
 	pnlPct := pnl.Div(startQuote).Mul(decimal.NewFromInt(100))
+	days := end.Sub(begin).Hours() / 24
+	years := days / 365.25
+	var annualizedPct decimal.Decimal
+	if years > 0 {
+		growth, _ := pnl.Add(startQuote).Div(startQuote).Float64()
+		annualized := (math.Pow(growth, 1/years) - 1) * 100
+		annualizedPct = decimal.NewFromFloat(annualized)
+	}
+	s := &BacktestSummary{
+		Product:        f.product,
+		Begin:          f.begin,
+		End:            f.end,
+		Base:           base,
+		Quote:          quote,
+		BaseBalance:    f.baseBalance,
+		QuoteBalance:   f.quoteBalance,
+		TotalBase:      total[base],
+		TotalQuote:     total[quote],
+		LastPrice:      lastPrice,
+		NLV:            endQuote,
+		PeakNLV:        engine.PeakNLV(),
+		MinNLV:         engine.MinNLV(),
+		MaxDrawdownPct: engine.MaxDrawdownPct(),
+		PnL:            pnl,
+		PnLPct:         pnlPct,
+		AnnualizedPct:  annualizedPct,
+	}
+	return s, nil
+}
 
-	fmt.Printf("\n=== Backtest: %s  %s → %s ===\n", f.product, f.begin, f.end)
-	fmt.Printf("Starting:  %s=%.4f  %s=%.2f\n", base, f.baseBalance, quote, f.quoteBalance)
-	fmt.Printf("Ending:    %s=%s  %s=%s\n", base, total[base].StringFixed(4), quote, total[quote].StringFixed(2))
-	fmt.Printf("Available: %s=%s  %s=%s\n", base, available[base].StringFixed(4), quote, available[quote].StringFixed(2))
-	fmt.Printf("P&L:       %s (%s%%)\n", pnl.StringFixed(2), pnlPct.StringFixed(2))
-	return nil
+// BacktestSummary holds computed results from a backtest run.
+type BacktestSummary struct {
+	Product, Begin, End   string
+	Base, Quote           string
+	BaseBalance           float64
+	QuoteBalance          float64
+	TotalBase, TotalQuote decimal.Decimal
+	LastPrice             decimal.Decimal
+	NLV                   decimal.Decimal
+	PeakNLV, MinNLV      decimal.Decimal
+	MaxDrawdownPct        decimal.Decimal
+	PnL, PnLPct           decimal.Decimal
+	AnnualizedPct         decimal.Decimal
+}
+
+func (s *BacktestSummary) Print() {
+	startQuote := decimal.NewFromFloat(s.QuoteBalance)
+	maxDDFromBudget := startQuote.Sub(s.MinNLV).Div(startQuote).Mul(decimal.NewFromInt(100))
+	dollarLoss := s.MinNLV.Sub(startQuote)
+	fmt.Printf("\n=== Backtest: %s  %s → %s ===\n", s.Product, s.Begin, s.End)
+	fmt.Printf("Starting:            %s=%.4f  %s=%.2f\n", s.Base, s.BaseBalance, s.Quote, s.QuoteBalance)
+	fmt.Printf("Ending:              %s=%s  %s=%s  (last price: %s)\n", s.Base, s.TotalBase.StringFixed(4), s.Quote, s.TotalQuote.StringFixed(2), s.LastPrice.StringFixed(2))
+	fmt.Printf("Net Liquidation:     %s %s\n", s.NLV.StringFixed(2), s.Quote)
+	fmt.Printf("Max Drawdown:        %s%% from peak  |  %s%% from budget (%s %s)  |  NLV range: %s → %s %s\n",
+		s.MaxDrawdownPct.StringFixed(2),
+		maxDDFromBudget.StringFixed(2), dollarLoss.StringFixed(2), s.Quote,
+		s.PeakNLV.StringFixed(2), s.MinNLV.StringFixed(2), s.Quote)
+	fmt.Printf("P&L:                 %s (%s%%)  annualized: %s%%\n", s.PnL.StringFixed(2), s.PnLPct.StringFixed(2), s.AnnualizedPct.StringFixed(2))
 }
