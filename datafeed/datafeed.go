@@ -29,23 +29,27 @@ type DataFeed interface {
 type CandleExpander func(t time.Time, d time.Duration, open, low, high, close decimal.Decimal) []Tick
 
 // OpenLowHighClose expands a candle as open → low → high → close (bullish path assumption).
+// Ticks are spaced at d/4 intervals so the close falls at t+3*d/4, strictly before the
+// next candle's start at t+d, preventing duplicate timestamps across candle boundaries.
 func OpenLowHighClose(t time.Time, d time.Duration, open, low, high, close decimal.Decimal) []Tick {
-	step := d / 3
+	step := d / 4
 	return []Tick{
 		{Time: t, Price: open},
 		{Time: t.Add(step), Price: low},
 		{Time: t.Add(2 * step), Price: high},
-		{Time: t.Add(d), Price: close},
+		{Time: t.Add(3 * step), Price: close},
 	}
 }
 
 // OpenHighLowClose expands a candle as open → high → low → close (bearish path assumption).
+// Ticks are spaced at d/4 intervals so the close falls at t+3*d/4, strictly before the
+// next candle's start at t+d, preventing duplicate timestamps across candle boundaries.
 func OpenHighLowClose(t time.Time, d time.Duration, open, low, high, close decimal.Decimal) []Tick {
-	step := d / 3
+	step := d / 4
 	return []Tick{
 		{Time: t, Price: open},
 		{Time: t.Add(step), Price: high},
 		{Time: t.Add(2 * step), Price: low},
-		{Time: t.Add(d), Price: close},
+		{Time: t.Add(3 * step), Price: close},
 	}
 }
