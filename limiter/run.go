@@ -135,7 +135,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 			}
 			if rt.Syncer != nil {
 				rt.Syncer.OrderUpdateDone(update.ServerID())
-				slog.Debug("limiter: order update done", "limiter", v, "point", v.point, "order-id", update.ServerID(), "syncer_todo_ticks", rt.Syncer.TodoTicks(), "syncer_done_ticks", rt.Syncer.DoneTicks(), "syncer_todo_orders", rt.Syncer.TodoOrderUpdates(), "syncer_done_orders", rt.Syncer.DoneOrderUpdates())
+				slog.Debug("limiter: order update done", "limiter", v, "point", v.point, "order-id", update.ServerID(), "syncer_target_tick", rt.Syncer.TargetTick(), "syncer_done_tick", rt.Syncer.DoneTick(), "syncer_target_order", rt.Syncer.TargetOrder(), "syncer_done_order", rt.Syncer.DoneOrder())
 			}
 
 		case ticker := <-tickerCh:
@@ -145,7 +145,7 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 			tickDone := func() {
 				if rt.Syncer != nil {
 					rt.Syncer.TickDone(tickTime.Time)
-					slog.Debug("limiter: tick done", "limiter", v, "point", v.point, "tick_time", tickTime.Time, "syncer_todo_ticks", rt.Syncer.TodoTicks(), "syncer_done_ticks", rt.Syncer.DoneTicks(), "syncer_todo_orders", rt.Syncer.TodoOrderUpdates(), "syncer_done_orders", rt.Syncer.DoneOrderUpdates())
+					slog.Debug("limiter: tick done", "limiter", v, "point", v.point, "tick_time", tickTime.Time, "syncer_target_tick", rt.Syncer.TargetTick(), "syncer_done_tick", rt.Syncer.DoneTick(), "syncer_target_order", rt.Syncer.TargetOrder(), "syncer_done_order", rt.Syncer.DoneOrder())
 				}
 			}
 

@@ -4,6 +4,7 @@ package waller
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"runtime/debug"
@@ -88,14 +89,10 @@ func (w *Waller) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 		}()
 	}
 
+	hangCh := make(chan error, 1)
+
 	if rt.Syncer != nil {
 		go func() {
-			var totalForcedAcks int
-			defer func() {
-				if totalForcedAcks > 0 {
-					slog.Warn("waller syncer: total forced order update acks", "waller", w, "total", totalForcedAcks)
-				}
-			}()
 			for {
 				slog.Debug("waller syncer: waiting for tick event", "waller", w)
 				event, err := rt.Syncer.Recv(ctx)
@@ -104,29 +101,25 @@ func (w *Waller) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 					return
 				}
 				slog.Debug("waller syncer: received tick event", "waller", w, "tick", event.Time, "fills", len(event.OrderIDs), "order_ids", event.OrderIDs)
+				var lastOrder string
+				if len(event.OrderIDs) > 0 {
+					lastOrder = event.OrderIDs[len(event.OrderIDs)-1]
+				}
 				for _, s := range w.syncers {
-					s.Add(1, len(event.OrderIDs))
+					s.SetTarget(event.Time, lastOrder)
 				}
 				slog.Debug("waller syncer: waiting for looper syncers", "waller", w, "loopers", len(w.syncers))
 				watchdogDone := make(chan struct{})
 				go func() {
 					select {
 					case <-time.After(5 * time.Second):
-						slog.Warn("waller syncer: hang detected, dumping stuck syncers", "waller", w, "tick", event.Time, "fills", len(event.OrderIDs), "order_ids", event.OrderIDs)
+						slog.Error("waller syncer: hang detected", "waller", w, "tick", event.Time)
 						for i, s := range w.syncers {
-							td, dd, to, do_ := s.TodoTicks(), s.DoneTicks(), s.TodoOrderUpdates(), s.DoneOrderUpdates()
-							if td > dd {
-								slog.Error("waller syncer: stuck looper missing tick done — not recovering", "looper_index", i, "looper", w.loopers[i].UID(), "todo_ticks", td, "done_ticks", dd)
-							} else if to > do_ {
-								before := s.DoneOrderUpdates()
-								for _, id := range event.OrderIDs {
-									s.OrderUpdateDone(id)
-								}
-								forced := int(s.DoneOrderUpdates() - before)
-								totalForcedAcks += forced
-								slog.Warn("waller syncer: forced missing order update acks", "looper_index", i, "looper", w.loopers[i].UID(), "forced", forced, "total_forced_so_far", totalForcedAcks)
+							if !s.IsSatisfied() {
+								slog.Error("waller syncer: stuck looper", "looper_index", i, "looper", w.loopers[i].UID(), "target_tick", s.TargetTick(), "done_tick", s.DoneTick(), "target_order", s.TargetOrder(), "done_order", s.DoneOrder())
 							}
 						}
+						hangCh <- fmt.Errorf("waller %v: sync hang at tick %v", w, event.Time)
 					case <-watchdogDone:
 					}
 				}()
@@ -152,6 +145,8 @@ func (w *Waller) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 					slog.Error("could not save waller to the database (ignored; will retry)", "err", err)
 				}
 			}
+		case err := <-hangCh:
+			return err
 		}
 	}
 

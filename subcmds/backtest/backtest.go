@@ -202,7 +202,13 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 	defer cancel(nil)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- t.Run(ctx, rt) }()
+	go func() {
+		err := t.Run(ctx, rt)
+		if err != nil && ctx.Err() == nil {
+			cancel(err) // unblock the engine on strategy failure
+		}
+		errCh <- err
+	}()
 
 	// Engine blocks until feed is exhausted, then we stop the strategy.
 	cancel(engine.Run(ctx))

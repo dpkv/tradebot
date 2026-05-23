@@ -15,42 +15,43 @@ type TickEvent struct {
 	OrderIDs []string
 }
 
-// Syncer tracks acknowledgments for two event types: ticks and order updates.
-// todo counters are monotonically increasing; done counters catch up as events
-// are processed. TickDone and OrderUpdateDone are idempotent: duplicate calls
-// with the same key (tick timestamp or order ID) are ignored.
+// Syncer coordinates tick and order-update acknowledgment between a producer
+// and a consumer. The producer sets a target (latest tick time + optional order
+// ID); the consumer advances its progress via TickDone and OrderUpdateDone.
+// WaitSyncers blocks until every syncer's observed state satisfies its target.
 //
-// Updates flow in either via Add* calls directly or via the channel using
-// Notify and Recv.
+// Satisfaction uses timestamp comparison rather than counting:
+//   - doneTick >= targetTick
+//   - doneOrder == targetOrder OR targetOrder == ""
+//
+// This tolerates duplicate tick deliveries: once doneTick reaches targetTick,
+// re-delivery of the same timestamp leaves the condition already true.
 type Syncer struct {
 	mu   sync.Mutex
 	cond sync.Cond
 
-	todoTicks        int32
-	todoOrderUpdates int32
+	// Target state set by the producer.
+	targetTick  time.Time
+	targetOrder string // "" means no order ack required
 
-	doneTicks        int32
-	doneOrderUpdates int32
-
-	seenTicks  map[time.Time]bool
-	seenOrders map[string]bool
+	// Progress state reported by the consumer.
+	doneTick  time.Time
+	doneOrder string
 
 	tickCh chan TickEvent
 }
 
 func NewSyncer() *Syncer {
 	s := &Syncer{
-		seenTicks:  make(map[time.Time]bool),
-		seenOrders: make(map[string]bool),
-		tickCh:     make(chan TickEvent, 1),
+		tickCh: make(chan TickEvent, 1),
 	}
 	s.cond.L = &s.mu
 	return s
 }
 
-// Notify increments the todo counts and sends a TickEvent to the channel.
+// Notify sets the target tick and order, then delivers a TickEvent to Recv.
 func (s *Syncer) Notify(t time.Time, orderIDs []string) {
-	s.Add(1, len(orderIDs))
+	s.SetTarget(t, lastID(orderIDs))
 	s.tickCh <- TickEvent{Time: t, OrderIDs: orderIDs}
 }
 
@@ -64,74 +65,69 @@ func (s *Syncer) Recv(ctx context.Context) (TickEvent, error) {
 	}
 }
 
-func (s *Syncer) TodoTicks() int32        { s.mu.Lock(); defer s.mu.Unlock(); return s.todoTicks }
-func (s *Syncer) DoneTicks() int32        { s.mu.Lock(); defer s.mu.Unlock(); return s.doneTicks }
-func (s *Syncer) TodoOrderUpdates() int32 { s.mu.Lock(); defer s.mu.Unlock(); return s.todoOrderUpdates }
-func (s *Syncer) DoneOrderUpdates() int32 { s.mu.Lock(); defer s.mu.Unlock(); return s.doneOrderUpdates }
-
-func (s *Syncer) Add(ticks, orderUpdates int) {
+// SetTarget advances the target to t and orderID.
+func (s *Syncer) SetTarget(t time.Time, orderID string) {
 	s.mu.Lock()
-	s.todoTicks += int32(ticks)
-	s.todoOrderUpdates += int32(orderUpdates)
+	s.targetTick = t
+	s.targetOrder = orderID
 	s.mu.Unlock()
 }
 
+// TickDone records that the consumer has processed a tick at time t. If t does
+// not advance doneTick the call is a no-op and does not wake waiters.
 func (s *Syncer) TickDone(t time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.seenTicks[t] {
-		return
+	if t.After(s.doneTick) {
+		s.doneTick = t
+		s.cond.Broadcast()
 	}
-	s.seenTicks[t] = true
-	s.doneTicks++
-	s.cond.Broadcast()
+	s.mu.Unlock()
 }
 
+// OrderUpdateDone records that the consumer has processed an order update.
 func (s *Syncer) OrderUpdateDone(orderID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.seenOrders[orderID] {
-		return
-	}
-	s.seenOrders[orderID] = true
-	s.doneOrderUpdates++
+	s.doneOrder = orderID
 	s.cond.Broadcast()
+	s.mu.Unlock()
 }
 
-// ClearEvent removes the seen entries for the given tick and order IDs, freeing
-// memory once a tick cycle is fully processed.
-func (s *Syncer) ClearEvent(t time.Time, orderIDs []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.seenTicks, t)
-	for _, id := range orderIDs {
-		delete(s.seenOrders, id)
-	}
-}
-
-// Done acknowledges a tick and all its associated order updates in one atomic
-// operation, acquiring the lock and broadcasting once.
+// Done records completion for both tick and order in one step.
 func (s *Syncer) Done(t time.Time, orderIDs []string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if !s.seenTicks[t] {
-		s.seenTicks[t] = true
-		s.doneTicks++
+	if t.After(s.doneTick) {
+		s.doneTick = t
 	}
-	for _, id := range orderIDs {
-		if !s.seenOrders[id] {
-			s.seenOrders[id] = true
-			s.doneOrderUpdates++
-		}
+	if id := lastID(orderIDs); id != "" {
+		s.doneOrder = id
 	}
 	s.cond.Broadcast()
+	s.mu.Unlock()
 }
 
-// WaitSyncers blocks until all syncers have caught up (done >= todo for both
-// ticks and order updates), or ctx is cancelled.
+// satisfied reports whether the consumer has reached the current target.
+// Must be called with mu held.
+func (s *Syncer) satisfied() bool {
+	if s.targetTick.IsZero() {
+		return true
+	}
+	return !s.doneTick.Before(s.targetTick) &&
+		(s.targetOrder == "" || s.doneOrder == s.targetOrder)
+}
+
+// IsSatisfied reports whether the consumer has reached the current target.
+func (s *Syncer) IsSatisfied() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.satisfied()
+}
+
+func (s *Syncer) TargetTick() time.Time  { s.mu.Lock(); defer s.mu.Unlock(); return s.targetTick }
+func (s *Syncer) DoneTick() time.Time    { s.mu.Lock(); defer s.mu.Unlock(); return s.doneTick }
+func (s *Syncer) TargetOrder() string    { s.mu.Lock(); defer s.mu.Unlock(); return s.targetOrder }
+func (s *Syncer) DoneOrder() string      { s.mu.Lock(); defer s.mu.Unlock(); return s.doneOrder }
+
+// WaitSyncers blocks until every syncer is satisfied or ctx is cancelled.
 func WaitSyncers(ctx context.Context, vs []*Syncer) error {
 	doneCh := make(chan bool)
 	defer close(doneCh)
@@ -150,8 +146,10 @@ func WaitSyncers(ctx context.Context, vs []*Syncer) error {
 	go func() {
 		for _, v := range vs {
 			v.mu.Lock()
-			for v.doneTicks < v.todoTicks || v.doneOrderUpdates < v.todoOrderUpdates {
-				slog.Debug("syncer: waiting", "todoTicks", v.todoTicks, "doneTicks", v.doneTicks, "todoOrderUpdates", v.todoOrderUpdates, "doneOrderUpdates", v.doneOrderUpdates)
+			for !v.satisfied() {
+				slog.Debug("syncer: waiting",
+					"targetTick", v.targetTick, "doneTick", v.doneTick,
+					"targetOrder", v.targetOrder, "doneOrder", v.doneOrder)
 				v.cond.Wait()
 				if canceled.Load() {
 					break
@@ -173,4 +171,12 @@ func WaitSyncers(ctx context.Context, vs []*Syncer) error {
 	case <-doneCh:
 		return nil
 	}
+}
+
+// lastID returns the last element of ids, or "" if ids is empty.
+func lastID(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[len(ids)-1]
 }

@@ -172,13 +172,11 @@ func (p *Product) Cancel(_ context.Context, serverID string) error {
 	p.mu.Unlock()
 
 	if ok {
-		// Restore reserved funds before notifying strategy.
 		if strings.EqualFold(lo.order.Side, "buy") {
 			p.ex.release(p.def.QuoteCurrencyID, lo.reserved)
 		} else {
 			p.ex.release(p.def.BaseCurrencyID, lo.reserved)
 		}
-		p.orderTopic.Send(lo.order)
 	}
 	return nil
 }
