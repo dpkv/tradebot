@@ -67,6 +67,16 @@ type accountPortfolio struct {
 }
 
 type portfolioPosition struct {
+	PositionID int64 `json:"positionId"`
+}
+
+// positionLotsResponseWrapper is the outer envelope for
+// GET /v1/accounts/{id}/portfolio/{positionId}.
+type positionLotsResponseWrapper struct {
+	PositionLotsResponse positionLotsResponse `json:"PositionLotsResponse"`
+}
+
+type positionLotsResponse struct {
 	PositionLot []positionLot `json:"PositionLot"`
 }
 
@@ -572,11 +582,56 @@ func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
 	return internal.NewBalanceFromAPI(wrapper.BalanceResponse), nil
 }
 
-// GetLotsForOrders returns the tax lots created by the given buy orders, fetched
-// from GET /v1/accounts/{accountIdKey}/portfolio?lotsRequired=true. Matching is
-// done on positionLot.orderNo, which E*TRADE sets to the order ID of the buy
-// order that created the lot. serverOrderIDs are decimal strings (e.g. "10"),
-// as returned by internal.Order.ServerID().
+func (c *Client) fetchPortfolioLots(ctx context.Context) ([]positionLot, error) {
+	accountPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey)
+
+	var portfolioWrapper portfolioResponseWrapper
+	if err := doGetJSON(ctx, c, accountPath+"/portfolio", nil, &portfolioWrapper); err != nil {
+		return nil, err
+	}
+
+	var lots []positionLot
+	for _, ap := range portfolioWrapper.PortfolioResponse.AccountPortfolio {
+		for _, pos := range ap.Position {
+			posPath := accountPath + "/portfolio/" + strconv.FormatInt(pos.PositionID, 10)
+			var posWrapper positionLotsResponseWrapper
+			if err := doGetJSON(ctx, c, posPath, nil, &posWrapper); err != nil {
+				return nil, fmt.Errorf("etrade: could not fetch lots for position %d: %w", pos.PositionID, err)
+			}
+			lots = append(lots, posWrapper.PositionLotsResponse.PositionLot...)
+		}
+	}
+	return lots, nil
+}
+
+func positionLotToExchange(lot positionLot) exchange.Lot {
+	return exchange.Lot{
+		ID:            strconv.FormatInt(lot.PositionLotID, 10),
+		OriginalSize:  lot.OriginalQty,
+		RemainingSize: lot.RemainingQty,
+		CostBasis:     lot.Price,
+		AcquiredDate:  time.UnixMilli(lot.AcquiredDate).UTC(),
+	}
+}
+
+// GetAllLots returns all tax lots across all positions in the account, fetched
+// from GET /v1/accounts/{accountIdKey}/portfolio?lotsRequired=true.
+func (c *Client) GetAllLots(ctx context.Context) ([]exchange.Lot, error) {
+	raw, err := c.fetchPortfolioLots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lots := make([]exchange.Lot, 0, len(raw))
+	for _, lot := range raw {
+		lots = append(lots, positionLotToExchange(lot))
+	}
+	return lots, nil
+}
+
+// GetLotsForOrders returns the subset of tax lots from the account portfolio
+// that were created by the given buy orders. Matching is done on
+// positionLot.orderNo. serverOrderIDs are decimal strings as returned by
+// internal.Order.ServerID().
 func (c *Client) GetLotsForOrders(ctx context.Context, serverOrderIDs []string) ([]exchange.Lot, error) {
 	orderIDSet := make(map[int64]struct{}, len(serverOrderIDs))
 	for _, id := range serverOrderIDs {
@@ -591,28 +646,14 @@ func (c *Client) GetLotsForOrders(ctx context.Context, serverOrderIDs []string) 
 		return nil, nil
 	}
 
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/portfolio"
-	params := url.Values{"lotsRequired": {"true"}}
-	var wrapper portfolioResponseWrapper
-	if err := doGetJSON(ctx, c, apiPath, params, &wrapper); err != nil {
+	raw, err := c.fetchPortfolioLots(ctx)
+	if err != nil {
 		return nil, err
 	}
-
 	var lots []exchange.Lot
-	for _, ap := range wrapper.PortfolioResponse.AccountPortfolio {
-		for _, pos := range ap.Position {
-			for _, lot := range pos.PositionLot {
-				if _, ok := orderIDSet[lot.OrderNo]; !ok {
-					continue
-				}
-				lots = append(lots, exchange.Lot{
-					ID:            strconv.FormatInt(lot.PositionLotID, 10),
-					OriginalSize:  lot.OriginalQty,
-					RemainingSize: lot.RemainingQty,
-					CostBasis:     lot.Price,
-					AcquiredDate:  time.UnixMilli(lot.AcquiredDate).UTC(),
-				})
-			}
+	for _, lot := range raw {
+		if _, ok := orderIDSet[lot.OrderNo]; ok {
+			lots = append(lots, positionLotToExchange(lot))
 		}
 	}
 	return lots, nil

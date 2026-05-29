@@ -154,6 +154,7 @@ func main() {
 		new(subcmdsetrade.PlaceOrder),
 		new(subcmdsetrade.GetOrder),
 		new(subcmdsetrade.CancelOrder),
+		new(subcmdsetrade.GetLots),
 	}
 
 	cmds := []cli.Command{
