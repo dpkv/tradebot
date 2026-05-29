@@ -13,6 +13,7 @@ import (
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/trader"
 	"github.com/bvkgo/kv"
+	"github.com/shopspring/decimal"
 	"github.com/visvasity/topic"
 )
 
@@ -245,8 +246,31 @@ func (v *Limiter) create(ctx context.Context, rt *trader.Runtime) (string, error
 	var order exchange.Order
 	if v.IsSell() {
 		s := time.Now()
-		order, err = rt.Product.LimitSell(ctx, clientOrderID, size, v.point.Price)
-		latency = time.Now().Sub(s)
+		var lots []exchange.Lot
+		ls, _ := rt.Product.(exchange.LotSeller)
+		if ls != nil && len(v.buyOrderIDs) > 0 {
+			lots, err = ls.GetLotsForOrders(ctx, v.buyOrderIDs)
+			if err != nil {
+				return "", fmt.Errorf("could not fetch lots for buy orders: %w", err)
+			}
+			if len(lots) == 0 {
+				slog.Warn("no lots found for buy orders; placing sell without lot selection", "limiter", v, "buy-order-ids", v.buyOrderIDs)
+			} else {
+				var totalRemaining decimal.Decimal
+				for _, l := range lots {
+					totalRemaining = totalRemaining.Add(l.RemainingSize)
+				}
+				if !totalRemaining.Equal(size) {
+					slog.Warn("lot remaining sizes don't match sell size", "limiter", v, "sell-size", size, "lot-total-remaining", totalRemaining)
+				}
+			}
+		}
+		if len(lots) > 0 {
+			order, err = ls.LimitSellWithLots(ctx, clientOrderID, size, v.point.Price, lots)
+		} else {
+			order, err = rt.Product.LimitSell(ctx, clientOrderID, size, v.point.Price)
+		}
+		latency = time.Since(s)
 	} else {
 		s := time.Now()
 		order, err = rt.Product.LimitBuy(ctx, clientOrderID, size, v.point.Price)
