@@ -104,6 +104,18 @@ type placeOrderInstrument struct {
 	OrderAction  string            `json:"orderAction"`
 	QuantityType string            `json:"quantityType"`
 	Quantity     decimal.Decimal   `json:"quantity"`
+	Lots         *placeOrderLots   `json:"Lots,omitempty"`
+}
+
+type placeOrderLots struct {
+	Lot []placeOrderLot `json:"Lot"`
+}
+
+// placeOrderLot specifies how many shares to draw from a specific tax lot.
+// ID is int64 (E*TRADE's positionLotId); Size is the shares to sell from it.
+type placeOrderLot struct {
+	ID   int64           `json:"id"`
+	Size decimal.Decimal `json:"size"`
 }
 
 type placeOrderProduct struct {
@@ -608,12 +620,25 @@ func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, 
 	return order, nil
 }
 
-// PlaceOrder submits a limit order via
-// POST /v1/accounts/{accountIdKey}/orders/place. Returns the E*TRADE-assigned
-// numeric order ID. clientOrderID must be a decimal integer string (E*TRADE
-// only accepts digits in this field). orderTerm is typically "GOOD_UNTIL_CANCEL"
-// for bot orders or "GOOD_FOR_DAY" for manual/sandbox use.
-func (c *Client) PlaceOrder(ctx context.Context, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm string) (int64, error) {
+// PlaceOrder submits a limit order via POST /v1/accounts/{accountIdKey}/orders/place.
+// Returns the E*TRADE-assigned numeric order ID. clientOrderID must be a decimal
+// integer string (E*TRADE only accepts digits in this field). orderTerm is
+// typically "GOOD_UNTIL_CANCEL" for bot orders or "GOOD_FOR_DAY" for manual use.
+// lots is optional; when non-nil, the sell order draws shares from those specific
+// tax lots. Each lot's ID must be a decimal string (E*TRADE positionLotId).
+func (c *Client) PlaceOrder(ctx context.Context, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm string, lots []exchange.Lot) (int64, error) {
+	var orderLots *placeOrderLots
+	if len(lots) > 0 {
+		pLots := make([]placeOrderLot, 0, len(lots))
+		for _, l := range lots {
+			id, err := strconv.ParseInt(l.ID, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("etrade: lot ID %q is not a valid integer: %w", l.ID, err)
+			}
+			pLots = append(pLots, placeOrderLot{ID: id, Size: l.RemainingSize})
+		}
+		orderLots = &placeOrderLots{Lot: pLots}
+	}
 	req := placeOrderRequestWrapper{
 		PlaceOrderRequest: placeOrderRequest{
 			ClientOrderID: clientOrderID,
@@ -628,6 +653,7 @@ func (c *Client) PlaceOrder(ctx context.Context, symbol, side string, qty, limit
 					OrderAction:  strings.ToUpper(side),
 					QuantityType: "QUANTITY",
 					Quantity:     qty,
+					Lots:         orderLots,
 				}},
 			}},
 		},

@@ -91,6 +91,7 @@ type Product struct {
 }
 
 var _ exchange.Product = &Product{}
+var _ exchange.LotSeller = &Product{}
 
 // counterIDKey returns the DB key for a given E*TRADE numeric clientOrderId.
 func (p *Product) counterIDKey(counterID int64) string {
@@ -295,14 +296,34 @@ func (p *Product) GetPriceUpdates() (*topic.Receiver[exchange.PriceUpdate], erro
 }
 
 func (p *Product) LimitBuy(ctx context.Context, clientOrderUUID uuid.UUID, size, price decimal.Decimal) (_ exchange.Order, status error) {
-	return p.placeOrder(ctx, clientOrderUUID, "buy", size, price)
+	return p.placeOrder(ctx, clientOrderUUID, "buy", size, price, nil)
 }
 
 func (p *Product) LimitSell(ctx context.Context, clientOrderUUID uuid.UUID, size, price decimal.Decimal) (_ exchange.Order, status error) {
-	return p.placeOrder(ctx, clientOrderUUID, "sell", size, price)
+	return p.placeOrder(ctx, clientOrderUUID, "sell", size, price, nil)
 }
 
-func (p *Product) placeOrder(ctx context.Context, clientOrderUUID uuid.UUID, side string, size, price decimal.Decimal) (_ exchange.Order, status error) {
+// GetLotsForOrders implements exchange.LotSeller.
+func (p *Product) GetLotsForOrders(ctx context.Context, serverOrderIDs []string) ([]exchange.Lot, error) {
+	return p.client.GetLotsForOrders(ctx, serverOrderIDs)
+}
+
+// LimitSellWithLots implements exchange.LotSeller. It places a limit sell order
+// drawing from the specified tax lots. Warns if the sum of lot RemainingSize
+// values doesn't match size, but places the order regardless.
+func (p *Product) LimitSellWithLots(ctx context.Context, clientOrderUUID uuid.UUID, size, price decimal.Decimal, lots []exchange.Lot) (_ exchange.Order, status error) {
+	var totalRemaining decimal.Decimal
+	for _, l := range lots {
+		totalRemaining = totalRemaining.Add(l.RemainingSize)
+	}
+	if !totalRemaining.Equal(size) {
+		slog.Warn("etrade: lot remaining sizes don't match sell size; proceeding",
+			"product", p.symbol, "sell-size", size, "lot-total-remaining", totalRemaining)
+	}
+	return p.placeOrder(ctx, clientOrderUUID, "sell", size, price, lots)
+}
+
+func (p *Product) placeOrder(ctx context.Context, clientOrderUUID uuid.UUID, side string, size, price decimal.Decimal, lots []exchange.Lot) (_ exchange.Order, status error) {
 	counterID := p.nextCounterID.Add(1)
 	cstatus, loaded := p.clientIDStatusMap.LoadOrStore(clientOrderUUID, &clientIDStatus{
 		counterID:      counterID,
@@ -331,7 +352,7 @@ func (p *Product) placeOrder(ctx context.Context, clientOrderUUID uuid.UUID, sid
 	})
 
 	orderID, err := p.client.PlaceOrder(ctx, p.symbol, side, size, price,
-		strconv.FormatInt(cstatus.counterID, 10), "GOOD_UNTIL_CANCEL")
+		strconv.FormatInt(cstatus.counterID, 10), "GOOD_UNTIL_CANCEL", lots)
 	if err != nil {
 		// PlaceOrder failed; the order may or may not have been created on
 		// E*TRADE. goCancelFailedCreates will resolve this and clean up the DB

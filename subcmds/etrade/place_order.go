@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bvk/tradebot/etrade"
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/server"
 	"github.com/bvk/tradebot/subcmds/defaults"
 	"github.com/shopspring/decimal"
@@ -28,6 +30,7 @@ type PlaceOrder struct {
 	limitPrice    string
 	orderTerm     string
 	clientOrderID string
+	lots          string // comma-separated lotID:size pairs, e.g. "12345:1,67890:0.5"
 }
 
 func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
@@ -39,6 +42,7 @@ func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset.StringVar(&c.limitPrice, "limit-price", "", "limit price")
 	fset.StringVar(&c.orderTerm, "order-term", "GOOD_UNTIL_CANCEL", "order term: GOOD_UNTIL_CANCEL or GOOD_FOR_DAY")
 	fset.StringVar(&c.clientOrderID, "client-order-id", "", "client order ID (numeric string); omitted if not set")
+	fset.StringVar(&c.lots, "lots", "", "tax lots to sell from, as comma-separated lotID:size pairs (e.g. 12345:1,67890:0.5)")
 	return "place-order", fset, cli.CmdFunc(c.run)
 }
 
@@ -90,11 +94,26 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 	}
 	defer client.Close()
 
+	var lots []exchange.Lot
+	if c.lots != "" {
+		for _, entry := range strings.Split(c.lots, ",") {
+			parts := strings.SplitN(entry, ":", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid -lots entry %q: want lotID:size", entry)
+			}
+			size, err := decimal.NewFromString(parts[1])
+			if err != nil {
+				return fmt.Errorf("invalid -lots entry %q: bad size: %w", entry, err)
+			}
+			lots = append(lots, exchange.Lot{ID: parts[0], RemainingSize: size})
+		}
+	}
+
 	clientOrderID := c.clientOrderID
 	if clientOrderID == "" {
 		clientOrderID = fmt.Sprintf("%d", time.Now().UnixMilli())
 	}
-	orderID, err := client.PlaceOrder(ctx, c.symbol, c.side, qty, limitPrice, clientOrderID, c.orderTerm)
+	orderID, err := client.PlaceOrder(ctx, c.symbol, c.side, qty, limitPrice, clientOrderID, c.orderTerm, lots)
 	if err != nil {
 		return fmt.Errorf("could not place order: %w", err)
 	}
