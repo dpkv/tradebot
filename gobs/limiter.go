@@ -15,6 +15,10 @@ type LimiterStateV2 struct {
 	ClientIDOffset   uint64
 	TradePoint       Point
 	ServerIDOrderMap map[string]*Order
+
+	// BuyOrderIDs holds the server order IDs of the buy orders whose shares
+	// this sell limiter should draw from via tax lot selection.
+	BuyOrderIDs []string
 }
 
 func (v *LimiterState) Upgrade() {

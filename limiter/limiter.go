@@ -61,6 +61,10 @@ type Limiter struct {
 	// orders. It's value is typically less than the total size so that large
 	// orders can be avoided.
 	sizeLimitOpt atomic.Pointer[decimal.Decimal]
+
+	// buyOrderIDs holds the server order IDs of the buy orders whose tax lots
+	// this sell limiter should draw from. Set by the looper before Run().
+	buyOrderIDs []string
 }
 
 var _ trader.Trader = &Limiter{}
@@ -123,6 +127,22 @@ func (v *Limiter) IsBuy() bool {
 
 func (v *Limiter) IsSell() bool {
 	return v.point.Side() == "SELL"
+}
+
+// SetBuyOrderIDs records the server order IDs of the buy orders whose tax lots
+// this sell limiter should draw from. Must be called before Run().
+func (v *Limiter) SetBuyOrderIDs(ids []string) {
+	v.buyOrderIDs = ids
+}
+
+// ServerOrderIDs returns the server order IDs of all orders tracked by this limiter.
+func (v *Limiter) ServerOrderIDs() []string {
+	var ids []string
+	v.orderMap.Range(func(id string, _ *exchange.SimpleOrder) bool {
+		ids = append(ids, id)
+		return true
+	})
+	return ids
 }
 
 func (v *Limiter) dupOrderMap() map[string]*exchange.SimpleOrder {
@@ -321,6 +341,7 @@ func (v *Limiter) Save(ctx context.Context, rw kv.ReadWriter) error {
 				Cancel: v.point.Cancel,
 			},
 			ServerIDOrderMap: make(map[string]*gobs.Order),
+			BuyOrderIDs:      v.buyOrderIDs,
 		},
 	}
 	for k, v := range v.dupOrderMap() {
@@ -387,6 +408,7 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Limiter, error) {
 		productID:    gv.V2.ProductID,
 		exchangeName: gv.V2.ExchangeName,
 		idgen:        idgen.New(seed, gv.V2.ClientIDOffset+SaveClientIDOffsetSize),
+		buyOrderIDs:  gv.V2.BuyOrderIDs,
 
 		point: point.Point{
 			Size:   gv.V2.TradePoint.Size,
