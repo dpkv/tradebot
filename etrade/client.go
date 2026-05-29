@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/bvk/tradebot/etrade/internal"
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/syncmap"
 	"github.com/shopspring/decimal"
 	"github.com/visvasity/topic"
@@ -49,6 +50,33 @@ type quoteResponse struct {
 
 type balanceResponseWrapper struct {
 	BalanceResponse *internal.APIBalanceResponse `json:"BalanceResponse"`
+}
+
+// portfolioResponseWrapper is the outer envelope for
+// GET /v1/accounts/{id}/portfolio?lotsRequired=true.
+type portfolioResponseWrapper struct {
+	PortfolioResponse portfolioResponse `json:"PortfolioResponse"`
+}
+
+type portfolioResponse struct {
+	AccountPortfolio []accountPortfolio `json:"AccountPortfolio"`
+}
+
+type accountPortfolio struct {
+	Position []portfolioPosition `json:"Position"`
+}
+
+type portfolioPosition struct {
+	PositionLot []positionLot `json:"PositionLot"`
+}
+
+type positionLot struct {
+	PositionLotID int64           `json:"positionLotId"`
+	OrderNo       int64           `json:"orderNo"`
+	OriginalQty   decimal.Decimal `json:"originalQty"`
+	RemainingQty  decimal.Decimal `json:"remainingQty"`
+	Price         decimal.Decimal `json:"price"` // per-share cost basis
+	AcquiredDate  int64           `json:"acquiredDate"` // Unix milliseconds
 }
 
 // placeOrderRequestWrapper is the outer envelope for POST /v1/accounts/{id}/orders/place.
@@ -493,6 +521,52 @@ func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
 		return nil, fmt.Errorf("etrade: empty BalanceResponse")
 	}
 	return internal.NewBalanceFromAPI(wrapper.BalanceResponse), nil
+}
+
+// GetLotsForOrders returns the tax lots created by the given buy orders, fetched
+// from GET /v1/accounts/{accountIdKey}/portfolio?lotsRequired=true. Matching is
+// done on positionLot.orderNo, which E*TRADE sets to the order ID of the buy
+// order that created the lot. serverOrderIDs are decimal strings (e.g. "10"),
+// as returned by internal.Order.ServerID().
+func (c *Client) GetLotsForOrders(ctx context.Context, serverOrderIDs []string) ([]exchange.Lot, error) {
+	orderIDSet := make(map[int64]struct{}, len(serverOrderIDs))
+	for _, id := range serverOrderIDs {
+		n, err := strconv.ParseInt(id, 10, 64)
+		if err != nil {
+			slog.Warn("etrade: GetLotsForOrders: skipping non-integer order ID", "id", id)
+			continue
+		}
+		orderIDSet[n] = struct{}{}
+	}
+	if len(orderIDSet) == 0 {
+		return nil, nil
+	}
+
+	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/portfolio"
+	params := url.Values{"lotsRequired": {"true"}}
+	var wrapper portfolioResponseWrapper
+	if err := doGetJSON(ctx, c, apiPath, params, &wrapper); err != nil {
+		return nil, err
+	}
+
+	var lots []exchange.Lot
+	for _, ap := range wrapper.PortfolioResponse.AccountPortfolio {
+		for _, pos := range ap.Position {
+			for _, lot := range pos.PositionLot {
+				if _, ok := orderIDSet[lot.OrderNo]; !ok {
+					continue
+				}
+				lots = append(lots, exchange.Lot{
+					ID:            strconv.FormatInt(lot.PositionLotID, 10),
+					OriginalSize:  lot.OriginalQty,
+					RemainingSize: lot.RemainingQty,
+					CostBasis:     lot.Price,
+					AcquiredDate:  time.UnixMilli(lot.AcquiredDate).UTC(),
+				})
+			}
+		}
+	}
+	return lots, nil
 }
 
 // ListOpenOrders fetches all currently open orders for the account from
