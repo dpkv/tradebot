@@ -206,6 +206,7 @@ func (v *Looper) Run(ctx context.Context, rt *trader.Runtime) error {
 				}
 
 				seller := v.sells[len(v.sells)-1]
+				seller.SetBuyOrderIDs(v.buys[len(v.buys)-1].ServerOrderIDs())
 				v.dirtyLimiters.Store(seller, struct{}{})
 				if err := seller.Run(ctx, rt); err != nil {
 					if ctx.Err() == nil {
