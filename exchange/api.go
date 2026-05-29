@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/bvk/tradebot/gobs"
 	"github.com/google/uuid"
@@ -65,6 +66,32 @@ type Product interface {
 
 	Get(ctx context.Context, serverID string) (OrderDetail, error)
 	Cancel(ctx context.Context, serverID string) error
+}
+
+// Lot represents a tax lot — a specific acquisition of shares at a cost basis.
+// The ID format is exchange-specific and opaque to callers outside that exchange.
+type Lot struct {
+	ID            string
+	OriginalSize  decimal.Decimal
+	RemainingSize decimal.Decimal
+	CostBasis     decimal.Decimal // per-share cost
+	AcquiredDate  time.Time
+}
+
+// LotSeller is an optional interface that exchange products may implement to
+// support lot-specific sell orders. Callers check for it with a type assertion:
+//
+//	if ls, ok := product.(exchange.LotSeller); ok { ... }
+type LotSeller interface {
+	// GetLotsForOrders returns the tax lots created by the given buy orders.
+	// serverOrderIDs are exchange-assigned order IDs (e.g. E*TRADE's orderId).
+	GetLotsForOrders(ctx context.Context, serverOrderIDs []string) ([]Lot, error)
+
+	// LimitSellWithLots places a limit sell order drawing shares from the
+	// specified lots. Each lot's RemainingSize is used as the per-lot quantity
+	// in the order; their sum should equal size. A warning is logged if they
+	// diverge but the order is placed regardless.
+	LimitSellWithLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []Lot) (Order, error)
 }
 
 type Exchange interface {
