@@ -13,16 +13,19 @@ import (
 // CoinbaseDBFeed is a DataFeed that reads OHLC candle data from a Coinbase
 // BadgerDB datastore and expands each candle into ticks using a CandleExpander.
 type CoinbaseDBFeed struct {
-	productID string
-	expander  CandleExpander
-	candles   []*gobs.Candle
-	candleIdx int
-	ticks     []Tick
-	tickIdx   int
+	productID  string
+	expander   CandleExpander
+	candles    []*gobs.Candle
+	candleIdx  int
+	ticks      []Tick
+	tickIdx    int
+	rangeBegin time.Time
+	rangeEnd   time.Time
 }
 
 // NewCoinbaseDBFeed loads candles for productID between begin and end from the
 // Coinbase datastore, returning a feed that emits ticks via the given expander.
+// Zero values for begin or end mean no lower/upper bound respectively.
 func NewCoinbaseDBFeed(ctx context.Context, ds *coinbase.Datastore, productID string, begin, end time.Time, expander CandleExpander) (*CoinbaseDBFeed, error) {
 	var candles []*gobs.Candle
 	err := ds.ScanCandles(ctx, productID, begin, end, func(c *gobs.Candle) error {
@@ -34,14 +37,21 @@ func NewCoinbaseDBFeed(ctx context.Context, ds *coinbase.Datastore, productID st
 		return nil, fmt.Errorf("could not scan candles for %s: %w", productID, err)
 	}
 	if len(candles) == 0 {
+		if begin.IsZero() && end.IsZero() {
+			return nil, fmt.Errorf("no candles found for %s", productID)
+		}
 		return nil, fmt.Errorf("no candles found for %s between %s and %s", productID, begin, end)
 	}
 	return &CoinbaseDBFeed{
-		productID: productID,
-		expander:  expander,
-		candles:   candles,
+		productID:  productID,
+		expander:   expander,
+		candles:    candles,
+		rangeBegin: candles[0].StartTime.Time,
+		rangeEnd:   candles[len(candles)-1].StartTime.Time.Add(candles[len(candles)-1].Duration),
 	}, nil
 }
+
+func (f *CoinbaseDBFeed) DateRange() (time.Time, time.Time) { return f.rangeBegin, f.rangeEnd }
 
 func (f *CoinbaseDBFeed) ProductID() string { return f.productID }
 

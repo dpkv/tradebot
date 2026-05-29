@@ -19,12 +19,14 @@ import (
 // Time values must be formatted according to the timeFormat parameter.
 // Candle duration must be supplied explicitly since it is not stored in the file.
 type CSVFeed struct {
-	productID string
-	expander  CandleExpander
-	candles   []csvCandle
-	candleIdx int
-	ticks     []Tick
-	tickIdx   int
+	productID  string
+	expander   CandleExpander
+	candles    []csvCandle
+	candleIdx  int
+	ticks      []Tick
+	tickIdx    int
+	rangeBegin time.Time
+	rangeEnd   time.Time
 }
 
 type csvCandle struct {
@@ -36,7 +38,8 @@ type csvCandle struct {
 // NewCSVFeed parses a CSV file and returns a feed for the given productID.
 // timeFormat is the Go time layout used to parse the time column (e.g. time.RFC3339).
 // duration is the candle interval (e.g. time.Minute for 1-minute candles).
-func NewCSVFeed(path, productID, timeFormat string, duration time.Duration, expander CandleExpander) (*CSVFeed, error) {
+// Zero values for begin or end mean no lower/upper bound respectively.
+func NewCSVFeed(path, productID, timeFormat string, duration time.Duration, begin, end time.Time, expander CandleExpander) (*CSVFeed, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not open csv file: %w", err)
@@ -83,18 +86,29 @@ func NewCSVFeed(path, productID, timeFormat string, duration time.Duration, expa
 		if err != nil {
 			return nil, fmt.Errorf("could not parse close price: %w", err)
 		}
+		if !begin.IsZero() && t.Before(begin) {
+			continue
+		}
+		if !end.IsZero() && !t.Before(end) {
+			continue
+		}
 		candles = append(candles, csvCandle{t: t, duration: duration, open: open, low: low, high: high, close: close})
 	}
 
 	if len(candles) == 0 {
 		return nil, fmt.Errorf("no candle rows found in %s", path)
 	}
+	last := candles[len(candles)-1]
 	return &CSVFeed{
-		productID: productID,
-		expander:  expander,
-		candles:   candles,
+		productID:  productID,
+		expander:   expander,
+		candles:    candles,
+		rangeBegin: candles[0].t,
+		rangeEnd:   last.t.Add(last.duration),
 	}, nil
 }
+
+func (f *CSVFeed) DateRange() (time.Time, time.Time) { return f.rangeBegin, f.rangeEnd }
 
 func (f *CSVFeed) ProductID() string { return f.productID }
 

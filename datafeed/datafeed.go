@@ -17,8 +17,11 @@ type Tick struct {
 // DataFeed emits sequential price ticks for a single trading product.
 // Implementations may source data from a database, file, or live stream.
 // Next returns io.EOF when the feed is exhausted.
+// DateRange returns the actual begin and end times spanned by the loaded data,
+// which may differ from any user-supplied filter when no filter was given.
 type DataFeed interface {
 	ProductID() string
+	DateRange() (begin, end time.Time)
 	Next(ctx context.Context) (Tick, error)
 	io.Closer
 }

@@ -68,9 +68,6 @@ func (f *BacktestFlags) check() error {
 	if !strings.Contains(f.product, "-") {
 		return fmt.Errorf("--product must be in BASE-QUOTE format (e.g. BTC-USD)")
 	}
-	if f.begin == "" || f.end == "" {
-		return fmt.Errorf("--begin and --end are required")
-	}
 	if f.quoteBalance <= 0 && f.baseBalance <= 0 {
 		return fmt.Errorf("at least one of --base-balance or --quote-balance must be positive")
 	}
@@ -131,7 +128,7 @@ func (f *BacktestFlags) buildFeed(ctx context.Context, begin, end time.Time) (da
 		return feed, nil
 
 	case "csv":
-		feed, err := datafeed.NewCSVFeed(f.csvFile, f.product, time.RFC3339, time.Minute, expander)
+		feed, err := datafeed.NewCSVFeed(f.csvFile, f.product, time.RFC3339, time.Minute, begin, end, expander)
 		if err != nil {
 			return nil, fmt.Errorf("could not create csv feed: %w", err)
 		}
@@ -156,13 +153,20 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 
-	begin, err := time.Parse(dateFormat, f.begin)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse --begin: %w", err)
+	var begin, end time.Time
+	if f.begin != "" {
+		v, err := time.Parse(dateFormat, f.begin)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse --begin: %w", err)
+		}
+		begin = v
 	}
-	end, err := time.Parse(dateFormat, f.end)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse --end: %w", err)
+	if f.end != "" {
+		v, err := time.Parse(dateFormat, f.end)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse --end: %w", err)
+		}
+		end = v
 	}
 
 	feed, err := f.buildFeed(ctx, begin, end)
@@ -220,7 +224,8 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 	endQuote := total[quote].Add(total[base].Mul(lastPrice))
 	pnl := endQuote.Sub(startQuote)
 	pnlPct := pnl.Div(startQuote).Mul(decimal.NewFromInt(100))
-	days := end.Sub(begin).Hours() / 24
+	feedBegin, feedEnd := feed.DateRange()
+	days := feedEnd.Sub(feedBegin).Hours() / 24
 	years := days / 365.25
 	var annualizedPct decimal.Decimal
 	if years > 0 {
@@ -230,8 +235,8 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 	}
 	s := &BacktestSummary{
 		Product:        f.product,
-		Begin:          f.begin,
-		End:            f.end,
+		Begin:          feedBegin.Format(dateFormat),
+		End:            feedEnd.Format(dateFormat),
 		Base:           base,
 		Quote:          quote,
 		BaseBalance:    f.baseBalance,
