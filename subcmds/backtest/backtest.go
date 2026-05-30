@@ -41,8 +41,9 @@ type BacktestFlags struct {
 	baseBalance  float64
 	quoteBalance float64
 	baseMinSize  float64
-	feePct          decimal.Decimal // derived from strategy's fee-pct, not a CLI flag
-	maxTickProgress float64
+	feePct               decimal.Decimal // derived from strategy's fee-pct, not a CLI flag
+	maxTickProgress      float64
+	forceMaxTickProgress bool
 
 	debug bool
 }
@@ -61,7 +62,8 @@ func (f *BacktestFlags) SetFlags(fset *flag.FlagSet) {
 	fset.Float64Var(&f.baseBalance, "base-balance", 0, "starting base currency balance (e.g. BTC amount)")
 	fset.Float64Var(&f.quoteBalance, "quote-balance", 0, "starting quote currency balance (e.g. USD amount)")
 	fset.Float64Var(&f.baseMinSize, "base-min-size", 0, "minimum base order size")
-	fset.Float64Var(&f.maxTickProgress, "max-tick-progress", 0, "max price change per tick; engine inserts sub-ticks when exceeded (0 = unlimited)")
+	fset.Float64Var(&f.maxTickProgress, "max-tick-progress", 0, "max price change per sub-tick (0 = auto-computed from strategy params)")
+	fset.BoolVar(&f.forceMaxTickProgress, "force-max-tick-progress", false, "use --max-tick-progress unconditionally, skipping the safety check")
 	fset.BoolVar(&f.debug, "debug", false, "enable debug logging")
 }
 

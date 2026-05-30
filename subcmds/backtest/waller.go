@@ -33,6 +33,21 @@ func (c *Waller) Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("could not determine buy/sell pairs from spec")
 	}
 	c.flags.feePct = c.spec.FeePct()
+
+	safeMaxTP := safeMaxTickProgress(pairs)
+	if c.flags.forceMaxTickProgress {
+		if c.flags.maxTickProgress <= 0 {
+			return fmt.Errorf("--force-max-tick-progress requires --max-tick-progress to be set")
+		}
+	} else if c.flags.maxTickProgress > 0 {
+		if decimal.NewFromFloat(c.flags.maxTickProgress).GreaterThan(safeMaxTP) {
+			return fmt.Errorf("--max-tick-progress %g exceeds safe bound %s (min of profit-margin and buy-interval); use --force-max-tick-progress to override",
+				c.flags.maxTickProgress, safeMaxTP.StringFixed(4))
+		}
+	} else {
+		c.flags.maxTickProgress, _ = safeMaxTP.Float64()
+	}
+
 	uid := uuid.New().String()
 	w, err := waller.New(uid, c.flags.exchangeName, c.flags.product, pairs)
 	if err != nil {
@@ -199,4 +214,32 @@ func actionFees(orders []*gobs.Order) decimal.Decimal {
 		sum = sum.Add(o.FilledFee)
 	}
 	return sum
+}
+
+// safeMaxTickProgress returns min(min_profit_spread, min_buy_interval) across
+// all pairs. This is the largest sub-tick step that guarantees deterministic
+// sell placement and prevents price from skipping over buy placement windows.
+func safeMaxTickProgress(pairs []*point.Pair) decimal.Decimal {
+	if len(pairs) == 0 {
+		return decimal.Zero
+	}
+
+	// min profit spread: sell_price - buy_price (includes fee adjustment)
+	minSpread := pairs[0].Sell.Price.Sub(pairs[0].Buy.Price)
+	for _, p := range pairs[1:] {
+		if spread := p.Sell.Price.Sub(p.Buy.Price); spread.LessThan(minSpread) {
+			minSpread = spread
+		}
+	}
+
+	// min buy interval: smallest gap between consecutive buy prices
+	// pairs are sorted ascending by buy price
+	minInterval := pairs[1].Buy.Price.Sub(pairs[0].Buy.Price)
+	for i := 2; i < len(pairs); i++ {
+		if interval := pairs[i].Buy.Price.Sub(pairs[i-1].Buy.Price); interval.LessThan(minInterval) {
+			minInterval = interval
+		}
+	}
+
+	return decimal.Min(minSpread, minInterval)
 }
