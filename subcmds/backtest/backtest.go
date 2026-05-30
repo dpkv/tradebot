@@ -169,6 +169,8 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 		end = v
 	}
 
+	budget := t.BudgetAt(f.feePct)
+
 	feed, err := f.buildFeed(ctx, begin, end)
 	if err != nil {
 		return nil, err
@@ -193,6 +195,7 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 	engine := mockexchange.NewEngine(feed, mockProduct)
 	engine.MaxTickProgress = decimal.NewFromFloat(f.maxTickProgress)
 	engine.Syncer = syncer
+	engine.Budget = budget
 
 	rt := &trader.Runtime{
 		Exchange:  mockEx,
@@ -223,16 +226,18 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 	startQuote := decimal.NewFromFloat(f.quoteBalance)
 	endQuote := total[quote].Add(total[base].Mul(lastPrice))
 	pnl := endQuote.Sub(startQuote)
-	pnlPct := pnl.Div(startQuote).Mul(decimal.NewFromInt(100))
+	pnlPct := pnl.Div(budget).Mul(decimal.NewFromInt(100))
 	feedBegin, feedEnd := feed.DateRange()
 	days := feedEnd.Sub(feedBegin).Hours() / 24
 	years := days / 365.25
 	var annualizedPct decimal.Decimal
 	if years > 0 {
-		growth, _ := pnl.Add(startQuote).Div(startQuote).Float64()
+		growth, _ := pnl.Add(budget).Div(budget).Float64()
 		annualized := (math.Pow(growth, 1/years) - 1) * 100
 		annualizedPct = decimal.NewFromFloat(annualized)
 	}
+	ddPct, ddPctEpisode := engine.MaxDrawdownPct()
+	ddAbs, ddAbsEpisode := engine.MaxDrawdownAbs()
 	s := &BacktestSummary{
 		Product:        f.product,
 		Begin:          feedBegin.Format(dateFormat),
@@ -241,13 +246,17 @@ func runBacktest(ctx context.Context, f *BacktestFlags, t trader.Trader) (*Backt
 		Quote:          quote,
 		BaseBalance:    f.baseBalance,
 		QuoteBalance:   f.quoteBalance,
+		Budget:         budget,
 		TotalBase:      total[base],
 		TotalQuote:     total[quote],
 		LastPrice:      lastPrice,
 		NLV:            endQuote,
 		PeakNLV:        engine.PeakNLV(),
 		MinNLV:         engine.MinNLV(),
-		MaxDrawdownPct: engine.MaxDrawdownPct(),
+		MaxDrawdownPct:        ddPct,
+		MaxDrawdownPctEpisode: ddPctEpisode,
+		MaxDrawdownAbs:        ddAbs,
+		MaxDrawdownAbsEpisode: ddAbsEpisode,
 		PnL:            pnl,
 		PnLPct:         pnlPct,
 		AnnualizedPct:  annualizedPct,
@@ -261,26 +270,35 @@ type BacktestSummary struct {
 	Base, Quote           string
 	BaseBalance           float64
 	QuoteBalance          float64
+	Budget                decimal.Decimal
 	TotalBase, TotalQuote decimal.Decimal
 	LastPrice             decimal.Decimal
 	NLV                   decimal.Decimal
-	PeakNLV, MinNLV      decimal.Decimal
-	MaxDrawdownPct        decimal.Decimal
+	PeakNLV, MinNLV        decimal.Decimal
+	MaxDrawdownPct         decimal.Decimal
+	MaxDrawdownPctEpisode  mockexchange.DrawdownEpisode
+	MaxDrawdownAbs         decimal.Decimal
+	MaxDrawdownAbsEpisode  mockexchange.DrawdownEpisode
 	PnL, PnLPct           decimal.Decimal
 	AnnualizedPct         decimal.Decimal
 }
 
 func (s *BacktestSummary) Print() {
-	startQuote := decimal.NewFromFloat(s.QuoteBalance)
-	maxDDFromBudget := startQuote.Sub(s.MinNLV).Div(startQuote).Mul(decimal.NewFromInt(100))
-	dollarLoss := s.MinNLV.Sub(startQuote)
+	const dt = "2006-01-02 15:04"
+	maxDDFromBudget := s.MaxDrawdownAbs.Div(s.Budget).Mul(decimal.NewFromInt(100))
+	ep := s.MaxDrawdownPctEpisode
+	ea := s.MaxDrawdownAbsEpisode
 	fmt.Printf("\n=== Backtest: %s  %s → %s ===\n", s.Product, s.Begin, s.End)
-	fmt.Printf("Starting:            %s=%.4f  %s=%.2f\n", s.Base, s.BaseBalance, s.Quote, s.QuoteBalance)
+	fmt.Printf("Starting:            %s=%.4f  %s=%.2f  budget=%s %s\n", s.Base, s.BaseBalance, s.Quote, s.QuoteBalance, s.Budget.StringFixed(2), s.Quote)
 	fmt.Printf("Ending:              %s=%s  %s=%s  (last price: %s)\n", s.Base, s.TotalBase.StringFixed(4), s.Quote, s.TotalQuote.StringFixed(2), s.LastPrice.StringFixed(2))
 	fmt.Printf("Net Liquidation:     %s %s\n", s.NLV.StringFixed(2), s.Quote)
-	fmt.Printf("Max Drawdown:        %s%% from peak  |  %s%% from budget (%s %s)  |  NLV range: %s → %s %s\n",
+	fmt.Printf("Max Drawdown %%:      %s%%  (strategy peak %s @ %s  →  strategy trough %s @ %s)\n",
 		s.MaxDrawdownPct.StringFixed(2),
-		maxDDFromBudget.StringFixed(2), dollarLoss.StringFixed(2), s.Quote,
-		s.PeakNLV.StringFixed(2), s.MinNLV.StringFixed(2), s.Quote)
+		ep.PeakNLV.StringFixed(2), ep.PeakTime.Format(dt),
+		ep.TroughNLV.StringFixed(2), ep.TroughTime.Format(dt))
+	fmt.Printf("Max Drawdown $:      -%s %s (%s%% of budget)  (strategy peak %s @ %s  →  strategy trough %s @ %s)\n",
+		s.MaxDrawdownAbs.StringFixed(2), s.Quote, maxDDFromBudget.StringFixed(2),
+		ea.PeakNLV.StringFixed(2), ea.PeakTime.Format(dt),
+		ea.TroughNLV.StringFixed(2), ea.TroughTime.Format(dt))
 	fmt.Printf("P&L:                 %s (%s%%)  annualized: %s%%\n", s.PnL.StringFixed(2), s.PnLPct.StringFixed(2), s.AnnualizedPct.StringFixed(2))
 }

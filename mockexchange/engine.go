@@ -27,15 +27,43 @@ type Engine struct {
 	// tick delivery. Nil means no synchronization (production mode).
 	Syncer *trader.Syncer
 
-	peakNLV        decimal.Decimal
-	minNLV         decimal.Decimal
-	maxDrawdownPct decimal.Decimal
+	// Budget is the strategy's committed capital. Set before calling Run.
+	// The engine uses it to isolate strategy NLV = total NLV - idle cash,
+	// where idle cash = initial total NLV - Budget.
+	Budget decimal.Decimal
+
+	initialNLV  decimal.Decimal // captured on first tick
+	peakNLV     decimal.Decimal // global peak total NLV (for display)
+	minNLV      decimal.Decimal // global min total NLV (for display)
+
+	peakStratNLV     decimal.Decimal // rolling peak of strategy NLV
+	peakStratNLVTime time.Time
+
+	maxDrawdownPct        decimal.Decimal
+	maxDrawdownPctEpisode DrawdownEpisode
+
+	maxDrawdownAbs        decimal.Decimal
+	maxDrawdownAbsEpisode DrawdownEpisode
 }
 
-// MaxDrawdownPct returns the maximum peak-to-trough decline in NLV as a
-// percentage of the peak, observed across all delivered ticks.
-func (e *Engine) MaxDrawdownPct() decimal.Decimal {
-	return e.maxDrawdownPct
+// DrawdownEpisode records the peak and trough that defined a drawdown event.
+type DrawdownEpisode struct {
+	PeakTime   time.Time
+	PeakNLV    decimal.Decimal
+	TroughTime time.Time
+	TroughNLV  decimal.Decimal
+}
+
+// MaxDrawdownPct returns the maximum peak-to-trough decline as a percentage of
+// the peak NLV, and the episode that produced it.
+func (e *Engine) MaxDrawdownPct() (decimal.Decimal, DrawdownEpisode) {
+	return e.maxDrawdownPct, e.maxDrawdownPctEpisode
+}
+
+// MaxDrawdownAbs returns the largest peak-to-trough dollar drop and the episode
+// that produced it, tracked independently from MaxDrawdownPct.
+func (e *Engine) MaxDrawdownAbs() (decimal.Decimal, DrawdownEpisode) {
+	return e.maxDrawdownAbs, e.maxDrawdownAbsEpisode
 }
 
 // MinNLV returns the lowest NLV observed across all delivered ticks.
@@ -133,23 +161,55 @@ func (e *Engine) deliverTick(ctx context.Context, tick, prevTick datafeed.Tick) 
 		return err
 	}
 	slog.Debug("engine: tick end", "time", tick.Time, "price", tick.Price, "prev_price", prevTick.Price)
-	e.updateDrawdown(tick.Price)
+	e.updateDrawdown(tick.Time, tick.Price)
 	return nil
 }
 
-func (e *Engine) updateDrawdown(price decimal.Decimal) {
+func (e *Engine) updateDrawdown(t time.Time, price decimal.Decimal) {
 	def := e.product.def
 	nlv := e.product.ex.NetLiquidationValue(def.BaseCurrencyID, def.QuoteCurrencyID, price)
+
+	// Track global min/max total NLV for display.
 	if nlv.GreaterThan(e.peakNLV) {
 		e.peakNLV = nlv
 	}
 	if e.minNLV.IsZero() || nlv.LessThan(e.minNLV) {
 		e.minNLV = nlv
 	}
-	if !e.peakNLV.IsZero() {
-		dd := e.peakNLV.Sub(nlv).Div(e.peakNLV).Mul(decimal.NewFromInt(100))
-		if dd.GreaterThan(e.maxDrawdownPct) {
-			e.maxDrawdownPct = dd
+
+	// Compute strategy NLV = budget + profit so far.
+	// idle cash never moves with the strategy, so we strip it out once.
+	if e.initialNLV.IsZero() {
+		e.initialNLV = nlv
+	}
+	idleCash := e.initialNLV.Sub(e.Budget)
+	stratNLV := nlv.Sub(idleCash)
+
+	if stratNLV.GreaterThan(e.peakStratNLV) {
+		e.peakStratNLV = stratNLV
+		e.peakStratNLVTime = t
+	}
+	if e.peakStratNLV.IsZero() {
+		return
+	}
+	drop := e.peakStratNLV.Sub(stratNLV)
+	dd := drop.Div(e.peakStratNLV).Mul(decimal.NewFromInt(100))
+	if dd.GreaterThan(e.maxDrawdownPct) {
+		e.maxDrawdownPct = dd
+		e.maxDrawdownPctEpisode = DrawdownEpisode{
+			PeakTime:   e.peakStratNLVTime,
+			PeakNLV:    e.peakStratNLV,
+			TroughTime: t,
+			TroughNLV:  stratNLV,
+		}
+	}
+	if drop.GreaterThan(e.maxDrawdownAbs) {
+		e.maxDrawdownAbs = drop
+		e.maxDrawdownAbsEpisode = DrawdownEpisode{
+			PeakTime:   e.peakStratNLVTime,
+			PeakNLV:    e.peakStratNLV,
+			TroughTime: t,
+			TroughNLV:  stratNLV,
 		}
 	}
 }
