@@ -53,7 +53,7 @@ func NewCoinbaseDBFeed(ctx context.Context, ds *coinbase.Datastore, productID st
 
 func (f *CoinbaseDBFeed) DateRange() (time.Time, time.Time) { return f.rangeBegin, f.rangeEnd }
 
-func (f *CoinbaseDBFeed) ProductID() string { return f.productID }
+func (f *CoinbaseDBFeed) Symbol() string { return f.productID }
 
 // Next returns the next tick. Returns io.EOF when all candles are exhausted.
 func (f *CoinbaseDBFeed) Next(ctx context.Context) (Tick, error) {

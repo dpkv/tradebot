@@ -20,7 +20,7 @@ type Tick struct {
 // DateRange returns the actual begin and end times spanned by the loaded data,
 // which may differ from any user-supplied filter when no filter was given.
 type DataFeed interface {
-	ProductID() string
+	Symbol() string
 	DateRange() (begin, end time.Time)
 	Next(ctx context.Context) (Tick, error)
 	io.Closer

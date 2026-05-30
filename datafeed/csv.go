@@ -19,7 +19,7 @@ import (
 // Time values must be formatted according to the timeFormat parameter.
 // Candle duration must be supplied explicitly since it is not stored in the file.
 type CSVFeed struct {
-	productID  string
+	symbol     string
 	expander   CandleExpander
 	candles    []csvCandle
 	candleIdx  int
@@ -39,7 +39,7 @@ type csvCandle struct {
 // timeFormat is the Go time layout used to parse the time column (e.g. time.RFC3339).
 // duration is the candle interval (e.g. time.Minute for 1-minute candles).
 // Zero values for begin or end mean no lower/upper bound respectively.
-func NewCSVFeed(path, productID, timeFormat string, duration time.Duration, begin, end time.Time, expander CandleExpander) (*CSVFeed, error) {
+func NewCSVFeed(path, symbol, timeFormat string, duration time.Duration, begin, end time.Time, expander CandleExpander) (*CSVFeed, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not open csv file: %w", err)
@@ -100,7 +100,7 @@ func NewCSVFeed(path, productID, timeFormat string, duration time.Duration, begi
 	}
 	last := candles[len(candles)-1]
 	return &CSVFeed{
-		productID:  productID,
+		symbol:     symbol,
 		expander:   expander,
 		candles:    candles,
 		rangeBegin: candles[0].t,
@@ -110,7 +110,7 @@ func NewCSVFeed(path, productID, timeFormat string, duration time.Duration, begi
 
 func (f *CSVFeed) DateRange() (time.Time, time.Time) { return f.rangeBegin, f.rangeEnd }
 
-func (f *CSVFeed) ProductID() string { return f.productID }
+func (f *CSVFeed) Symbol() string { return f.symbol }
 
 // Next returns the next tick. Returns io.EOF when all candles are exhausted.
 func (f *CSVFeed) Next(ctx context.Context) (Tick, error) {

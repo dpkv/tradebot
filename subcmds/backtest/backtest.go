@@ -31,10 +31,12 @@ type BacktestFlags struct {
 	begin        string
 	end          string
 
-	feed     string // "coinbase" or "csv"
-	dataDir  string // path to DB with candle data (coinbase feed)
-	csvFile  string // path to CSV file (csv feed)
-	expander string // "open-low-high-close" or "open-high-low-close"
+	feed      string // "coinbase", "csv", or "postgres"
+	dataDir   string // path to DB with candle data (coinbase feed)
+	csvFile   string // path to CSV file (csv feed)
+	pgDSN     string // postgres DSN (postgres feed)
+	timeframe string // candle timeframe for postgres feed: minute, hourly, daily
+	expander  string // "open-low-high-close" or "open-high-low-close"
 
 	baseBalance  float64
 	quoteBalance float64
@@ -50,9 +52,11 @@ func (f *BacktestFlags) SetFlags(fset *flag.FlagSet) {
 	fset.StringVar(&f.exchangeName, "exchange", "coinbase", "exchange name")
 	fset.StringVar(&f.begin, "begin", "", "backtest start date (YYYY-MM-DD)")
 	fset.StringVar(&f.end, "end", "", "backtest end date (YYYY-MM-DD)")
-	fset.StringVar(&f.feed, "feed", "coinbase", "data feed type: coinbase or csv")
+	fset.StringVar(&f.feed, "feed", "coinbase", "data feed type: coinbase, csv, or postgres")
 	fset.StringVar(&f.dataDir, "data-dir", "", "path to database with candle data (for coinbase feed)")
 	fset.StringVar(&f.csvFile, "csv-file", "", "path to CSV file (for csv feed)")
+	fset.StringVar(&f.pgDSN, "pg-dsn", "", "postgres DSN (for postgres feed, e.g. postgres://user:pass@host/db)")
+	fset.StringVar(&f.timeframe, "timeframe", "minute", "candle timeframe for postgres feed: minute, hourly, or daily")
 	fset.StringVar(&f.expander, "expander", "open-low-high-close", "candle expander: open-low-high-close or open-high-low-close")
 	fset.Float64Var(&f.baseBalance, "base-balance", 0, "starting base currency balance (e.g. BTC amount)")
 	fset.Float64Var(&f.quoteBalance, "quote-balance", 0, "starting quote currency balance (e.g. USD amount)")
@@ -80,8 +84,18 @@ func (f *BacktestFlags) check() error {
 		if f.csvFile == "" {
 			return fmt.Errorf("--csv-file is required for csv feed")
 		}
+		if _, err := datafeed.ParseTimeframe(f.timeframe); err != nil {
+			return err
+		}
+	case "postgres":
+		if f.pgDSN == "" {
+			return fmt.Errorf("--pg-dsn is required for postgres feed")
+		}
+		if _, err := datafeed.ParseTimeframe(f.timeframe); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("unknown --feed %q: must be coinbase or csv", f.feed)
+		return fmt.Errorf("unknown --feed %q: must be coinbase, csv, or postgres", f.feed)
 	}
 	switch f.expander {
 	case "open-low-high-close", "open-high-low-close":
@@ -128,9 +142,20 @@ func (f *BacktestFlags) buildFeed(ctx context.Context, begin, end time.Time) (da
 		return feed, nil
 
 	case "csv":
-		feed, err := datafeed.NewCSVFeed(f.csvFile, f.product, time.RFC3339, time.Minute, begin, end, expander)
+		symbol := strings.SplitN(f.product, "-", 2)[0]
+		tf, _ := datafeed.ParseTimeframe(f.timeframe) // already validated in check()
+		feed, err := datafeed.NewCSVFeed(f.csvFile, symbol, time.RFC3339, tf.Duration(), begin, end, expander)
 		if err != nil {
 			return nil, fmt.Errorf("could not create csv feed: %w", err)
+		}
+		return feed, nil
+
+	case "postgres":
+		symbol := strings.SplitN(f.product, "-", 2)[0]
+		tf, _ := datafeed.ParseTimeframe(f.timeframe) // already validated in check()
+		feed, err := datafeed.NewPostgresFeed(ctx, f.pgDSN, symbol, tf, begin, end, expander)
+		if err != nil {
+			return nil, fmt.Errorf("could not create postgres feed: %w", err)
 		}
 		return feed, nil
 	}
