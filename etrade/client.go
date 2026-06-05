@@ -581,7 +581,7 @@ func (c *Client) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, 
 	orderDetail := placeOrderDetail{
 		PriceType:     "LIMIT",
 		OrderTerm:     orderTerm,
-		MarketSession: "ALL",
+		MarketSession: "REGULAR",
 		LimitPrice:    limitPrice,
 		Instrument: []placeOrderInstrument{{
 			Product:      placeOrderProduct{SecurityType: "EQ", Symbol: symbol},
