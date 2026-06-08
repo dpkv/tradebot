@@ -19,8 +19,9 @@ type orderPlacementInfo struct {
 	Side             string
 	Price            decimal.Decimal
 	Qty              decimal.Decimal
-	PriceType        string
-	OrderTerm        string
+	PriceType     string
+	OrderTerm     string
+	MarketSession string
 }
 
 // clientIDStatus tracks the state of a single order keyed by the client order

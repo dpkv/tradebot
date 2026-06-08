@@ -27,6 +27,7 @@ type PlaceOrder struct {
 	qty           string
 	limitPrice    string
 	orderTerm     string
+	marketSession string
 	clientOrderID string
 }
 
@@ -38,6 +39,7 @@ func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset.StringVar(&c.qty, "qty", "", "quantity to order")
 	fset.StringVar(&c.limitPrice, "limit-price", "", "limit price")
 	fset.StringVar(&c.orderTerm, "order-term", "GOOD_UNTIL_CANCEL", "order term: GOOD_UNTIL_CANCEL or GOOD_FOR_DAY")
+	fset.StringVar(&c.marketSession, "market-session", "REGULAR", "market session: REGULAR or EXTENDED")
 	fset.StringVar(&c.clientOrderID, "client-order-id", "", "client order ID (numeric string); omitted if not set")
 	return "place-order", fset, cli.CmdFunc(c.run)
 }
@@ -94,7 +96,7 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 	if clientOrderID == "" {
 		clientOrderID = fmt.Sprintf("%d", time.Now().UnixMilli())
 	}
-	orderID, err := client.PlaceLimitOrder(ctx, c.symbol, c.side, qty, limitPrice, clientOrderID, c.orderTerm)
+	orderID, err := client.PlaceLimitOrder(ctx, c.symbol, c.side, qty, limitPrice, clientOrderID, c.orderTerm, c.marketSession)
 	if err != nil {
 		return fmt.Errorf("could not place order: %w", err)
 	}

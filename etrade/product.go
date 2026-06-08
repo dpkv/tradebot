@@ -305,7 +305,8 @@ func (p *Product) placeLimitOrder(ctx context.Context, clientOrderUUID uuid.UUID
 		Price:            price,
 		Qty:              size,
 		PriceType:        "LIMIT",
-		OrderTerm:        "GOOD_UNTIL_CANCEL",
+		OrderTerm:        "GOOD_FOR_DAY",
+		MarketSession:    "EXTENDED",
 	}
 	cstatus, loaded := p.clientIDStatusMap.LoadOrStore(clientOrderUUID, &clientIDStatus{placement: info})
 	cstatus.mu.Lock()
@@ -333,7 +334,7 @@ func (p *Product) placeLimitOrder(ctx context.Context, clientOrderUUID uuid.UUID
 	// call only. It is not stored or used for any subsequent lookup.
 	etradeClientID := strconv.FormatInt(p.etradeOrderID.Add(1), 10)
 	orderID, err := p.client.PlaceLimitOrder(ctx, p.symbol, side, size, price,
-		etradeClientID, info.OrderTerm)
+		etradeClientID, info.OrderTerm, info.MarketSession)
 	if err != nil {
 		// PlaceOrder failed; the order may or may not have been created on
 		// E*TRADE. goCancelFailedCreates will resolve this and clean up the DB

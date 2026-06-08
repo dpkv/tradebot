@@ -387,6 +387,7 @@ func doGetJSON[PT *T, T any](ctx context.Context, c *Client, apiPath string, que
 			data, err := io.ReadAll(httpResp.Body)
 			httpResp.Body.Close()
 			if err != nil {
+				slog.Error("etrade: could not read GET response body", "path", apiPath, "err", err)
 				return err
 			}
 			if err := json.Unmarshal(data, resp); err != nil {
@@ -434,6 +435,7 @@ func doPostJSON[PT *T, T any](ctx context.Context, c *Client, apiPath string, re
 			respData, err := io.ReadAll(httpResp.Body)
 			httpResp.Body.Close()
 			if err != nil {
+				slog.Error("etrade: could not read POST response body", "path", apiPath, "err", err)
 				return err
 			}
 			if err := json.Unmarshal(respData, resp); err != nil {
@@ -575,13 +577,15 @@ func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, 
 // by E*TRADE. First calls POST /orders/preview to satisfy the session check,
 // then calls POST /orders/place with the returned previewId. Returns the
 // E*TRADE-assigned numeric order ID. clientOrderID must be a decimal integer
-// string. orderTerm is typically "GOOD_UNTIL_CANCEL" or "GOOD_FOR_DAY".
-func (c *Client) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm string) (int64, error) {
+// string (E*TRADE only accepts digits in this field). marketSession is
+// "REGULAR" or "EXTENDED"; orderTerm must be consistent with it
+// ("GOOD_UNTIL_CANCEL" for REGULAR, "GOOD_FOR_DAY" for EXTENDED).
+func (c *Client) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm, marketSession string) (int64, error) {
 	accountPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey)
 	orderDetail := placeOrderDetail{
 		PriceType:     "LIMIT",
 		OrderTerm:     orderTerm,
-		MarketSession: "REGULAR",
+		MarketSession: marketSession,
 		LimitPrice:    limitPrice,
 		Instrument: []placeOrderInstrument{{
 			Product:      placeOrderProduct{SecurityType: "EQ", Symbol: symbol},
@@ -618,7 +622,7 @@ func (c *Client) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, 
 	}
 	var resp placeOrderResponseWrapper
 	if err := doPostJSON(ctx, c, accountPath+"/orders/place", &placeReq, &resp); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("etrade: place order failed: %w", err)
 	}
 	if len(resp.PlaceOrderResponse.OrderIds) == 0 {
 		return 0, fmt.Errorf("etrade: place order response contained no OrderIds")
@@ -634,6 +638,9 @@ func (c *Client) CancelOrder(ctx context.Context, orderID int64) error {
 	for {
 		httpResp, err := c.do(ctx, http.MethodPut, apiPath, nil, string(data))
 		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("etrade: PUT failed", "path", apiPath, "orderID", orderID, "err", err)
+			}
 			return err
 		}
 		if httpResp.StatusCode == http.StatusOK {
