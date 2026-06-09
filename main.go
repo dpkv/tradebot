@@ -155,6 +155,7 @@ func main() {
 		new(subcmdsetrade.GetOrder),
 		new(subcmdsetrade.CancelOrder),
 		new(subcmdsetrade.GetLots),
+		new(subcmdsetrade.StreamQuotes),
 	}
 
 	cmds := []cli.Command{
