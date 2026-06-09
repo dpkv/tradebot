@@ -297,6 +297,28 @@ func (p *Product) LimitSell(ctx context.Context, clientOrderUUID uuid.UUID, size
 	return p.placeLimitOrder(ctx, clientOrderUUID, "sell", size, price)
 }
 
+// sleepUntilExtendedHoursOpen waits until 7am ET (when E*TRADE extended hours
+// trading opens). Called when extended hours are closed and we need to retry.
+func sleepUntilExtendedHoursOpen(ctx context.Context) error {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return fmt.Errorf("could not load NY timezone: %w", err)
+	}
+	now := time.Now().In(loc)
+	nextOpen := now.Truncate(24 * time.Hour).Add(7 * time.Hour) // 7am ET today
+	if now.After(nextOpen) {
+		nextOpen = nextOpen.Add(24 * time.Hour) // Already past 7am, wait until tomorrow
+	}
+	waitDur := nextOpen.Sub(now)
+	slog.Warn("etrade: extended hours closed, sleeping until 7am ET", "wake-at", nextOpen, "wait", waitDur)
+	select {
+	case <-time.After(waitDur):
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+}
+
 // roundLimitPrice rounds a limit price to the precision E*TRADE requires:
 // 2 decimal places for prices >= $1, 4 decimal places for prices < $1.
 // Buy orders truncate (never overpay); sell orders ceiling (never undersell).
@@ -351,13 +373,25 @@ func (p *Product) placeLimitOrder(ctx context.Context, clientOrderUUID uuid.UUID
 
 	// E*TRADE requires a numeric clientOrderId; generate a unique one for this
 	// call only. It is not stored or used for any subsequent lookup.
-	etradeClientID := strconv.FormatInt(p.etradeOrderID.Add(1), 10)
-	orderID, err := p.client.PlaceLimitOrder(ctx, p.symbol, side, size, price,
-		etradeClientID, info.OrderTerm, info.MarketSession)
-	if err != nil {
-		// PlaceOrder failed; the order may or may not have been created on
-		// E*TRADE. goCancelFailedCreates will resolve this and clean up the DB
-		// entry once the outcome is known.
+	var orderID int64
+	var err error
+	for {
+		etradeClientID := strconv.FormatInt(p.etradeOrderID.Add(1), 10)
+		orderID, err = p.client.PlaceLimitOrder(ctx, p.symbol, side, size, price,
+			etradeClientID, info.OrderTerm, info.MarketSession)
+		if err == nil {
+			break
+		}
+		if errors.Is(err, ErrExtendedHoursClosed) {
+			// Extended hours window is closed. Sleep until 7am ET and retry.
+			if sleepErr := sleepUntilExtendedHoursOpen(ctx); sleepErr != nil {
+				p.failedCreatesCh <- clientOrderUUID
+				return nil, sleepErr
+			}
+			continue
+		}
+		// Other error: order may or may not have been created on E*TRADE.
+		// goCancelFailedCreates will resolve this and clean up the DB entry.
 		p.failedCreatesCh <- clientOrderUUID
 		return nil, err
 	}

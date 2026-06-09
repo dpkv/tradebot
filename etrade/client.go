@@ -29,6 +29,8 @@ import (
 	"github.com/visvasity/topic"
 )
 
+var ErrExtendedHoursClosed = errors.New("etrade: extended hours trading service is unavailable (7am-8pm ET)")
+
 // Response envelope types — unexported, used only in this file for JSON unmarshaling.
 
 type ordersResponseWrapper struct {
@@ -366,6 +368,13 @@ func handleHTTPError(ctx context.Context, resp *http.Response, apiPath string) (
 		return true, nil
 	default:
 		body, _ := io.ReadAll(resp.Body)
+		// Check for E*TRADE error codes in 4xx responses (delivered in XML body).
+		if resp.StatusCode == http.StatusBadRequest {
+			if strings.Contains(string(body), "<code>1513</code>") {
+				slog.Warn("etrade: extended hours service unavailable", "path", apiPath)
+				return false, ErrExtendedHoursClosed
+			}
+		}
 		slog.Error("etrade: unexpected HTTP status", "path", apiPath, "status", resp.StatusCode, "body", string(body))
 		return false, fmt.Errorf("etrade: %s returned HTTP %d", apiPath, resp.StatusCode)
 	}
