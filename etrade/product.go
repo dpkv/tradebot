@@ -392,7 +392,7 @@ func (p *Product) placeLimitOrder(ctx context.Context, clientOrderUUID uuid.UUID
 		}
 		if errors.Is(err, ErrExtendedHoursClosed) {
 			// Extended hours window is closed. Sleep until 7am ET and retry.
-			if sleepErr := sleepUntilExtendedHoursOpen(ctx); sleepErr != nil {
+			if sleepErr := sleepUntilExtendedHoursOpen(p.lifeCtx); sleepErr != nil {
 				// No order was created (E*TRADE rejected at preview). Delete
 				// the DB entry directly rather than going through failedCreatesCh.
 				p.dbDeleteEntry(p.lifeCtx, clientOrderUUID)
