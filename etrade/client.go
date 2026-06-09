@@ -249,9 +249,8 @@ func New(ctx context.Context, creds *Credentials, opts *Options) (*Client, error
 		return nil, fmt.Errorf("etrade: credential verification failed: %w", err)
 	}
 
-	c.wg.Add(5)
+	c.wg.Add(4)
 	go c.goRenewToken(c.lifeCtx)
-	go c.goPollOrders(c.lifeCtx)
 	go c.goPollPrices(c.lifeCtx)
 	go c.goPollBalances(c.lifeCtx)
 	go c.goRefreshOrders(c.lifeCtx)
@@ -837,30 +836,6 @@ func (c *Client) goRenewToken(ctx context.Context) {
 	}
 }
 
-func (c *Client) goPollOrders(ctx context.Context) {
-	defer c.wg.Done()
-
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("etrade: CAUGHT PANIC in goPollOrders", "panic", r)
-			slog.Error(string(debug.Stack()))
-			panic(r)
-		}
-	}()
-
-	for ctx.Err() == nil {
-		orders, err := c.ListOpenOrders(ctx)
-		if err != nil && !errors.Is(err, context.Cause(ctx)) {
-			slog.Warn("etrade: could not poll open orders (will retry)", "err", err)
-		}
-		for _, order := range orders {
-			c.getSymbolOrdersTopic(order.Symbol).Send(order)
-		}
-		if err := sleep(ctx, c.opts.PollOrdersInterval); err != nil {
-			return
-		}
-	}
-}
 
 func (c *Client) goPollPrices(ctx context.Context) {
 	defer c.wg.Done()
