@@ -326,9 +326,17 @@ func sleepUntilExtendedHoursOpen(ctx context.Context) error {
 		return fmt.Errorf("could not load NY timezone: %w", err)
 	}
 	now := time.Now().In(loc)
-	nextOpen := now.Truncate(24 * time.Hour).Add(7 * time.Hour) // 7am ET today
-	if now.After(nextOpen) {
-		nextOpen = nextOpen.Add(24 * time.Hour) // Already past 7am, wait until tomorrow
+	year, month, day := now.Date()
+	nextOpen := time.Date(year, month, day, 7, 0, 0, 0, loc) // 7am ET today
+	if !now.Before(nextOpen) {
+		nextOpen = nextOpen.Add(24 * time.Hour) // Already at or past 7am, wait until tomorrow
+	}
+	// Skip weekends: if nextOpen lands on Saturday or Sunday, advance to Monday.
+	switch nextOpen.Weekday() {
+	case time.Saturday:
+		nextOpen = nextOpen.Add(48 * time.Hour)
+	case time.Sunday:
+		nextOpen = nextOpen.Add(24 * time.Hour)
 	}
 	waitDur := nextOpen.Sub(now)
 	slog.Warn("etrade: extended hours closed, sleeping until 7am ET", "wake-at", nextOpen, "wait", waitDur)
@@ -406,7 +414,9 @@ func (p *Product) placeLimitOrder(ctx context.Context, clientOrderUUID uuid.UUID
 		if errors.Is(err, ErrExtendedHoursClosed) {
 			// Extended hours window is closed. Sleep until 7am ET and retry.
 			if sleepErr := sleepUntilExtendedHoursOpen(ctx); sleepErr != nil {
-				p.failedCreatesCh <- clientOrderUUID
+				// No order was created (E*TRADE rejected at preview). Delete
+				// the DB entry directly rather than going through failedCreatesCh.
+				p.dbDeleteEntry(p.lifeCtx, clientOrderUUID)
 				return nil, sleepErr
 			}
 			continue
