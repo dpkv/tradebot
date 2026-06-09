@@ -3,7 +3,6 @@
 package etrade
 
 import (
-	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
@@ -195,10 +194,6 @@ type Client struct {
 
 	httpClient http.Client
 
-	// streamClient is used for long-lived SSE connections. It has no timeout
-	// because the connection is expected to stay open indefinitely.
-	streamClient http.Client
-
 	// nonceCounter is incremented atomically for each OAuth request to ensure
 	// each nonce is unique.
 	nonceCounter atomic.Int64
@@ -241,7 +236,6 @@ func New(ctx context.Context, creds *Credentials, opts *Options) (*Client, error
 		opts:          *opts,
 		creds:         *creds,
 		httpClient:    http.Client{Timeout: opts.HttpClientTimeout},
-		streamClient:  http.Client{},
 		balancesTopic:     topic.New[*internal.Balance](),
 		refreshOrderTopic: topic.New[int64](),
 	}
@@ -561,85 +555,6 @@ func (c *Client) RenewAccessToken(ctx context.Context) error {
 	httpResp.Body.Close()
 	if httpResp.StatusCode != http.StatusOK {
 		return fmt.Errorf("etrade: renew_access_token returned HTTP %d", httpResp.StatusCode)
-	}
-	return nil
-}
-
-// QuoteUpdate is a single price update received from the E*TRADE streaming API.
-type QuoteUpdate struct {
-	Symbol      string
-	DateTimeUTC int64
-	LastTrade   decimal.Decimal
-	Bid         decimal.Decimal
-	Ask         decimal.Decimal
-}
-
-// StreamQuotes opens a Server-Sent Events connection to E*TRADE's streaming
-// API and calls onQuote for each quote received. It blocks until the context
-// is cancelled or the server closes the connection. The caller is responsible
-// for reconnecting on non-context errors.
-func (c *Client) StreamQuotes(ctx context.Context, symbols []string, onQuote func(*QuoteUpdate)) error {
-	apiPath := "/v1/market/quote/" + url.PathEscape(strings.Join(symbols, ","))
-	baseURL := &url.URL{
-		Scheme: "https",
-		Host:   c.opts.streamingHostname(),
-		Path:   apiPath,
-	}
-	authHeader := c.oauthSign("GET", baseURL.String(), nil)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL.String(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.streamClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		slog.Error("etrade: stream returned unexpected status", "status", resp.StatusCode, "body", string(body))
-		return fmt.Errorf("etrade: stream returned HTTP %d", resp.StatusCode)
-	}
-
-	slog.Info("etrade: price stream connected", "symbols", symbols)
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Handle SSE format ("data: {...}") and plain NDJSON.
-		switch {
-		case strings.HasPrefix(line, "data:"):
-			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		case strings.HasPrefix(line, "event:"), strings.HasPrefix(line, "id:"), line == "":
-			continue
-		}
-
-		var qr quoteResponse
-		if err := json.Unmarshal([]byte(line), &qr); err != nil {
-			slog.Warn("etrade: could not parse streaming quote", "line", line, "err", err)
-			continue
-		}
-		for _, qd := range qr.QuoteData {
-			q := internal.NewQuoteFromAPI(qd)
-			onQuote(&QuoteUpdate{
-				Symbol:      q.Symbol,
-				DateTimeUTC: q.DateTimeUTC,
-				LastTrade:   q.LastTrade,
-				Bid:         q.Bid,
-				Ask:         q.Ask,
-			})
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("etrade: stream read error: %w", err)
 	}
 	return nil
 }

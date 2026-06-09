@@ -50,15 +50,6 @@ func (o *Options) restHostname() string {
 	return ProductionHostname
 }
 
-// streamingHostname returns the E*TRADE streaming API hostname for SSE
-// price quote streams.
-func (o *Options) streamingHostname() string {
-	if o.Sandbox {
-		return "streamsb.etrade.com"
-	}
-	return "stream.etrade.com"
-}
-
 func (o *Options) setDefaults() {
 	if o.HttpClientTimeout == 0 {
 		o.HttpClientTimeout = 5 * time.Second
