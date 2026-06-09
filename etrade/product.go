@@ -297,8 +297,27 @@ func (p *Product) LimitSell(ctx context.Context, clientOrderUUID uuid.UUID, size
 	return p.placeLimitOrder(ctx, clientOrderUUID, "sell", size, price)
 }
 
+// roundLimitPrice rounds a limit price to the precision E*TRADE requires:
+// 2 decimal places for prices >= $1, 4 decimal places for prices < $1.
+// Buy orders truncate (never overpay); sell orders ceiling (never undersell).
+func roundLimitPrice(side string, price decimal.Decimal) decimal.Decimal {
+	places := int32(2)
+	if price.LessThan(decimal.NewFromInt(1)) {
+		places = 4
+	}
+	if strings.EqualFold(side, "buy") {
+		return price.Truncate(places)
+	}
+	truncated := price.Truncate(places)
+	if truncated.Equal(price) {
+		return price
+	}
+	return truncated.Add(decimal.New(1, -places))
+}
+
 func (p *Product) placeLimitOrder(ctx context.Context, clientOrderUUID uuid.UUID, side string, size, price decimal.Decimal) (_ exchange.Order, status error) {
 	now := time.Now().UnixMilli()
+	price = roundLimitPrice(side, price)
 	info := orderPlacementInfo{
 		RequestTimeMilli: now,
 		Side:             side,
