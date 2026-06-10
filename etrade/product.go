@@ -64,6 +64,13 @@ type Product struct {
 	// an error. goCancelFailedCreates scans open orders to find and cancel any
 	// that were created despite the error.
 	failedCreatesCh chan uuid.UUID
+
+	// onBuyFill, if non-nil, is called once when a BUY order reaches a
+	// terminal filled state.
+	onBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)
+
+	// notifiedFills tracks order IDs for which onBuyFill has already fired.
+	notifiedFills syncmap.Map[int64, struct{}]
 }
 
 var _ exchange.Product = &Product{}
@@ -115,7 +122,7 @@ func (p *Product) dbDeleteEntry(ctx context.Context, clientOrderUUID uuid.UUID) 
 // background goroutines, and then reconciles open orders from the previous
 // session as the last step so that goWatchOrderUpdates is already subscribed
 // when goRefreshOrders publishes any recovered order updates.
-func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol string) (*Product, error) {
+func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol string, onBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)) (*Product, error) {
 	// Register the symbol with the client so goPollPrices starts fetching it.
 	client.getSymbolPriceTopic(symbol)
 
@@ -127,6 +134,7 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 		client:          client,
 		symbol:          symbol,
 		failedCreatesCh: make(chan uuid.UUID, 100),
+		onBuyFill:       onBuyFill,
 	}
 	p.etradeOrderID.Store(time.Now().UnixNano())
 
@@ -543,6 +551,12 @@ func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 		if done {
 			if err := p.dbDeleteEntry(ctx, uid); err != nil {
 				slog.Warn("etrade: could not delete completed order entry", "symbol", p.symbol, "uid", uid, "err", err)
+			}
+
+			if p.onBuyFill != nil && strings.EqualFold(order.OrderSide(), "buy") && order.FilledQty.IsPositive() {
+				if _, alreadyNotified := p.notifiedFills.LoadOrStore(order.OrderID, struct{}{}); !alreadyNotified {
+					p.onBuyFill(ctx, "STK", p.symbol, order.FilledQty, order.AvgFillPrice)
+				}
 			}
 		}
 	}

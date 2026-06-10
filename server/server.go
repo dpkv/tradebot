@@ -36,6 +36,7 @@ import (
 	"github.com/bvk/tradebot/watcher"
 	"github.com/bvkgo/kv"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/visvasity/cli"
 )
 
@@ -311,6 +312,9 @@ func (s *Server) Start(ctx context.Context) (status error) {
 			opts := &etrade.Options{
 				HttpClientTimeout: s.opts.MaxHttpClientTimeout,
 				Sandbox:           secrets.ETrade.Sandbox,
+				OnBuyFill: func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal) {
+					s.SendMessage(ctx, time.Now(), "ETRADE %s buy filled: %s %s @ %s.", productType, filledQty.String(), symbol, avgPrice.StringFixed(3))
+				},
 			}
 			exch, err := etrade.NewExchange(ctx, s.db, secrets.ETrade, opts)
 			if err != nil {

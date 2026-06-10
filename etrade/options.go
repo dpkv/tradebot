@@ -2,7 +2,12 @@
 
 package etrade
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 const (
 	// ProductionHostname is the E*TRADE REST API hostname for live trading.
@@ -39,6 +44,11 @@ type Options struct {
 	// PollBalancesInterval is how often the account balance is polled.
 	// Default: 30s.
 	PollBalancesInterval time.Duration
+
+	// OnBuyFill, if non-nil, is called once when a BUY order reaches a
+	// terminal filled state. Called from a background goroutine; must not
+	// block.
+	OnBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)
 }
 
 // restHostname returns the appropriate E*TRADE REST API hostname based on

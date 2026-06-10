@@ -22,6 +22,8 @@ type Exchange struct {
 	db     kv.Database
 	client *Client
 
+	onBuyFill func(ctx context.Context, productType, symbol string, filledQty, avgPrice decimal.Decimal)
+
 	productMap syncmap.Map[string, *Product]
 }
 
@@ -41,8 +43,9 @@ func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *
 	}()
 
 	v := &Exchange{
-		db:     db,
-		client: client,
+		db:        db,
+		client:    client,
+		onBuyFill: opts.OnBuyFill,
 	}
 	return v, nil
 }
@@ -77,7 +80,7 @@ func (v *Exchange) OpenSpotProduct(ctx context.Context, productID string) (excha
 	if p, ok := v.productMap.Load(productID); ok {
 		return p, nil
 	}
-	p, err := NewProduct(ctx, v.db, v.client, productID)
+	p, err := NewProduct(ctx, v.db, v.client, productID, v.onBuyFill)
 	if err != nil {
 		return nil, err
 	}
