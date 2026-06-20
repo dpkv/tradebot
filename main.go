@@ -14,9 +14,9 @@ import (
 	"github.com/bvk/tradebot/subcmds"
 	"github.com/bvk/tradebot/subcmds/coinbase"
 	"github.com/bvk/tradebot/subcmds/coinex"
-	subcmdsetrade "github.com/bvk/tradebot/subcmds/etrade"
 	"github.com/bvk/tradebot/subcmds/configure/alerts"
 	"github.com/bvk/tradebot/subcmds/db"
+	subcmdsetrade "github.com/bvk/tradebot/subcmds/etrade"
 	"github.com/bvk/tradebot/subcmds/exchange"
 	"github.com/bvk/tradebot/subcmds/fix"
 	"github.com/bvk/tradebot/subcmds/job"
@@ -154,6 +154,7 @@ func main() {
 		new(subcmdsetrade.PlaceOrder),
 		new(subcmdsetrade.GetOrder),
 		new(subcmdsetrade.CancelOrder),
+		new(subcmdsetrade.GetBalance),
 	}
 
 	cmds := []cli.Command{
