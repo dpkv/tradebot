@@ -8,6 +8,7 @@ import (
 
 	"github.com/bvk/tradebot/coinbase"
 	"github.com/bvk/tradebot/coinex"
+	"github.com/bvk/tradebot/etrade"
 	"github.com/bvk/tradebot/pushover"
 	"github.com/bvk/tradebot/telegram"
 )
@@ -15,6 +16,7 @@ import (
 type Secrets struct {
 	Coinbase *coinbase.Credentials `json:"coinbase"`
 	CoinEx   *coinex.Credentials   `json:"coinex"`
+	ETrade   *etrade.Credentials   `json:"etrade"`
 	Pushover *pushover.Keys        `json:"pushover"`
 	Telegram *telegram.Secrets     `json:"telegram"`
 }

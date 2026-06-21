@@ -1,0 +1,226 @@
+# E*TRADE Exchange Implementation Notes
+# To resume: tell Claude "resume etrade implementation" and point it to this file.
+
+## Project Context
+Module:       github.com/bvk/tradebot
+Go version:   1.24
+Key deps:     github.com/shopspring/decimal  (all monetary values)
+              github.com/visvasity/topic     (pub/sub for price/order/balance updates)
+              github.com/bvkgo/kvbadger      (persistent KV store — etrade uses it for counterIDMap)
+              github.com/google/uuid         (client order IDs)
+              github.com/gorilla/websocket   (used by coinex; etrade does not use websocket)
+              github.com/visvasity/ntpsync   (NTP time, used in coinex client.go)
+Exchange interface:  exchange/api.go         (Exchange, Product, Order, OrderUpdate, OrderDetail)
+Two reference exchanges:
+  coinbase/   older, has datastore, websocket, kv.Database dependency
+  coinex/     newer, no datastore, cleaner — PRIMARY model for etrade
+
+## Status
+COMPLETE. All files implemented (check git log for actual content):
+  - etrade/internal/codes.go       DONE
+  - etrade/internal/order.go       DONE
+  - etrade/internal/quote.go       DONE
+  - etrade/internal/account.go     DONE
+  - etrade/credentials.go          DONE
+  - etrade/options.go              DONE
+  - etrade/client.go               DONE
+  - etrade/product.go              DONE
+  - etrade/setup.go                DONE (OAuth setup helpers: OAuthRequestToken, OAuthAccessToken, OAuthListAccounts)
+  - etrade/exchange.go             DONE
+  - server/secrets.go              DONE (added ETrade *etrade.Credentials field)
+  - server/server.go               DONE (loadSecrets check, Start() block, initServerState + state migration)
+  - subcmds/setup/etrade.go        DONE (interactive OAuth1 authorization)
+  - main.go                        DONE (registered setup.ETrade)
+
+## Implementation Rule
+One file at a time. After each file: give detailed summary, wait for green flag.
+In summary: what was modeled on (coinbase/coinex/hybrid), tradeoffs taken.
+Copyright header: // Copyright (c) 2026 Deepak Vankadaru
+
+## Architecture: Follow coinex (not coinbase)
+Reasons: no datastore, simpler, more recent. Deviations documented below.
+
+## Key Design Decisions
+
+### Credentials (secrets.json)
+AccountIDKey and Sandbox are in Credentials (not Options) so they are saved
+once during setup and don't need to be re-specified on every run.
+setup etrade subcommand discovers AccountIDKey interactively and saves it.
+Sandbox is saved from the --sandbox flag passed to setup etrade.
+
+    type Credentials struct {
+        ConsumerKey       string `json:"consumer_key"`
+        ConsumerSecret    string `json:"consumer_secret"`
+        AccessToken       string `json:"access_token"`
+        AccessTokenSecret string `json:"access_token_secret"`
+        AccountIDKey      string `json:"account_id_key"`
+        Sandbox           bool   `json:"sandbox,omitempty"`
+    }
+
+Validation: Credentials.Check() returns error if any required field is empty.
+Sandbox is optional (omitempty); absent means production.
+
+server.go reads Sandbox from credentials and passes it to Options when
+creating the exchange: opts.Sandbox = secrets.ETrade.Sandbox.
+
+### Options
+Sandbox bool selects the REST hostname via a restHostname() method.
+No mandatory fields in Options (everything mandatory is in Credentials).
+
+    ProductionHostname = "api.etrade.com"
+    SandboxHostname    = "apisb.etrade.com"
+
+    type Options struct {
+        Sandbox              bool           // copied from Credentials.Sandbox by server.go
+        HttpClientTimeout    time.Duration  // default 5s
+        TokenRenewalInterval time.Duration  // default 90min
+        PollOrdersInterval   time.Duration  // default 10s
+        PollPricesInterval   time.Duration  // default 5s
+        PollBalancesInterval time.Duration  // default 30s
+    }
+
+### Auth: OAuth 1.0a, implemented manually
+Uses stdlib: crypto/hmac + crypto/sha1 + encoding/base64.
+No external oauth library — consistent with coinex's manual HMAC-SHA256.
+Authorization header format:
+    OAuth oauth_consumer_key="...", oauth_nonce="...", oauth_signature="...",
+          oauth_signature_method="HMAC-SHA1", oauth_timestamp="...",
+          oauth_token="...", oauth_version="1.0"
+Token renewal: background goroutine calls GET /oauth/renew_access_token every
+TokenRenewalInterval. On failure: logs fatal error, user must re-run setup.
+
+### No WebSocket
+E*TRADE has no streaming API. Three polling goroutines replace websocket:
+  - goPollOrders(ctx)   — polls open orders, publishes to symbolOrderMap topics
+  - goPollPrices(ctx)   — polls quotes, publishes to symbolPriceMap topics
+  - goPollBalances(ctx) — polls account balance, publishes to balancesTopic
+  - goRenewToken(ctx)   — keeps OAuth access token alive
+
+### Client UUID / clientOrderId Problem
+E*TRADE clientOrderId is numeric-only — cannot encode UUID into it (unlike coinex).
+Solution:
+  - Use atomic sequential int64 counter for E*TRADE's clientOrderId field
+  - All UUID dedup done locally in clientIDStatusMap (same as coinex)
+  - CanDedupOnClientUUID() returns false
+  - internal.Order has ClientUUID uuid.UUID field, set externally (no json tag)
+  - product.go maintains counterID->UUID map to recover UUID when polling orders
+
+### counterIDMap Persistence (product.go)
+The counterID->UUID mapping must survive restarts so fills/cancels that happen
+while the bot is down can be reconciled on next startup.
+
+DB key format:  /etrade/symbol/<symbol>/counterid/<counterID>
+DB value:       counterIDEntry{ ClientOrderUUID uuid.UUID; ServerOrderID int64 }
+
+ServerOrderID is 0 until PlaceOrder returns (two-phase write):
+  1. Before PlaceOrder: store {UUID, OrderID: 0}  — crash recovery sentinel
+  2. After PlaceOrder:  store {UUID, OrderID: id}  — full entry
+
+On startup (NewProduct), AFTER starting goroutines:
+  - For entries with ServerOrderID==0: scan open orders by counterID.
+      Found: update DB entry, populate clientIDStatusMap, TrackOrder.
+      Not found: delete entry (order never created or already terminal).
+  - For entries with ServerOrderID!=0: call GetOrder.
+      Terminal: populate clientIDStatusMap, delete from DB.
+      Open: populate clientIDStatusMap, TrackOrder.
+
+Deletion: when order reaches terminal state (goWatchOrderUpdates, goCancelFailedCreates).
+Goroutines start BEFORE reconciliation so goWatchOrderUpdates is already
+subscribed when TrackOrder causes goRefreshOrders to publish.
+
+### Place Order Response
+POST /v1/accounts/{accountIdKey}/orders/place returns PlaceOrderResponse.
+Simpler structure than GET orders — no OrderDetail/Instrument nested fields.
+Defined as separate struct in client.go. Does NOT use internal.APIOrder.
+After place: only orderId known. Full details come from subsequent GetOrder poll.
+
+### Fees
+Commission = estimatedCommission + estimatedFees (both from Instrument level).
+NOT using top-level TotalCommission (instrument level is more granular).
+
+### Done Statuses
+"EXECUTED", "CANCELLED", "REJECTED", "EXPIRED", "PARTIAL_CANCEL"
+
+### Partially Unsupported Order Types
+NewOrderFromAPI returns *Order (nil if unsupported).
+OCA multi-leg orders produce multiple Orders sharing the same OrderID, with
+ClientOrderID suffixed by leg index (e.g. "477-0", "477-1").
+
+Skipped with WARN log, nil returned:
+  - >1 OrderDetail entries (OCA multi-leg orders)
+  - >1 Instrument entries in a leg (spread orders)
+  Both share a single orderId with no per-leg server ID; splitting creates
+  incoherent ServerID/Cancel semantics. Bot only places simple equity orders.
+
+Non-equity security types (options, futures, etc.): all security types are
+parsed and passed through. Option-specific fields (ExpiryYear, ExpiryMonth,
+ExpiryDay, StrikePrice, CallPut) are populated on Order. Placing non-equity
+orders would require a separate code path beyond LimitBuy/LimitSell.
+
+### exchange.go Design
+Exchange wraps Client + db kv.Database + productMap.
+NewExchange(ctx, db, creds, opts) — passes db down to NewProduct.
+GetSpotProduct: quote must be "USD"; fetches mid-price via GetQuotes.
+OpenSpotProduct: no market catalogue validation (E*TRADE has no such API);
+  invalid symbols surface as errors during polling/order placement.
+GetOrder: routes through open Product (for UUID restoration) or falls back
+  to client.GetOrder directly (no UUID).
+
+## internal/order.go Design
+- Two-layer design: unexported nested API structs (apiProduct, apiInstrument,
+  apiOrderDetail) for JSON parsing + public flat Order struct for interface impl.
+- APIOrder is exported (used in client.go response structs).
+- All API response fields included in nested structs; unused ones commented.
+- NewOrderFromAPI() converts nested -> flat, returns nil for unsupported types (multi-leg OCA, multi-instrument spread).
+- ClientUUID left as uuid.Nil by NewOrderFromAPI; caller must set it.
+- client.GetOrder returns *internal.Order (not a slice); returns os.ErrNotExist if nil.
+- FinishedAt() guards on ExecutedTimeMilli != 0 (cancelled orders have 0).
+- ExecutedValue() = FilledQty * AvgFillPrice (computed, not stored).
+
+## E*TRADE API Endpoints Used
+  GET  /oauth/request_token                              setup step 1
+  GET  /oauth/access_token                               setup step 3
+  GET  /oauth/renew_access_token                         background renewal
+  GET  /v1/accounts/list                                 discover accounts (setup)
+  GET  /v1/accounts/{accountIdKey}/orders                list/poll orders
+  GET  /v1/accounts/{accountIdKey}/orders/{orderId}      get single order
+  POST /v1/accounts/{accountIdKey}/orders/place          place order
+  PUT  /v1/accounts/{accountIdKey}/orders/{orderId}/cancel  cancel order
+  GET  /v1/market/quote/{symbols}                        get price quotes
+  GET  /v1/accounts/{accountIdKey}/balance               get account balance
+
+## Files to Read for Context When Resuming
+  etrade/internal/order.go      (already implemented)
+  etrade/client.go              (already implemented)
+  etrade/product.go             (already implemented)
+  etrade/exchange.go            (already implemented)
+  coinex/exchange.go            (reference for Exchange struct pattern)
+  exchange/api.go               (all interfaces: Exchange, Product, Order, etc.)
+  server/secrets.go             (Secrets struct — already updated)
+  server/server.go              (Start() method — already updated)
+
+## setup etrade Subcommand
+File: subcmds/setup/etrade.go
+Flags: --consumer-key, --consumer-secret, --data-dir, --sandbox
+
+OAuth helpers in etrade/setup.go (standalone, no Client needed):
+  - oauthSignSetup() — package-level signing; reuses oauthEscape from client.go
+  - OAuthRequestToken() — GET /oauth/request_token, oauth_callback=oob
+  - OAuthAccessToken() — GET /oauth/access_token with verifier
+  - OAuthListAccounts() — GET /v1/accounts/list, returns []Account
+
+Interactive flow in subcmds/setup/etrade.go:
+  1. OAuthRequestToken → short-lived request token
+  2. Print https://us.etrade.com/e/t/etws/authorize?key=KEY&token=TOKEN
+  3. Read verifier from stdin
+  4. OAuthAccessToken → long-lived access token
+  5. OAuthListAccounts → print accounts
+  6. If >1 account: prompt for accountIdKey; if 1: auto-select
+  7. Write secrets.json (merges with existing file)
+
+## server/server.go Changes
+  - loadSecrets() check includes ETrade (coinbase || coinex || etrade)
+  - Start() block creates etrade.NewExchange(ctx, s.db, secrets.ETrade, opts)
+  - initServerState includes "etrade": {EnabledProductIDs: []string{}}
+  - New() patches loaded state with any exchanges in initServerState missing
+    from the persisted DB state — handles existing DBs predating etrade support

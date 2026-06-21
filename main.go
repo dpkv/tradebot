@@ -16,6 +16,7 @@ import (
 	"github.com/bvk/tradebot/subcmds/coinex"
 	"github.com/bvk/tradebot/subcmds/configure/alerts"
 	"github.com/bvk/tradebot/subcmds/db"
+	subcmdsetrade "github.com/bvk/tradebot/subcmds/etrade"
 	"github.com/bvk/tradebot/subcmds/exchange"
 	"github.com/bvk/tradebot/subcmds/fix"
 	"github.com/bvk/tradebot/subcmds/job"
@@ -64,6 +65,7 @@ func main() {
 	setupCmds := []cli.Command{
 		new(setup.Coinbase),
 		new(setup.CoinEx),
+		new(setup.ETrade),
 		new(setup.PushOver),
 		new(setup.Telegram),
 	}
@@ -147,6 +149,14 @@ func main() {
 		new(coinex.RunTest),
 	}
 
+	etradeCmds := []cli.Command{
+		new(subcmdsetrade.ListOrders),
+		new(subcmdsetrade.PlaceOrder),
+		new(subcmdsetrade.GetOrder),
+		new(subcmdsetrade.CancelOrder),
+		new(subcmdsetrade.GetBalance),
+	}
+
 	cmds := []cli.Command{
 		new(subcmds.Run),
 		new(subcmds.Status),
@@ -162,6 +172,7 @@ func main() {
 		cli.NewGroup("exchange", "View/query exchange directly", exchangeCmds...),
 		cli.NewGroup("coinbase", "Coinbase exchange operations", coinbaseCmds...),
 		cli.NewGroup("coinex", "CoinEx exchange operations", coinexCmds...),
+		cli.NewGroup("etrade", "E*TRADE exchange operations", etradeCmds...),
 		cli.NewGroup("setup", "Setup operations", setupCmds...),
 	}
 	if err := cli.Run(context.Background(), cmds, os.Args[1:]); err != nil {
