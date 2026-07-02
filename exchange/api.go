@@ -92,3 +92,14 @@ type Exchange interface {
 
 	GetOrder(ctx context.Context, productID string, serverID string) (OrderDetail, error)
 }
+
+// CredentialsReloader is implemented by exchange clients that can pick up
+// refreshed credentials without a restart. Callers pass the exchange's own
+// already-parsed credentials value (e.g. *etrade.Credentials) after
+// re-reading the secrets file -- implementations never touch the filesystem
+// themselves, just swap in what they're handed. It is optional; callers
+// type-assert an Exchange against this and skip any that don't implement
+// it.
+type CredentialsReloader interface {
+	ReloadCredentials(ctx context.Context, creds any) error
+}
