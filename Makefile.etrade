@@ -1,0 +1,102 @@
+# E*TRADE Docker services: the trading daemon (tradebot) and the periodic
+# browser-automated re-auth sidecar (tradebot-etrade-autologin), wired
+# together in docker/docker-compose.etrade.yml. See that file and
+# etrade/AUTOLOGIN_PLAN.md for the full picture. Included from the root
+# Makefile -- run targets from the repo root, e.g. `make docker-etrade-up`.
+
+ETRADE_COMPOSE_FILE := docker/docker-compose.etrade.yml
+ETRADE_COMPOSE := docker compose -f $(ETRADE_COMPOSE_FILE)
+
+.PHONY: docker-etrade-build
+docker-etrade-build: ## Build both etrade service images.
+	$(ETRADE_COMPOSE) build
+
+.PHONY: docker-etrade-up
+docker-etrade-up: ## Start both services in the background (does not rebuild images -- run docker-etrade-build first).
+	$(ETRADE_COMPOSE) up -d
+
+.PHONY: docker-etrade-down
+docker-etrade-down: ## Stop and remove both containers (data directory is untouched).
+	$(ETRADE_COMPOSE) down
+
+.PHONY: docker-etrade-restart
+docker-etrade-restart: ## Restart both running services (e.g. after docker-etrade-build).
+	$(ETRADE_COMPOSE) restart
+
+.PHONY: docker-etrade-ps
+docker-etrade-ps: ## Show container status.
+	$(ETRADE_COMPOSE) ps
+
+.PHONY: docker-etrade-config
+docker-etrade-config: ## Print the fully-resolved compose config (confirms TRADEBOT_DATA_DIR etc. took effect).
+	$(ETRADE_COMPOSE) config
+
+.PHONY: docker-etrade-logs
+docker-etrade-logs: ## Follow logs from both services.
+	$(ETRADE_COMPOSE) logs -f --tail=200
+
+.PHONY: docker-etrade-logs-tradebot
+docker-etrade-logs-tradebot: ## Follow logs from the trading daemon only.
+	$(ETRADE_COMPOSE) logs -f --tail=200 tradebot
+
+.PHONY: docker-etrade-logs-autologin
+docker-etrade-logs-autologin: ## Follow logs from the autologin sidecar only.
+	$(ETRADE_COMPOSE) logs -f --tail=200 tradebot-etrade-autologin
+
+# docker-etrade-bootstrap runs a one-shot MANUAL authorization (not --auto):
+# it prints a URL and waits for you to paste back the verifier code shown
+# after you open that URL and authorize in your own browser. No Xvfb/browser
+# needed inside the container at all, which is why this -- not --auto -- is
+# the recommended way to bootstrap credentials via Docker: the very first
+# --auto login may hit an MFA challenge or need to be watched to debug
+# selectors, both of which are much easier to do with a real, visible
+# browser natively (`tradebot setup etrade --auto --headless=false`) than
+# inside a headless container. Once secrets.json/etrade-login.json exist
+# (from either path), docker-etrade-up's autologin sidecar takes over.
+.PHONY: docker-etrade-bootstrap
+docker-etrade-bootstrap: ## One-shot manual OAuth bootstrap, no browser needed (CONSUMER_KEY=... CONSUMER_SECRET=... [ACCOUNT_ID=...]).
+ifndef CONSUMER_KEY
+	$(error CONSUMER_KEY is required, e.g. make docker-etrade-bootstrap CONSUMER_KEY=... CONSUMER_SECRET=... ACCOUNT_ID=...)
+endif
+ifndef CONSUMER_SECRET
+	$(error CONSUMER_SECRET is required, e.g. make docker-etrade-bootstrap CONSUMER_KEY=... CONSUMER_SECRET=... ACCOUNT_ID=...)
+endif
+	$(ETRADE_COMPOSE) run --rm --entrypoint tradebot tradebot-etrade-autologin \
+		setup etrade --data-dir=/data \
+		--consumer-key=$(CONSUMER_KEY) --consumer-secret=$(CONSUMER_SECRET) \
+		$(if $(ACCOUNT_ID),--account-id=$(ACCOUNT_ID))
+
+# docker-etrade-set-login (re)prompts for the E*TRADE website username/
+# password used by --auto (masked input, never a flag -- see
+# subcmds/setup/etrade.go). Runs the full --auto flow once under Xvfb, same
+# as the autologin sidecar does periodically, so this also doubles as a way
+# to test that path manually. Requires secrets.json to already exist (run
+# docker-etrade-bootstrap first).
+.PHONY: docker-etrade-set-login
+docker-etrade-set-login: ## (Re)prompt for the E*TRADE website login used by --auto.
+	$(ETRADE_COMPOSE) run --rm --entrypoint sh tradebot-etrade-autologin -c \
+		'xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" tradebot setup etrade --auto --set-login --data-dir=/data --headless=false'
+
+# docker-etrade-test-interval runs the periodic autologin loop in the
+# foreground with a short fixed interval instead of the real ~00:05 ET
+# schedule, so you can watch several cycles without waiting up to 24h. This
+# is the --interval testing knob documented in subcmds/setup/etrade.go --
+# NOT for production use. Ctrl+C to stop; does not affect docker-etrade-up's
+# detached services.
+.PHONY: docker-etrade-test-interval
+docker-etrade-test-interval: ## Foreground-test the periodic loop with a short interval (INTERVAL=30s, default 30s).
+	$(ETRADE_COMPOSE) run --rm tradebot-etrade-autologin --data-dir=/data --interval=$(or $(INTERVAL),30s)
+
+.PHONY: docker-etrade-clean
+docker-etrade-clean: docker-etrade-down ## Stop services and remove built images. Data directory is untouched.
+	-docker rmi $$($(ETRADE_COMPOSE) config --images) 2>/dev/null
+
+# docker-etrade-clean-data is destructive -- it deletes secrets.json,
+# etrade-login.json, and the persistent browser profile. Requires an
+# explicit CONFIRM=yes to guard against accidental use.
+.PHONY: docker-etrade-clean-data
+docker-etrade-clean-data: ## DESTRUCTIVE: delete the bind-mounted data directory / credentials (requires CONFIRM=yes).
+ifneq ($(CONFIRM),yes)
+	$(error This deletes secrets.json/etrade-login.json/browser profile. Re-run with CONFIRM=yes to proceed)
+endif
+	rm -rf $(or $(TRADEBOT_DATA_DIR),docker/data)
