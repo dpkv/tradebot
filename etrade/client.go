@@ -186,11 +186,11 @@ func New(ctx context.Context, creds *Credentials, opts *Options) (*Client, error
 
 	lifeCtx, lifeCancel := context.WithCancelCause(context.Background())
 	c := &Client{
-		lifeCtx:       lifeCtx,
-		lifeCancel:    lifeCancel,
-		opts:          *opts,
-		creds:         *creds,
-		httpClient:    http.Client{Timeout: opts.HttpClientTimeout},
+		lifeCtx:           lifeCtx,
+		lifeCancel:        lifeCancel,
+		opts:              *opts,
+		creds:             *creds,
+		httpClient:        http.Client{Timeout: opts.HttpClientTimeout},
 		balancesTopic:     topic.New[*internal.Balance](),
 		refreshOrderTopic: topic.New[int64](),
 	}
@@ -745,7 +745,6 @@ func (c *Client) goRenewToken(ctx context.Context) {
 		slog.Info("etrade: access token renewed")
 	}
 }
-
 
 func (c *Client) goPollPrices(ctx context.Context) {
 	defer c.wg.Done()
