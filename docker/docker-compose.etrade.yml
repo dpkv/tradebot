@@ -1,0 +1,45 @@
+# Wires the trading daemon and the periodic E*TRADE autologin sidecar
+# together via one shared data directory. Neither container talks to the
+# other directly -- the autologin sidecar writes fresh tokens into
+# secrets.json, and the tradebot service picks them up on its own
+# (server/credentials_reload.go polls the shared file and reloads in place,
+# no restart needed).
+#
+# The shared data directory is a host bind mount (not a Docker-managed
+# volume), so secrets.json is easy to inspect/back up directly. Defaults to
+# ./data next to this file (i.e. docker/data/); override with:
+#   TRADEBOT_DATA_DIR=/custom/host/path docker compose -f docker/docker-compose.etrade.yml up
+#
+# Run from the repo root: docker compose -f docker/docker-compose.etrade.yml up
+#
+# Before first use: bootstrap credentials once (e.g. run
+# `tradebot setup etrade --auto --data-dir=./data ...` natively, or
+# `docker compose -f docker/docker-compose.etrade.yml run --rm
+# tradebot-etrade-autologin --data-dir=/data --consumer-key=...
+# --consumer-secret=... --account-id=...`) so secrets.json/etrade-login.json
+# exist before the long-running services start.
+name: tradebot-etrade
+
+services:
+  tradebot:
+    build:
+      context: ..
+      dockerfile: docker/tradebot/Dockerfile
+    command: ["--data-dir=/data"]
+    volumes:
+      - ${TRADEBOT_DATA_DIR:-./data}:/data
+    restart: unless-stopped
+
+  tradebot-etrade-autologin:
+    build:
+      context: ..
+      dockerfile: docker/tradebot-etrade-autologin/Dockerfile
+    # entrypoint.sh already hardcodes 'setup etrade --auto --periodic
+    # --headless=false'; command here only supplies additional flags, e.g.
+    # --data-dir. For a quick local test without waiting for the real ~00:05
+    # ET schedule, override with:
+    #   docker compose -f docker/docker-compose.etrade.yml run --rm tradebot-etrade-autologin --data-dir=/data --interval=30s
+    command: ["--data-dir=/data"]
+    volumes:
+      - ${TRADEBOT_DATA_DIR:-./data}:/data
+    restart: unless-stopped

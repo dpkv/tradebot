@@ -5,6 +5,10 @@ export GOBIN ?= $(CURDIR)
 export PATH := $(PATH):$(HOME)/go/bin
 export GOTESTFLAGS ?=
 
+.PHONY: help
+help: ## List documented targets (mainly docker-etrade-*).
+	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  %-28s %s\n", $$1, $$2}'
+
 .PHONY: all
 all: go-all go-test go-test-long;
 
@@ -35,3 +39,8 @@ go-test: go-all
 go-test-long: go-all
 	$(GO) test -fullpath -failfast -count=1 -coverprofile=coverage.out $(GOTESTFLAGS) ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+# Exchange-specific target groups live in their own includable Makefiles
+# (e.g. docker-etrade-* below) to keep this file focused on core Go
+# build/test -- see Makefile.etrade.
+include Makefile.etrade
