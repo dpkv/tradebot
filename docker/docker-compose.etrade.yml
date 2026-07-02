@@ -42,4 +42,17 @@ services:
     command: ["--data-dir=/data"]
     volumes:
       - ${TRADEBOT_DATA_DIR:-./data}:/data
+    # Bound to localhost only regardless of VNC_PASSWORD -- never reachable
+    # from the network. Set VNC_PASSWORD in the host environment before
+    # `make docker-etrade-*` (macOS Screen Sharing refuses to connect with a
+    # blank password field even when the server allows no-password access,
+    # so a real password is the practical default, not just defense in
+    # depth). VNC_PORT defaults to 5900 (matching entrypoint.sh's and the
+    # Dockerfile's own defaults) -- override it here if that's ever taken.
+    # Connect from macOS with: make docker-etrade-vnc
+    environment:
+      - VNC_PASSWORD
+      - VNC_PORT
+    ports:
+      - "127.0.0.1:${VNC_PORT:-5900}:${VNC_PORT:-5900}"
     restart: unless-stopped

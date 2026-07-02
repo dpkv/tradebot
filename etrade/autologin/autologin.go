@@ -19,30 +19,24 @@ import (
 	"github.com/playwright-community/playwright-go"
 )
 
-// ErrMFARequired is returned when E*TRADE challenges the login with an SMS
-// verification code and no PromptForMFA callback was supplied. Callers
-// should treat this as an alert-worthy condition rather than retrying
-// blindly -- the code needs a human to actually read a text message.
-var ErrMFARequired = errors.New("autologin: MFA challenge requires a verification code but none was provided")
+// ErrChallengeRequiresManualCompletion is returned when E*TRADE shows
+// anything other than the expected Accept page after login (an identity
+// verification / phone-picker step, an SMS code prompt, or some other
+// challenge variant) and no PromptForManualCompletion callback was
+// supplied. Callers should treat this as an alert-worthy condition rather
+// than retrying blindly -- a human needs to actually complete the
+// challenge.
+var ErrChallengeRequiresManualCompletion = errors.New("autologin: login challenge requires manual completion but no callback was provided")
 
 // Selectors below are best-effort guesses based on visible label/button text
 // (Playwright's GetByLabel/GetByRole locators, which are more resilient to
-// markup churn than CSS classes) and have NOT been verified against the live
-// E*TRADE page yet. Confirming/correcting these against a real, non-headless
-// run is expected follow-up work, not a gap in this package.
-// usernameLabel, passwordLabel, and acceptButtonName are confirmed against
-// the live E*TRADE pages. mfaCodeLabel/rememberDeviceLabel/
-// mfaSubmitButtonName are still unverified guesses -- no run so far has
-// triggered the MFA challenge to confirm them against (see
-// handleMFAIfPresent).
+// markup churn than CSS classes). usernameLabel, passwordLabel, and
+// acceptButtonName are confirmed against the live E*TRADE pages.
 const (
-	usernameLabel       = "User ID"
-	passwordLabel       = "Password"
-	logOnButtonName     = "Log On"
-	mfaCodeLabel        = "Enter Code"
-	rememberDeviceLabel = "Don't ask me for this code again"
-	mfaSubmitButtonName = "Continue"
-	acceptButtonName    = "Accept"
+	usernameLabel    = "User ID"
+	passwordLabel    = "Password"
+	logOnButtonName  = "Log On"
+	acceptButtonName = "Accept"
 
 	// verifierInputSelector matches the confirmation page's sole verifier
 	// input, confirmed against the live page: <input type="text" value="...">
@@ -70,11 +64,19 @@ type Options struct {
 	// step fails, so failures are debuggable instead of silent.
 	DebugDir string
 
-	// PromptForMFA is called when E*TRADE challenges the login with an SMS
-	// code. It must return the code the user was sent. Leave nil for
-	// unattended/headless runs; ErrMFARequired is returned instead of
-	// blocking on input that will never come.
-	PromptForMFA func(ctx context.Context) (string, error)
+	// PromptForManualCompletion is called when anything other than the
+	// expected Accept page shows up after login -- an identity-verification
+	// phone picker, an SMS code prompt, or any other challenge variant E*TRADE
+	// might show. Rather than automating each variant as it's discovered
+	// (fragile, and some variants may never have been seen in testing), this
+	// hands the whole remaining flow to a human: with Headless=false, they
+	// complete the challenge and click Accept directly in the visible browser
+	// window, then the callback should block until they signal it's done
+	// (e.g. by waiting for an Enter keypress), at which point Run resumes by
+	// scraping the verifier directly. Leave nil for unattended/headless runs;
+	// ErrChallengeRequiresManualCompletion is returned instead of blocking on
+	// input that will never come.
+	PromptForManualCompletion func(ctx context.Context) error
 }
 
 // Run drives the full browser OAuth dance and returns a fresh access token
@@ -131,19 +133,48 @@ func Run(ctx context.Context, opts Options) (accessToken, accessTokenSecret stri
 		return "", "", fmt.Errorf("autologin: could not navigate to authorize page: %w", err)
 	}
 
-	if err := fillLogin(page, opts.Login); err != nil {
+	// The persistent browser context can already have an active, still-
+	// logged-in E*TRADE session from a previous run (observed 2026-07-02):
+	// navigating straight to the authorize URL then skips the login form
+	// entirely and lands directly on Accept. Only fill the login form if
+	// it's actually there.
+	usernameVisible, err := isUsernameFieldVisible(page)
+	if err != nil {
 		dumpDebug("login")
-		return "", "", err
+		return "", "", fmt.Errorf("autologin: could not check for login form: %w", err)
+	}
+	if usernameVisible {
+		if err := fillLogin(page, opts.Login); err != nil {
+			dumpDebug("login")
+			return "", "", err
+		}
 	}
 
-	if err := handleMFAIfPresent(ctx, page, opts.PromptForMFA); err != nil {
-		dumpDebug("mfa")
-		return "", "", err
+	// Happy path: "remember this device" already trusts this browser
+	// profile, so Accept shows up directly. Otherwise, hand the whole
+	// challenge off to a human rather than guessing at its shape.
+	acceptVisible, err := isAcceptVisible(page)
+	if err != nil {
+		dumpDebug("challenge")
+		return "", "", fmt.Errorf("autologin: could not check for Accept page: %w", err)
 	}
-
-	if err := clickAccept(page); err != nil {
-		dumpDebug("accept")
-		return "", "", err
+	if !acceptVisible {
+		if opts.PromptForManualCompletion == nil {
+			dumpDebug("challenge")
+			return "", "", ErrChallengeRequiresManualCompletion
+		}
+		if err := opts.PromptForManualCompletion(ctx); err != nil {
+			dumpDebug("challenge")
+			return "", "", fmt.Errorf("autologin: manual challenge completion failed: %w", err)
+		}
+		// The human completes the challenge and clicks Accept themselves,
+		// so Run resumes directly at scraping the verifier -- clickAccept
+		// is only for the happy path below.
+	} else {
+		if err := clickAccept(page); err != nil {
+			dumpDebug("accept")
+			return "", "", err
+		}
 	}
 
 	verifier, err := scrapeVerifier(page)
@@ -175,11 +206,36 @@ func currentPage(browserCtx playwright.BrowserContext) (playwright.Page, error) 
 	return page, nil
 }
 
+// usernameField locates the login form's username textbox. GetByLabel("User
+// ID") also matches the "Remember User ID" checkbox (its accessible name
+// contains "User ID" as a substring), so the textbox role is needed to
+// disambiguate.
+func usernameField(page playwright.Page) playwright.Locator {
+	return page.GetByRole("textbox", playwright.PageGetByRoleOptions{Name: usernameLabel, Exact: playwright.Bool(true)})
+}
+
+// isUsernameFieldVisible reports whether the login form shows up within a
+// short wait after navigating to the authorize URL. A persistent browser
+// context can already have an active, still-logged-in E*TRADE session from
+// a previous run, in which case the login form never appears at all and
+// the authorize URL goes straight to Accept -- a timeout here is that
+// case, not a failure.
+func isUsernameFieldVisible(page playwright.Page) (bool, error) {
+	err := usernameField(page).WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	})
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, playwright.ErrTimeout) {
+		return false, nil
+	}
+	return false, err
+}
+
 func fillLogin(page playwright.Page, creds LoginCredentials) error {
-	// GetByLabel("User ID") also matches the "Remember User ID" checkbox
-	// (its accessible name contains "User ID" as a substring), so the
-	// username field needs the textbox role to disambiguate.
-	if err := page.GetByRole("textbox", playwright.PageGetByRoleOptions{Name: usernameLabel, Exact: playwright.Bool(true)}).Fill(creds.Username); err != nil {
+	if err := usernameField(page).Fill(creds.Username); err != nil {
 		return fmt.Errorf("autologin: could not fill username: %w", err)
 	}
 	if err := page.GetByLabel(passwordLabel).Fill(creds.Password); err != nil {
@@ -191,32 +247,27 @@ func fillLogin(page playwright.Page, creds LoginCredentials) error {
 	return nil
 }
 
-func handleMFAIfPresent(ctx context.Context, page playwright.Page, promptForMFA func(context.Context) (string, error)) error {
-	mfaField := page.GetByLabel(mfaCodeLabel)
-	visible, err := mfaField.IsVisible()
-	if err != nil {
-		return fmt.Errorf("autologin: could not check for MFA page: %w", err)
+// isAcceptVisible reports whether the post-login Accept button shows up
+// within a short wait (page navigation after clicking Log On isn't
+// instant). When "remember this device" doesn't trust this browser
+// profile, E*TRADE shows some other challenge instead (identity-
+// verification phone picker, SMS code prompt, or other variants) and
+// Accept never appears -- isAcceptVisible returning false is how Run
+// detects that, without needing to know which specific challenge it is. A
+// timeout is treated as "not visible"; any other error is a real failure.
+func isAcceptVisible(page playwright.Page) (bool, error) {
+	accept := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: acceptButtonName})
+	err := accept.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	})
+	if err == nil {
+		return true, nil
 	}
-	if !visible {
-		return nil
+	if errors.Is(err, playwright.ErrTimeout) {
+		return false, nil
 	}
-	if promptForMFA == nil {
-		return ErrMFARequired
-	}
-	code, err := promptForMFA(ctx)
-	if err != nil {
-		return fmt.Errorf("autologin: could not read MFA code: %w", err)
-	}
-	if err := mfaField.Fill(code); err != nil {
-		return fmt.Errorf("autologin: could not fill MFA code: %w", err)
-	}
-	if err := page.GetByLabel(rememberDeviceLabel).Check(); err != nil {
-		return fmt.Errorf("autologin: could not check remember-device box: %w", err)
-	}
-	if err := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: mfaSubmitButtonName}).Click(); err != nil {
-		return fmt.Errorf("autologin: could not submit MFA code: %w", err)
-	}
-	return nil
+	return false, err
 }
 
 func clickAccept(page playwright.Page) error {

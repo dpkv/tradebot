@@ -7,6 +7,13 @@
 ETRADE_COMPOSE_FILE := docker/docker-compose.etrade.yml
 ETRADE_COMPOSE := docker compose -f $(ETRADE_COMPOSE_FILE)
 
+# VNC_PORT is the single source of truth for the autologin sidecar's VNC
+# port -- exported so it reaches docker-compose.etrade.yml's own
+# ${VNC_PORT:-5900} interpolation (for the port mapping) and the
+# container's environment (for entrypoint.sh's x11vnc invocation)
+# consistently. Override with `make ... VNC_PORT=6001` if 5900 is taken.
+export VNC_PORT ?= 5900
+
 .PHONY: docker-etrade-build
 docker-etrade-build: ## Build both etrade service images.
 	$(ETRADE_COMPOSE) build
@@ -68,24 +75,36 @@ endif
 
 # docker-etrade-set-login (re)prompts for the E*TRADE website username/
 # password used by --auto (masked input, never a flag -- see
-# subcmds/setup/etrade.go). Runs the full --auto flow once under Xvfb, same
-# as the autologin sidecar does periodically, so this also doubles as a way
-# to test that path manually. Requires secrets.json to already exist (run
-# docker-etrade-bootstrap first).
+# subcmds/setup/etrade.go). Runs the full --auto flow once under Xvfb+VNC,
+# same as the autologin sidecar does periodically, so this also doubles as
+# a way to test that path manually. Requires secrets.json to already exist
+# (run docker-etrade-bootstrap first). --service-ports publishes VNC for
+# this one-off run -- 'docker compose run' doesn't publish a service's
+# normal ports otherwise. If E*TRADE shows a login challenge, connect from
+# macOS with: make docker-etrade-vnc
 .PHONY: docker-etrade-set-login
-docker-etrade-set-login: ## (Re)prompt for the E*TRADE website login used by --auto.
-	$(ETRADE_COMPOSE) run --rm --entrypoint sh tradebot-etrade-autologin -c \
-		'xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" tradebot setup etrade --auto --set-login --data-dir=/data --headless=false'
+docker-etrade-set-login: ## (Re)prompt for the E*TRADE website login used by --auto (watch via VNC if challenged).
+	$(ETRADE_COMPOSE) run --rm --service-ports --entrypoint sh tradebot-etrade-autologin -c '\
+		Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp & \
+		export DISPLAY=:99; \
+		for i in $$(seq 1 50); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 0.1; done; \
+		x11vnc -display :99 -forever -shared -rfbport "$${VNC_PORT:-5900}" -nopw & \
+		exec tradebot setup etrade --auto --set-login --data-dir=/data --headless=false'
 
 # docker-etrade-test-interval runs the periodic autologin loop in the
 # foreground with a short fixed interval instead of the real ~00:05 ET
 # schedule, so you can watch several cycles without waiting up to 24h. This
 # is the --interval testing knob documented in subcmds/setup/etrade.go --
 # NOT for production use. Ctrl+C to stop; does not affect docker-etrade-up's
-# detached services.
+# detached services. --service-ports publishes VNC for this one-off run --
+# connect from macOS with: make docker-etrade-vnc
 .PHONY: docker-etrade-test-interval
-docker-etrade-test-interval: ## Foreground-test the periodic loop with a short interval (INTERVAL=30s, default 30s).
-	$(ETRADE_COMPOSE) run --rm tradebot-etrade-autologin --data-dir=/data --interval=$(or $(INTERVAL),30s)
+docker-etrade-test-interval: ## Foreground-test the periodic loop with a short interval (INTERVAL=30s, default 30s; watch via VNC if challenged).
+	$(ETRADE_COMPOSE) run --rm --service-ports tradebot-etrade-autologin --data-dir=/data --interval=$(or $(INTERVAL),30s)
+
+.PHONY: docker-etrade-vnc
+docker-etrade-vnc: ## Open macOS Screen Sharing connected to the autologin sidecar's virtual display.
+	open vnc://localhost:$(VNC_PORT)
 
 .PHONY: docker-etrade-clean
 docker-etrade-clean: docker-etrade-down ## Stop services and remove built images. Data directory is untouched.
