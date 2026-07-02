@@ -139,8 +139,13 @@ type Client struct {
 
 	wg sync.WaitGroup
 
-	opts  Options
-	creds Credentials
+	opts Options
+
+	// credsMu guards creds so a concurrent ReloadCredentials (triggered
+	// externally when a fresh token is written to disk) can't race with
+	// in-flight requests reading it for OAuth signing.
+	credsMu sync.RWMutex
+	creds   Credentials
 
 	httpClient http.Client
 
@@ -215,6 +220,48 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// currentCreds returns a snapshot of the current credentials. Callers that
+// need more than one field from it (e.g. oauthSign) should take a single
+// snapshot up front rather than calling this per field, to avoid a torn
+// read across a concurrent ReloadCredentials.
+func (c *Client) currentCreds() Credentials {
+	c.credsMu.RLock()
+	defer c.credsMu.RUnlock()
+	return c.creds
+}
+
+// setCredentials validates and swaps in new credentials for use by all
+// subsequent requests.
+func (c *Client) setCredentials(creds Credentials) error {
+	if err := creds.Check(); err != nil {
+		return err
+	}
+	c.credsMu.Lock()
+	c.creds = creds
+	c.credsMu.Unlock()
+	return nil
+}
+
+// ReloadCredentials implements exchange.CredentialsReloader. creds must be a
+// *Credentials value (typically secrets.ETrade, already parsed by the
+// caller from the secrets file) -- this method does no file I/O itself, it
+// only validates and swaps in what it's given.
+func (c *Client) ReloadCredentials(ctx context.Context, creds any) error {
+	newCreds, ok := creds.(*Credentials)
+	if !ok {
+		return fmt.Errorf("etrade: ReloadCredentials: want *etrade.Credentials, got %T", creds)
+	}
+	current := c.currentCreds()
+	if newCreds.AccessToken == current.AccessToken && newCreds.AccessTokenSecret == current.AccessTokenSecret {
+		return nil
+	}
+	if err := c.setCredentials(*newCreds); err != nil {
+		return err
+	}
+	slog.Info("etrade: credentials reloaded")
+	return nil
+}
+
 // getSymbolOrdersTopic returns (creating if necessary) the per-symbol order update topic.
 func (c *Client) getSymbolOrdersTopic(symbol string) *topic.Topic[*internal.Order] {
 	tp, ok := c.symbolOrderTopicMap.Load(symbol)
@@ -244,16 +291,17 @@ func oauthEscape(s string) string {
 // HTTP method, base URL, and query parameters. Query parameters are included
 // in the signature computation but must also appear in the actual request URL.
 func (c *Client) oauthSign(method, baseURL string, queryParams url.Values) string {
+	creds := c.currentCreds()
 	nonce := strconv.FormatInt(c.nonceCounter.Add(1), 10)
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
 	// Collect all parameters: OAuth protocol params + request query params.
 	params := map[string]string{
-		"oauth_consumer_key":     c.creds.ConsumerKey,
+		"oauth_consumer_key":     creds.ConsumerKey,
 		"oauth_nonce":            nonce,
 		"oauth_signature_method": "HMAC-SHA1",
 		"oauth_timestamp":        timestamp,
-		"oauth_token":            c.creds.AccessToken,
+		"oauth_token":            creds.AccessToken,
 		"oauth_version":          "1.0",
 	}
 	for k, vals := range queryParams {
@@ -278,7 +326,7 @@ func (c *Client) oauthSign(method, baseURL string, queryParams url.Values) strin
 	sigBase := strings.ToUpper(method) + "&" + oauthEscape(baseURL) + "&" + oauthEscape(normalizedParams)
 
 	// Signing key: percent-encoded consumer_secret & percent-encoded token_secret.
-	signingKey := oauthEscape(c.creds.ConsumerSecret) + "&" + oauthEscape(c.creds.AccessTokenSecret)
+	signingKey := oauthEscape(creds.ConsumerSecret) + "&" + oauthEscape(creds.AccessTokenSecret)
 
 	// HMAC-SHA1, base64-encoded.
 	h := hmac.New(sha1.New, []byte(signingKey))
@@ -288,12 +336,12 @@ func (c *Client) oauthSign(method, baseURL string, queryParams url.Values) strin
 	// Build the Authorization header. Signature is percent-encoded because
 	// base64 output may contain '+', '/', and '=' which are reserved in OAuth.
 	headerParts := []string{
-		`oauth_consumer_key="` + oauthEscape(c.creds.ConsumerKey) + `"`,
+		`oauth_consumer_key="` + oauthEscape(creds.ConsumerKey) + `"`,
 		`oauth_nonce="` + oauthEscape(nonce) + `"`,
 		`oauth_signature="` + oauthEscape(signature) + `"`,
 		`oauth_signature_method="HMAC-SHA1"`,
 		`oauth_timestamp="` + timestamp + `"`,
-		`oauth_token="` + oauthEscape(c.creds.AccessToken) + `"`,
+		`oauth_token="` + oauthEscape(creds.AccessToken) + `"`,
 		`oauth_version="1.0"`,
 	}
 	return "OAuth " + strings.Join(headerParts, ", ")
@@ -527,7 +575,7 @@ func (c *Client) GetQuotes(ctx context.Context, symbols []string) ([]*internal.Q
 // GetBalance fetches the current account balance from
 // GET /v1/accounts/{accountIdKey}/balance.
 func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/balance"
+	apiPath := "/v1/accounts/" + url.PathEscape(c.currentCreds().AccountIDKey) + "/balance"
 	params := url.Values{
 		"instType":    {"BROKERAGE"},
 		"realTimeNAV": {"true"},
@@ -545,7 +593,7 @@ func (c *Client) GetBalance(ctx context.Context) (*internal.Balance, error) {
 // ListOpenOrders fetches all currently open orders for the account from
 // GET /v1/accounts/{accountIdKey}/orders?status=OPEN.
 func (c *Client) ListOpenOrders(ctx context.Context) ([]*internal.Order, error) {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/orders"
+	apiPath := "/v1/accounts/" + url.PathEscape(c.currentCreds().AccountIDKey) + "/orders"
 	params := url.Values{"status": {"OPEN"}}
 	var wrapper ordersResponseWrapper
 	if err := doGetJSON(ctx, c, apiPath, params, &wrapper); err != nil {
@@ -563,7 +611,7 @@ func (c *Client) ListOpenOrders(ctx context.Context) ([]*internal.Order, error) 
 // GetOrder fetches a single order by its E*TRADE order ID from
 // GET /v1/accounts/{accountIdKey}/orders/{orderId}.
 func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, error) {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/orders/" + strconv.FormatInt(orderID, 10)
+	apiPath := "/v1/accounts/" + url.PathEscape(c.currentCreds().AccountIDKey) + "/orders/" + strconv.FormatInt(orderID, 10)
 	var wrapper ordersResponseWrapper
 	if err := doGetJSON(ctx, c, apiPath, nil, &wrapper); err != nil {
 		return nil, err
@@ -589,7 +637,7 @@ func (c *Client) GetOrder(ctx context.Context, orderID int64) (*internal.Order, 
 // "REGULAR" or "EXTENDED"; orderTerm must be consistent with it
 // ("GOOD_UNTIL_CANCEL" for REGULAR, "GOOD_FOR_DAY" for EXTENDED).
 func (c *Client) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm, marketSession string) (int64, error) {
-	accountPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey)
+	accountPath := "/v1/accounts/" + url.PathEscape(c.currentCreds().AccountIDKey)
 	orderDetail := placeOrderDetail{
 		PriceType:     "LIMIT",
 		OrderTerm:     orderTerm,
@@ -641,7 +689,7 @@ func (c *Client) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, 
 // CancelOrder requests cancellation of an order via
 // PUT /v1/accounts/{accountIdKey}/orders/cancel.
 func (c *Client) CancelOrder(ctx context.Context, orderID int64) error {
-	apiPath := "/v1/accounts/" + url.PathEscape(c.creds.AccountIDKey) + "/orders/cancel"
+	apiPath := "/v1/accounts/" + url.PathEscape(c.currentCreds().AccountIDKey) + "/orders/cancel"
 	data, _ := json.Marshal(cancelOrderRequestWrapper{CancelOrderRequest: cancelOrderRequest{OrderID: orderID}})
 	for {
 		httpResp, err := c.do(ctx, http.MethodPut, apiPath, nil, string(data))
@@ -686,9 +734,13 @@ func (c *Client) goRenewToken(ctx context.Context) {
 			if errors.Is(err, context.Cause(ctx)) {
 				return
 			}
-			slog.Error("etrade: token renewal failed; re-run 'setup etrade' to reauthorize", "err", err)
-			c.lifeCancel(err)
-			return
+			// Renewal fails past midnight ET until fresh credentials are
+			// written (e.g. by 'setup etrade --auto') and picked up via
+			// ReloadCredentials -- keep retrying each interval rather than
+			// killing the client, so a reload lands on an already-live
+			// Client instead of requiring a restart.
+			slog.Warn("etrade: token renewal failed; waiting for fresh credentials (re-run 'setup etrade' to reauthorize)", "err", err)
+			continue
 		}
 		slog.Info("etrade: access token renewed")
 	}

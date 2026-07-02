@@ -26,6 +26,7 @@ type Exchange struct {
 }
 
 var _ exchange.Exchange = &Exchange{}
+var _ exchange.CredentialsReloader = &Exchange{}
 
 // NewExchange creates an Exchange, verifies credentials, and starts the
 // background polling goroutines in the underlying client.
@@ -45,6 +46,12 @@ func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *
 		client: client,
 	}
 	return v, nil
+}
+
+// ReloadCredentials implements exchange.CredentialsReloader by delegating to
+// the underlying Client.
+func (v *Exchange) ReloadCredentials(ctx context.Context, creds any) error {
+	return v.client.ReloadCredentials(ctx, creds)
 }
 
 func (v *Exchange) Close() error {
