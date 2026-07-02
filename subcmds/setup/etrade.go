@@ -12,10 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bvk/tradebot/etrade"
 	"github.com/bvk/tradebot/etrade/autologin"
+	"github.com/bvk/tradebot/pushover"
 	"github.com/bvk/tradebot/server"
+	"github.com/bvk/tradebot/telegram"
+	"github.com/bvkgo/kv/kvmemdb"
 	"github.com/visvasity/cli"
 	"golang.org/x/term"
 )
@@ -32,6 +36,9 @@ type ETrade struct {
 	headless   bool
 	profileDir string
 	debugDir   string
+
+	periodic bool
+	interval time.Duration
 }
 
 func (c *ETrade) Purpose() string {
@@ -50,6 +57,8 @@ func (c *ETrade) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset.BoolVar(&c.headless, "headless", false, "run the browser headless (--auto only); headless=true is currently blocked by E*TRADE's bot detection -- see Description")
 	fset.StringVar(&c.profileDir, "profile-dir", "", "persistent browser profile directory (--auto only; defaults under --data-dir)")
 	fset.StringVar(&c.debugDir, "debug-dir", "", "directory to dump screenshot+HTML on autologin failure (--auto only; defaults under --data-dir)")
+	fset.BoolVar(&c.periodic, "periodic", false, "loop forever, re-running --auto on a schedule instead of once (requires --auto)")
+	fset.DurationVar(&c.interval, "interval", 0, "override the schedule with a fixed interval between runs (--periodic only; for testing, e.g. --interval=30s -- not for production use)")
 	return "etrade", fset, cli.CmdFunc(c.run)
 }
 
@@ -113,12 +122,31 @@ control on E*TRADE's side, not a bug to be patched around with fingerprint or
 behavior spoofing -- if --auto starts failing consistently, fall back to
 manual mode rather than trying to defeat the detection further.
 
+--periodic (requires --auto) loops forever instead of running once,
+re-running the --auto flow on a schedule -- by default, sleeping until the
+next ~00:05 US Eastern time between runs, matching when E*TRADE's tokens
+actually expire:
+
+  $ tradebot setup etrade --auto --periodic
+
+On failure, it sends a Pushover/Telegram alert (if configured in
+secrets.json) instead of crashing, and keeps retrying on the next scheduled
+run rather than stopping. --interval overrides the schedule with a fixed
+wait between runs -- this is a testing knob only (e.g.
+--periodic --interval=30s against sandbox credentials to watch a few cycles
+without waiting up to 24h), not something to use in production.
+
 E*TRADE access tokens expire at midnight US Eastern time. Run this command
-again each trading day before starting the bot.
+again each trading day before starting the bot, or use --periodic to
+automate that.
 `
 }
 
 func (c *ETrade) run(ctx context.Context, args []string) error {
+	if c.periodic && !c.auto {
+		return fmt.Errorf("--periodic requires --auto")
+	}
+
 	if len(c.dataDir) == 0 {
 		c.dataDir = filepath.Join(os.Getenv("HOME"), ".tradebot")
 	}
@@ -134,8 +162,98 @@ func (c *ETrade) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("could not determine data-dir %q absolute path: %w", c.dataDir, err)
 	}
-
 	secretsPath := filepath.Join(dataDir, "secrets.json")
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	if c.periodic {
+		return c.runPeriodic(ctx, dataDir, secretsPath, scanner)
+	}
+	return c.runOnce(ctx, dataDir, secretsPath, scanner)
+}
+
+// runPeriodic loops runOnce forever, sleeping between runs (see
+// sleepUntilNextRun), until ctx is cancelled. Failures are alerted via
+// Pushover/Telegram (if configured) and retried on the next scheduled run
+// rather than stopping the loop.
+func (c *ETrade) runPeriodic(ctx context.Context, dataDir, secretsPath string, scanner *bufio.Scanner) error {
+	fmt.Println("Running --periodic: re-authorizing on a schedule until interrupted.")
+	for {
+		if err := c.runOnce(ctx, dataDir, secretsPath, scanner); err != nil {
+			fmt.Fprintf(os.Stderr, "etrade auto-login failed: %v\n", err)
+			alertOnFailure(ctx, secretsPath, fmt.Sprintf("E*TRADE auto-login failed: %v", err))
+		} else {
+			fmt.Println("Auto-login succeeded.")
+		}
+		if err := sleepUntilNextRun(ctx, c.interval); err != nil {
+			return err
+		}
+	}
+}
+
+// alertOnFailure best-effort sends a failure notification via Pushover
+// and/or Telegram, if configured in secrets.json. It never returns an
+// error -- a broken alert channel shouldn't stop the periodic loop.
+func alertOnFailure(ctx context.Context, secretsPath, msg string) {
+	secrets, err := server.SecretsFromFile(secretsPath)
+	if err != nil {
+		return
+	}
+	if secrets.Pushover != nil {
+		if client, cerr := pushover.New(secrets.Pushover); cerr == nil {
+			if serr := client.SendMessage(ctx, time.Now(), msg); serr != nil {
+				fmt.Fprintf(os.Stderr, "could not send pushover alert: %v\n", serr)
+			}
+		}
+	}
+	if secrets.Telegram != nil {
+		if client, cerr := telegram.New(ctx, kvmemdb.New(), secrets.Telegram); cerr == nil {
+			if serr := client.SendMessage(ctx, time.Now(), msg); serr != nil {
+				fmt.Fprintf(os.Stderr, "could not send telegram alert: %v\n", serr)
+			}
+			client.Close()
+		}
+	}
+}
+
+// sleepUntilNextRun blocks until the next scheduled --periodic run. If
+// interval > 0, it sleeps exactly that long (a testing knob to avoid
+// waiting up to 24h for the real schedule). Otherwise it sleeps until the
+// next ~00:05 America/New_York, mirroring etrade/product.go's
+// sleepUntilExtendedHoursOpen pattern -- E*TRADE tokens expire at midnight
+// ET, so that's when a fresh one is needed.
+func sleepUntilNextRun(ctx context.Context, interval time.Duration) error {
+	if interval > 0 {
+		select {
+		case <-time.After(interval):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return fmt.Errorf("could not load NY timezone: %w", err)
+	}
+	now := time.Now().In(loc)
+	year, month, day := now.Date()
+	next := time.Date(year, month, day, 0, 5, 0, 0, loc)
+	if !now.Before(next) {
+		next = next.Add(24 * time.Hour)
+	}
+	wait := next.Sub(now)
+	fmt.Printf("Sleeping until %s (%s away)...\n", next.Format(time.RFC1123), wait.Round(time.Second))
+	select {
+	case <-time.After(wait):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// runOnce runs the full manual or --auto authorization flow once and saves
+// the result to secrets.json.
+func (c *ETrade) runOnce(ctx context.Context, dataDir, secretsPath string, scanner *bufio.Scanner) error {
 	secrets, err := server.SecretsFromFile(secretsPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -149,8 +267,6 @@ func (c *ETrade) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	scanner := bufio.NewScanner(os.Stdin)
 
 	// Obtaining the access token is the only step that diverges: manual mode
 	// prints a URL and prompts for the verifier; auto mode drives a browser
