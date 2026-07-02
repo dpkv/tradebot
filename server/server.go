@@ -337,6 +337,13 @@ func (s *Server) Start(ctx context.Context) (status error) {
 				}
 			})
 		}
+
+		// Pick up freshly-written credentials (e.g. from 'setup etrade
+		// --auto') without a restart.
+		s.cg.Go(func(ctx context.Context) {
+			s.watchForCredentialReload(ctx, exchangeMap)
+		})
+
 		s.exchangeMap = exchangeMap
 	}
 
