@@ -448,27 +448,31 @@ func (c *ETrade) autoObtainAccessToken(ctx context.Context, dataDir, consumerKey
 		debugDir = filepath.Join(dataDir, "etrade-autologin-debug")
 	}
 
+	// Only offer manual-completion help when the browser window is actually
+	// visible (--headless=false) -- in headless/unattended runs there's no
+	// one to see the challenge, so a nil callback here lets Run fail fast
+	// with ErrChallengeRequiresManualCompletion instead of hanging on stdin
+	// input that will never come.
+	var promptForManualCompletion func(context.Context) error
+	if !c.headless {
+		promptForManualCompletion = func(context.Context) error {
+			fmt.Println("\nE*TRADE is asking for additional verification (e.g. choosing a phone number and/or entering a code).")
+			fmt.Println("Complete the remaining steps in the browser window, including clicking \"Accept\", then press Enter here to continue.")
+			scanner.Scan()
+			return nil
+		}
+	}
+
 	fmt.Println("\nLaunching browser to authorize access...")
 	accessToken, accessTokenSecret, err = autologin.Run(ctx, autologin.Options{
-		ConsumerKey:    consumerKey,
-		ConsumerSecret: consumerSecret,
-		Login:          *login,
-		Sandbox:        c.sandbox,
-		Headless:       c.headless,
-		ProfileDir:     profileDir,
-		DebugDir:       debugDir,
-		PromptForMFA: func(context.Context) (string, error) {
-			fmt.Println("\nE*TRADE sent a verification code via SMS.")
-			fmt.Print("Enter the verification code: ")
-			if !scanner.Scan() {
-				return "", fmt.Errorf("could not read verification code")
-			}
-			code := strings.TrimSpace(scanner.Text())
-			if code == "" {
-				return "", fmt.Errorf("verification code is required")
-			}
-			return code, nil
-		},
+		ConsumerKey:               consumerKey,
+		ConsumerSecret:            consumerSecret,
+		Login:                     *login,
+		Sandbox:                   c.sandbox,
+		Headless:                  c.headless,
+		ProfileDir:                profileDir,
+		DebugDir:                  debugDir,
+		PromptForManualCompletion: promptForManualCompletion,
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("autologin failed: %w", err)

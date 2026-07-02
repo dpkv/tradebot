@@ -1,13 +1,15 @@
 # E*TRADE Daily Re-Auth Automation — Plan
 
-## Status (2026-07-02): Phases 1-3 implemented, including credential
-hot-reload, native macOS (launchd) and Docker scheduling. Still blocked by a
-fraud-detection finding — see "Akamai bot detection" below — from being
-trusted for real unattended nightly use. Do not rebuild any of this from
-scratch; `etrade/autologin/`, `subcmds/setup/etrade.go --auto --periodic`,
-`exchange.CredentialsReloader`, and `docker/` all already exist and were
-tested (the browser flow against the live production site; Docker against
-local builds).
+## Status (2026-07-02): Phases 1-3 implemented and confirmed working
+end-to-end against production, both natively and in Docker (VNC-assisted
+one-time trust setup per environment, then unattended `--periodic` runs
+without a challenge). Do not rebuild any of this from scratch;
+`etrade/autologin/`, `subcmds/setup/etrade.go --auto --periodic`,
+`exchange.CredentialsReloader`, and `docker/` all already exist and are
+proven to work. The Akamai bot-detection risk (see below) is still real and
+unresolved as a *risk*, but no longer blocking -- both environments are
+running successfully today; the risk is about long-term reliability, not
+"does this work."
 
 ## Problem
 E*TRADE OAuth 1.0a access tokens expire at midnight America/New_York regardless
@@ -97,30 +99,51 @@ This is unexplored — nobody has checked yet whether this even exists.
   1. `OAuthRequestToken()` (`etrade/setup.go`, reused as-is)
   2. Launch persistent-context browser, navigate to
      `us.etrade.com/e/t/etws/authorize?key=...&token=...`
-  3. Fill login form — username field needed `GetByRole("textbox", ...)`
-     with exact match, not `GetByLabel`, because "User ID" also matches the
-     "Remember User ID" checkbox's accessible name
-  4. Handle MFA via a stdin prompt if E*TRADE challenges it (selectors for
-     this path are still unverified — see Phase 5)
-  5. Click Accept (`GetByRole("button", {Name: "Accept"})` — confirmed
-     working)
-  6. Scrape verifier PIN: it's the page's sole
+  3. Check whether the login form is even present (`isUsernameFieldVisible`,
+     10s wait) before filling it -- a persistent browser context can
+     already have an active, still-logged-in E*TRADE session from a
+     previous run, in which case navigating to the authorize URL skips the
+     login form entirely and lands straight on Accept (found 2026-07-02,
+     see Docker section below). If present, fill it — username field needed
+     `GetByRole("textbox", ...)` with exact match, not `GetByLabel`, because
+     "User ID" also matches the "Remember User ID" checkbox's accessible
+     name.
+  4. Check whether Accept is visible (`isAcceptVisible`, 10s wait). If not,
+     hand the rest of the flow to a human rather than automating each
+     challenge variant (see below) — otherwise click Accept
+     (`GetByRole("button", {Name: "Accept"})` — confirmed working)
+  5. Scrape verifier PIN: it's the page's sole
      `<input type="text" value="CODE\n">` with no label/id, matched via
      `Locator("input[type='text']")` + trim (an earlier regex-based guess
      over full page content was wrong — it grabbed an unrelated date string)
-  7. `OAuthAccessToken(verifier)` (`etrade/setup.go`, reused as-is)
-  8. Caller (`setup etrade --auto`) writes `AccessToken`/`AccessTokenSecret`
+  6. `OAuthAccessToken(verifier)` (`etrade/setup.go`, reused as-is)
+  7. Caller (`setup etrade --auto`) writes `AccessToken`/`AccessTokenSecret`
      into `secrets.json`, resolving `AccountIDKey` via `OAuthListAccounts` if
      not already stored (accountIdKey is opaque, not the human-readable
      account number, so this requires an authenticated API lookup — cannot
      just echo `--account-id` back)
-- **Blocked by Akamai bot detection at the login step (see section above)**
-  before this can be trusted for real nightly use. The code path itself
-  works when the block doesn't trigger.
-- Still unverified: MFA-challenge selectors (`mfaCodeLabel`,
-  `rememberDeviceLabel`, `mfaSubmitButtonName` in `autologin.go`) — no test
-  run has actually triggered the SMS challenge yet, since "remember this
-  device" was already active on the test account.
+- **No longer blocked by Akamai bot detection for day-to-day use** (see
+  Status at top) -- confirmed working end-to-end, repeatedly, both natively
+  and in Docker. The risk described in the section above is real and worth
+  keeping an eye on, but it is not currently preventing this from running.
+- **Challenge handling redesigned after real testing (2026-07-02):** the
+  first Docker test run (different browser fingerprint than the native
+  profile that had "remember this device" trust) actually triggered a
+  challenge — but it turned out to be a **two-step identity-verification
+  flow** (choose a phone number + click "Send Code", *then* presumably a
+  code-entry field we still haven't seen), not the single SMS-code prompt
+  originally assumed. Rather than keep automating each newly-discovered
+  challenge variant one at a time (selectors for the code-entry step are
+  still unverified and may never be, if E*TRADE has other variants too),
+  `Run` now just checks whether Accept is visible after login
+  (`isAcceptVisible`); if not, it calls
+  `Options.PromptForManualCompletion` (wired in `subcmds/setup/etrade.go`
+  only when `--headless=false`) and hands the *entire* remaining flow —
+  phone choice, code entry, clicking Accept, everything — to a human in the
+  visible browser window, resuming only once they signal completion (Enter
+  keypress) to scrape the verifier directly. `ErrChallengeRequiresManualCompletion`
+  surfaces instead of hanging if no callback is available (headless/
+  unattended runs).
 
 ## Phase 2 — Credential storage — IMPLEMENTED (2026-07-01)
 - Decided: separate `etrade-login.json` (0600), not an extension of
@@ -216,10 +239,11 @@ Playwright/Chromium at all (same isolation goal as Phase 1):
   Debian runtime stage runs `playwright install --with-deps chromium` at
   *build* time (bakes the browser + its apt dependencies into the image, no
   per-container-start download). `docker/tradebot-etrade-autologin/
-  entrypoint.sh` wraps the command in `xvfb-run` and hardcodes
-  `setup etrade --auto --periodic --headless=false`.
+  entrypoint.sh` starts `Xvfb` and `x11vnc` directly (see below for why not
+  `xvfb-run`), then hardcodes `setup etrade --auto --periodic
+  --headless=false`.
   **Verified:** image builds cleanly; both headless and non-headless
-  Chromium launch successfully under `xvfb-run` inside the container with no
+  Chromium launch successfully under Xvfb inside the container with no
   missing-shared-library or X-connection errors (smoke-tested directly, not
   just build success).
 - `docker/docker-compose.etrade.yml` wires both services to one shared
@@ -233,15 +257,67 @@ Playwright/Chromium at all (same isolation goal as Phase 1):
   `docker-etrade-*` targets for the full lifecycle — `build`/`up`/`down`/
   `restart`/`ps`/`config`, per-service log tailing, a browser-free manual
   bootstrap (`docker-etrade-bootstrap`, prints a URL + waits for the
-  verifier — deliberately not `--auto`, since a first `--auto` login is
-  easier to debug/watch natively than inside a container), `--set-login`,
+  verifier — deliberately not `--auto`, so getting OAuth credentials into
+  `secrets.json` never depends on Chromium/Xvfb/VNC being set up correctly
+  first; `--auto` bootstrap via VNC works too, see below, but this simpler
+  path has no browser-environment dependencies at all), `--set-login`,
   a foreground `--interval` test knob (`docker-etrade-test-interval`), and
   guarded `clean`/`clean-data` targets. Run `make help` for the full list.
   All targets dry-run verified, including the required-variable guards.
-- **Not yet done:** actually running the real `--auto` flow inside Docker
-  against production E*TRADE (only the infrastructure — build, Chromium
-  launch, compose wiring — has been verified; the Akamai risk from the
-  section above applies identically here, Docker changes nothing about it).
+- **Real test run against production (2026-07-02):** first attempt hung
+  indefinitely with zero log output -- `docker top` showed Xvfb running but
+  no `tradebot` process at all after 3+ minutes. Root cause: `xvfb-run`'s
+  own internal readiness-wait logic never handed off to the wrapped command
+  in this image, even though Xvfb itself started fine. Fixed by having
+  `entrypoint.sh` start Xvfb directly and poll for the `/tmp/.X11-unix/X99`
+  socket itself instead of relying on `xvfb-run`'s wrapper. Rebuilt and
+  re-verified: `tradebot` now launches immediately and reaches the real
+  login flow. That same run is what surfaced the two-step
+  identity-verification challenge described above -- so Docker didn't just
+  get verified, it's what found the next real gap.
+- **"Remember this device" does NOT transfer via a shared browser profile
+  across different OS/Chromium builds (confirmed 2026-07-02):** tested
+  directly -- ran `--auto` natively (macOS Chromium) immediately after a
+  fresh native login succeeded (no challenge, trusted), then ran the exact
+  same data dir / browser profile through Docker's Linux Chromium moments
+  later. Docker still hit the identity-verification challenge. This answers
+  Phase 0's open question: trust is **not purely cookie-based** -- it's
+  tied to something about the browser/OS environment itself (User-Agent,
+  platform fingerprint, or similar) that differs between a native macOS
+  Chromium and a Linux Chromium under Docker, even with byte-identical
+  cookies/local storage.
+- **VNC added so a human can complete a challenge inside Docker at all:**
+  since Xvfb has no viewer, `PromptForManualCompletion` (see Phase 1 above)
+  was previously unreachable in practice from Docker -- there was nothing
+  to look at. `docker/tradebot-etrade-autologin/Dockerfile` now installs
+  `x11vnc`, and `entrypoint.sh` attaches it to the same Xvfb display on
+  `VNC_PORT` (default 5900 -- a single env var threaded through
+  `Makefile.etrade` (`export VNC_PORT ?= 5900`), `docker-compose.etrade.yml`
+  (both the port mapping and the container's environment), the
+  Dockerfile's `EXPOSE` (documentation only), and `entrypoint.sh`, rather
+  than hardcoding the port number in each; override with
+  `make ... VNC_PORT=6001` if 5900 is taken). Published bound to
+  `127.0.0.1` only regardless of password -- never reachable from the
+  network either way. Set `VNC_PASSWORD` in the host environment before
+  `make docker-etrade-*`: macOS Screen Sharing was found to refuse to
+  connect with a blank password field even when the server allows
+  no-password access (its "Sign In" button stays disabled until something
+  is typed), so a real password is the practical default here, not just
+  defense in depth. Connect from macOS with the built-in Screen Sharing
+  app: `make docker-etrade-vnc`, entering the same `VNC_PASSWORD`.
+  Verified: `x11vnc` starts in password mode and
+  the port is reachable from the host when the container is run with
+  `--service-ports` (`docker compose run` doesn't publish a service's
+  normal ports otherwise -- `docker-etrade-test-interval` and
+  `docker-etrade-set-login` in `Makefile.etrade` both pass it now).
+- **Confirmed (2026-07-02): completing the challenge once inside Docker via
+  VNC establishes lasting trust for Docker's own environment.** After one
+  manual completion, subsequent `--periodic` runs go straight through with
+  no challenge -- closing the loop this whole VNC effort was for. Combined
+  with the earlier finding, the full picture is: trust is per-environment
+  (native macOS and Docker's Linux Chromium each need their own one-time
+  manual completion), but once established it holds for that environment's
+  own subsequent runs, same as native.
 
 ## Phase 4 — Resilience
 - Screenshot + page HTML dump on failure: **implemented** — every
@@ -261,9 +337,12 @@ Playwright/Chromium at all (same isolation goal as Phase 1):
   and fixed (see Phase 1). Also surfaced the Akamai finding above, which
   wasn't anticipated by the original plan.
 - Run alongside the manual fallback for several nights before trusting it
-  unattended: **not started** — blocked on deciding whether to keep pursuing
-  this approach at all, given the Akamai finding, or to prioritize the
-  API-alternative TODO above first.
+  unattended: **in progress, promising** — confirmed working for multiple
+  consecutive `--periodic` runs both natively and in Docker (2026-07-02),
+  no challenge after the initial per-environment trust setup. Still short
+  of "several nights" -- worth continued unattended observation before
+  fully trusting it, especially since the Akamai block was already observed
+  to be probabilistic, not deterministic (see above).
 
 ## Biggest Risk
 ~~Phase 0 / MFA.~~ Resolved: "remember this device" skips SMS MFA on

@@ -30,7 +30,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tzdata \
         xvfb \
         xauth \
+        x11vnc \
     && rm -rf /var/lib/apt/lists/*
+
+# x11vnc lets a human watch/control the virtual display from outside the
+# container -- needed because "remember this device" turned out to depend
+# on more than shared cookies (see etrade/AUTOLOGIN_PLAN.md): a login
+# challenge inside this container's Chromium can't be completed any other
+# way, since Xvfb itself has no viewer. EXPOSE here is documentation only
+# (it doesn't control what actually gets published); the real port is
+# entrypoint.sh's VNC_PORT env var (default 5900, same default as this
+# ARG) together with docker-compose.etrade.yml's `ports:` mapping -- all
+# three must agree if ever changed from the default.
+ARG VNC_PORT=5900
+EXPOSE $VNC_PORT
 
 COPY --from=builder /out/tradebot /usr/local/bin/tradebot
 COPY --from=builder /out/playwright /usr/local/bin/playwright
