@@ -12,8 +12,8 @@ require (
 	github.com/go-telegram/bot v1.15.0
 	github.com/google/uuid v1.4.0
 	github.com/gorilla/websocket v1.4.0
+	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/nightlyone/lockfile v1.0.0
-	github.com/playwright-community/playwright-go v0.6000.0
 	github.com/shirou/gopsutil/v4 v4.25.6
 	github.com/shopspring/decimal v1.3.1
 	github.com/visvasity/cli v0.0.0-20250729021438-02a4793adfad

@@ -18,7 +18,7 @@ COPY . .
 # build` from our own go.mod means the driver/browser versions always match
 # what etrade/autologin actually links against).
 RUN CGO_ENABLED=0 go build -o /out/tradebot .
-RUN CGO_ENABLED=0 go build -o /out/playwright github.com/playwright-community/playwright-go/cmd/playwright
+RUN CGO_ENABLED=0 go build -o /out/playwright github.com/mxschmitt/playwright-go/cmd/playwright
 
 # Runtime stage. debian:bookworm-slim (not Alpine) because Playwright's
 # Chromium download only officially supports glibc, not Alpine's musl --

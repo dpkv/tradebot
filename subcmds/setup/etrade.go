@@ -111,7 +111,7 @@ challenge again after the first; if one does appear, this command pauses and
 prompts for the code, same as the manual verifier prompt. Requires the
 Playwright Chromium browser to be installed once via:
 
-  $ go run github.com/playwright-community/playwright-go/cmd/playwright install chromium
+  $ go run github.com/mxschmitt/playwright-go/cmd/playwright install chromium
 
 IMPORTANT: E*TRADE's login page runs Akamai bot detection. Testing found
 --headless=true (Playwright's default browser mode) is reliably blocked

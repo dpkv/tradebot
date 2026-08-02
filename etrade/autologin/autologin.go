@@ -16,7 +16,7 @@ import (
 	"strings"
 
 	"github.com/bvk/tradebot/etrade"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 // ErrChallengeRequiresManualCompletion is returned when E*TRADE shows
