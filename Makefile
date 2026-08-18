@@ -70,12 +70,16 @@ docker-build-ibkr-cp-gw:
 	$(DOCKER) build -f docker/ibkr-cp-gw/Dockerfile -t $(IMAGE_IBKR_CP_GW):latest .
 
 # Run IBKR Client Portal Gateway: map host PORT to container 5000.
-# Usage: make docker-run-ibkr-cp-gw PORT=3000 CNAME=ibkr-cp-gw
+# The login bot inside the container needs IBKR_USERNAME, IBKR_PASSWORD, and
+# IBKR_TOTP_SECRET; pass them via ENV_FILE (docker --env-file format: KEY=VALUE per line).
+# Usage: make docker-run-ibkr-cp-gw PORT=3000 CNAME=ibkr-cp-gw ENV_FILE=/path/to/ibkr.env
 .PHONY: docker-run-ibkr-cp-gw
 docker-run-ibkr-cp-gw:
-	@test -n "$(PORT)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
-	@test -n "$(CNAME)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name>" >&2; exit 1)
-	$(DOCKER) run -d --restart unless-stopped --hostname "$(CNAME)" --name "$(CNAME)" $(DOCKER_TZ_FLAGS) -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
+	@test -n "$(PORT)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name> ENV_FILE=<path-to-env-file>" >&2; exit 1)
+	@test -n "$(CNAME)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name> ENV_FILE=<path-to-env-file>" >&2; exit 1)
+	@test -n "$(ENV_FILE)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name> ENV_FILE=<path-to-env-file>" >&2; exit 1)
+	$(DOCKER) run -d --restart unless-stopped --hostname "$(CNAME)" --name "$(CNAME)" $(DOCKER_TZ_FLAGS) \
+		--env-file "$(ENV_FILE)" -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
 
 # Run tradebot image with data directory on the host mounted at /root/.tradebot.
 # PORT maps host port to container 10000 (tradebot server default).
