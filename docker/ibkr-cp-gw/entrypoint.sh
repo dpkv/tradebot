@@ -16,7 +16,19 @@ run_gateway_loop() {
 
 run_gateway_loop &
 
+# A prior Xvfb instance's lock/socket can survive a container restart (the
+# writable filesystem persists across --restart policy restarts), which
+# would otherwise make this Xvfb fail to bind display :99.
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+
 Xvfb :99 -screen 0 1280x1024x24 &
 export DISPLAY=:99
+
+# Backgrounding Xvfb doesn't mean it's ready yet; wait for its socket before
+# starting the browser, or the first launch races Xvfb's own startup.
+for i in $(seq 1 50); do
+    [ -e /tmp/.X11-unix/X99 ] && break
+    sleep 0.1
+done
 
 exec python3 -u /opt/ibkr-gateway/login.py
