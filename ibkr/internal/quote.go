@@ -3,6 +3,7 @@
 package internal
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/bvk/tradebot/exchange"
@@ -77,12 +78,47 @@ func (q *Quote) PricePoint() (decimal.Decimal, gobs.RemoteTime) {
 	return q.Last, t
 }
 
+// knownPricePrefixes are the single-letter status codes IBKR prepends to a
+// price field's numeric value, per the Client Portal Web API docs for field
+// 31 (last price):
+//
+//	C - prior session's closing price
+//	H - trading halted
+var knownPricePrefixes = map[byte]bool{
+	'C': true,
+	'H': true,
+}
+
+// parsePriceField parses an IBKR price-field string, stripping a known
+// status prefix (see knownPricePrefixes) before parsing the numeric value.
+// An unrecognized prefix is logged and treated as unparseable rather than
+// guessed at, since decimal.NewFromString would otherwise fail silently and
+// a real price would be mistaken for "no data".
+func parsePriceField(field, s string) decimal.Decimal {
+	if s == "" {
+		return decimal.Zero
+	}
+	if (s[0] < '0' || s[0] > '9') && s[0] != '-' && s[0] != '.' {
+		if !knownPricePrefixes[s[0]] {
+			slog.Warn("ibkr: unrecognized price-field prefix", "field", field, "value", s)
+			return decimal.Zero
+		}
+		s = s[1:]
+	}
+	v, err := decimal.NewFromString(s)
+	if err != nil {
+		slog.Warn("ibkr: could not parse price field", "field", field, "value", s, "err", err)
+		return decimal.Zero
+	}
+	return v
+}
+
 // NewQuoteFromAPI converts an APISnapshot into a Quote. Returns nil if no
 // usable price data is present (e.g. snapshot not yet populated by gateway).
 func NewQuoteFromAPI(a *APISnapshot) *Quote {
-	bid, _ := decimal.NewFromString(a.BidStr)
-	ask, _ := decimal.NewFromString(a.AskStr)
-	last, _ := decimal.NewFromString(a.LastStr)
+	bid := parsePriceField("bid", a.BidStr)
+	ask := parsePriceField("ask", a.AskStr)
+	last := parsePriceField("last", a.LastStr)
 
 	if bid.IsZero() && ask.IsZero() && last.IsZero() {
 		return nil
