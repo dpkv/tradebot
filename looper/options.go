@@ -82,14 +82,17 @@ func (v *Looper) setFreezeOption(opt, val string) (string, error) {
 		return "", nil
 	}
 
-	if value == "buy" || value == "buys" || value == "both" {
-		v.freezeBuysOpt = true
-	}
-	if value == "sell" || value == "sells" || value == "both" {
-		v.freezeSellsOpt = true
-	}
-	if value == "none" {
+	switch value {
+	case "buy", "buys":
+		v.freezeBuysOpt, v.freezeSellsOpt = true, false
+	case "sell", "sells":
+		v.freezeBuysOpt, v.freezeSellsOpt = false, true
+	case "both":
+		v.freezeBuysOpt, v.freezeSellsOpt = true, true
+	case "none":
 		v.freezeBuysOpt, v.freezeSellsOpt = false, false
+	default:
+		return "", fmt.Errorf("invalid value %q for the freeze-option", value)
 	}
 	return "undo:" + current, nil
 }
