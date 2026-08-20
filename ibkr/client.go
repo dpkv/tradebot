@@ -574,12 +574,16 @@ func (c *Client) GetOrders(ctx context.Context) ([]*internal.Order, error) {
 	return orders, nil
 }
 
-// unsubscribeAllMarketData calls the gateway's unsubscribeall endpoint to
-// drop all active market data subscriptions. The next snapshot poll will
-// re-establish them. This is used to recover from a stale subscription where
-// the gateway stops returning price data without returning an error.
-func (c *Client) unsubscribeAllMarketData(ctx context.Context) error {
-	return c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/marketdata/unsubscribeall", nil, nil)
+// unsubscribeMarketData calls the gateway's unsubscribe endpoint to drop the
+// active market data subscription for a single conid. The next snapshot poll
+// for that conid will re-establish it. This is used to recover from a stale
+// subscription where the gateway stops returning price data without
+// returning an error, without disturbing other symbols' subscriptions —
+// unlike unsubscribeall, which would reset every watched symbol at once and
+// let their independent recovery timers repeatedly stomp on each other.
+func (c *Client) unsubscribeMarketData(ctx context.Context, conid int) error {
+	body := map[string]int{"conid": conid}
+	return c.doRequest(ctx, http.MethodPost, "/v1/api/iserver/marketdata/unsubscribe", body, nil)
 }
 
 // FetchMidPrice makes a one-off market data snapshot request for the given
@@ -744,9 +748,12 @@ func (c *Client) goWatchPrices(ctx context.Context, symbol string, conid int) {
 			slog.Debug("ibkr: price snapshot polled", "symbol", symbol, "snapshots", len(snapshots), "published", nPublished)
 
 			// If no valid price has been received for stalePriceWarnInterval,
-			// unsubscribe all market data so the next poll re-establishes the
-			// subscription. This recovers from the CP Gateway silently dropping
-			// the subscription (common on paper accounts).
+			// unsubscribe this symbol's market data so the next poll
+			// re-establishes the subscription. This recovers from the CP Gateway
+			// silently dropping the subscription (common on paper accounts).
+			// Scoped to this conid only — unsubscribing everything would reset
+			// every watched symbol at once, and their independent recovery
+			// timers would keep stomping on each other's subscriptions.
 			if nPublished == 0 && time.Since(lastStaleWarn) >= stalePriceWarnInterval {
 				since := lastPublished
 				if since.IsZero() {
@@ -754,7 +761,7 @@ func (c *Client) goWatchPrices(ctx context.Context, symbol string, conid int) {
 				}
 				if time.Since(since) >= stalePriceWarnInterval {
 					slog.Warn("ibkr: no price data from gateway — re-subscribing market data", "symbol", symbol, "last-published", lastPublished, "since", since)
-					if err := c.unsubscribeAllMarketData(ctx); err != nil {
+					if err := c.unsubscribeMarketData(ctx, conid); err != nil {
 						slog.Warn("ibkr: could not unsubscribe market data (will retry)", "symbol", symbol, "err", err)
 					}
 					lastStaleWarn = time.Now()
