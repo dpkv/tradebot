@@ -8,8 +8,12 @@ set -euo pipefail
 run_gateway_loop() {
     cd /opt/ibkr-gateway
     while true; do
-        bin/run.sh root/conf.yaml
-        echo "CP Gateway exited (code $?), restarting in 2s..."
+        # `&& code=0 || code=$?` (not a bare call) so a non-zero exit here
+        # doesn't trip set -e and kill this whole loop instead of restarting
+        # the gateway — login.py restarts it by killing the process, so this
+        # happens routinely.
+        bin/run.sh root/conf.yaml && code=0 || code=$?
+        echo "CP Gateway exited (code $code), restarting in 2s..."
         sleep 2
     done
 }

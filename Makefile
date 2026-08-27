@@ -72,13 +72,16 @@ docker-build-ibkr-cp-gw:
 # Run IBKR Client Portal Gateway: map host PORT to container 5000.
 # The login bot inside the container needs IBKR_USERNAME, IBKR_PASSWORD, and
 # IBKR_TOTP_SECRET; pass them via ENV_FILE (docker --env-file format: KEY=VALUE per line).
+# --init puts tini at PID 1 so it reaps the Chrome subprocesses (crashpad,
+# zygote) that get reparented as zombies each time the login bot's browser
+# restarts — login.py itself never reaps processes it didn't spawn.
 # Usage: make docker-run-ibkr-cp-gw PORT=3000 CNAME=ibkr-cp-gw ENV_FILE=/path/to/ibkr.env
 .PHONY: docker-run-ibkr-cp-gw
 docker-run-ibkr-cp-gw:
 	@test -n "$(PORT)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name> ENV_FILE=<path-to-env-file>" >&2; exit 1)
 	@test -n "$(CNAME)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name> ENV_FILE=<path-to-env-file>" >&2; exit 1)
 	@test -n "$(ENV_FILE)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name> ENV_FILE=<path-to-env-file>" >&2; exit 1)
-	$(DOCKER) run -d --restart unless-stopped --hostname "$(CNAME)" --name "$(CNAME)" $(DOCKER_TZ_FLAGS) \
+	$(DOCKER) run -d --init --restart unless-stopped --hostname "$(CNAME)" --name "$(CNAME)" $(DOCKER_TZ_FLAGS) \
 		--env-file "$(ENV_FILE)" -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
 
 # Run tradebot image with data directory on the host mounted at /root/.tradebot.
