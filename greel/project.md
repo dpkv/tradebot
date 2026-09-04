@@ -113,18 +113,20 @@ Assignment handover involves **no exchange mutation** — the broker already
 moved the stock; ours is pure bookkeeping:
 
 1. **Detect**: GreelLadder's positions poll observes the assignment (option
-   position gone / stock delta; event key = broker transaction ID, or a
+   position gone / stock delta; fact key = broker transaction ID, or a
    deterministic synthetic key from contract ID + expiry).
-2. **Apply in one KV transaction**: append the event (idempotency key) to the
-   owning greeler's log. Nothing else — no state to patch, since everything
-   downstream is derived.
-3. **Converge**: the greeler's next iteration derives the new posture and
-   creates the appropriate limiters, which place real orders through
-   limiter's existing idempotent machinery.
+2. **Apply in one KV transaction, touching one record**: the assigned
+   position reports the fact on itself (shares delta, strike, fact key).
+   Nothing else — no greeler-level ledger to patch, since everything
+   downstream, including the greeler's own posture, is derived by walking
+   its positions and reading what each one reports.
+3. **Converge**: the greeler's next iteration derives the new posture by
+   folding over its positions and creates the appropriate limiters, which
+   place real orders through limiter's existing idempotent machinery.
 
 Crash windows: before commit → the poll re-detects from broker truth and
 reprocesses; after commit → children resume idempotently; duplicate poll
-delivery → rejected by the idempotency key.
+delivery → rejected because the position's fact is already set.
 
 Post-assignment postures (derived, not restored):
 
@@ -300,7 +302,7 @@ developer checkpoints at every step.
 
 ## Story Placeholders
 
-- [ ] `gobs/greel.go` story — TBD
+- [ ] `gobs/greel.go` story — drafted in [gobs-story.md](gobs-story.md), awaiting review
 - [ ] `optlimiter` story — TBD
 - [ ] `optpos` story — TBD
 - [ ] `greeler` story — TBD
