@@ -223,6 +223,16 @@ func (p *Product) placeOrder(ctx context.Context, clientID uuid.UUID, side strin
 // result in clientIDStatusMap so subsequent calls can use the fast path —
 // this is important for the restart case where clientIDStatusMap is initially
 // empty and the limiter reuses an active order from a previous run.
+//
+// The slow path retries a few times before concluding an order is missing.
+// IBKR's live-orders endpoint can return 200 OK with an incomplete list for a
+// short window right after the gateway session reconnects, while its
+// internal order cache is still warming up — not just the 503 that
+// client.GetOrders already retries on. A caller here has already excluded
+// orders it considers done, so every miss represents an order the caller
+// still believes is live; treating a single miss as proof of cancellation
+// caused fetchOrderMap to abandon still-open orders and place duplicates
+// for them (see 2026-09-14 incident).
 func (p *Product) findOrder(ctx context.Context, orderID int64) (*internal.Order, error) {
 	// Fast path: clientIDStatusMap.
 	for cid, cstatus := range p.clientIDStatusMap.Range {
@@ -237,19 +247,37 @@ func (p *Product) findOrder(ctx context.Context, orderID int64) (*internal.Order
 	}
 
 	// Slow path: poll the live gateway.
-	orders, err := p.client.GetOrders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, o := range orders {
-		if o.OrderID == orderID {
-			if cid := o.ClientID(); cid != uuid.Nil {
-				cstatus, _ := p.clientIDStatusMap.LoadOrStore(cid, newClientIDStatus())
-				cstatus.mu.Lock()
-				cstatus.order = o
-				cstatus.mu.Unlock()
+	const maxMisses = 3
+	const missRetryDelay = 2 * time.Second
+	for attempt := 0; ; attempt++ {
+		orders, err := p.client.GetOrders(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, o := range orders {
+			if o.OrderID == orderID {
+				if attempt > 0 {
+					slog.Warn("ibkr: order found in live orders list after retry — earlier miss(es) were a stale/incomplete snapshot, not a real cancellation", "orderID", orderID, "attempt", attempt+1)
+				}
+				if cid := o.ClientID(); cid != uuid.Nil {
+					cstatus, _ := p.clientIDStatusMap.LoadOrStore(cid, newClientIDStatus())
+					cstatus.mu.Lock()
+					cstatus.order = o
+					cstatus.mu.Unlock()
+				}
+				return o, nil
 			}
-			return o, nil
+		}
+
+		if attempt+1 >= maxMisses {
+			slog.Warn("ibkr: order not found in live orders list after all retries — treating as not-found", "orderID", orderID, "attempts", attempt+1)
+			break
+		}
+		slog.Warn("ibkr: order not found in live orders list (will retry)", "orderID", orderID, "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		case <-time.After(missRetryDelay):
 		}
 	}
 

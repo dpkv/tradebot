@@ -326,6 +326,7 @@ func (v *Limiter) fetchOrderMap(ctx context.Context, product exchange.Product) (
 			}
 			// Exchanges may not keep the cancelled orders with no executed
 			// value. So, assign canceled status to non-existing orders.
+			slog.Warn("order not found on exchange — marking as cancelled locally", "limiter", v, "point", v.point, "order-id", id, "create-time", order.CreateTime.Time)
 			order.Done = true
 			order.DoneReason = "NOTFOUND/CANCELED"
 			continue
