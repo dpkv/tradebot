@@ -134,6 +134,22 @@ func (v *Limiter) dupOrderMap() map[string]*exchange.SimpleOrder {
 	return dup
 }
 
+// LiveOrderIDs returns the exchange server-order-IDs that this limiter's
+// locally persisted state still considers active (not done). Used by
+// broker-side reconciliation checks to find orders the exchange reports as
+// live but that no limiter is tracking anymore, e.g. after fetchOrderMap
+// mistakenly marks a still-open order as cancelled because it was briefly
+// missing from an exchange's live-orders snapshot.
+func (v *Limiter) LiveOrderIDs() []string {
+	var ids []string
+	for id, order := range v.dupOrderMap() {
+		if !order.Done {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (v *Limiter) StartTime() time.Time {
 	var min time.Time
 	for _, order := range v.dupOrderMap() {

@@ -330,6 +330,11 @@ func (s *Server) Start(ctx context.Context) (status error) {
 					slog.Error("could not alert on low asset balance (check stopped)", "exchange", exchange.ExchangeName(), "err", err)
 				}
 			})
+			s.cg.Go(func(ctx context.Context) {
+				if err := s.watchForUntrackedOrders(ctx, exchange); err != nil {
+					slog.Error("could not check for untracked broker orders (check stopped)", "exchange", exchange.ExchangeName(), "err", err)
+				}
+			})
 		}
 		s.exchangeMap = exchangeMap
 	}
