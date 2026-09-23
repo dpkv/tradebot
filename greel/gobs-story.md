@@ -43,10 +43,13 @@ separate grid stints over time, interrupted by wheel excursions. `GridLevels`
 holds only the static per-level config (`Pair`); the append-only
 limiter history for level *i* during grid epoch *j* is
 `Epochs[j].LevelLimiterIDs[i]`. A level's *entire* history, if ever needed,
-is the concatenation of that slice across every grid epoch in order — the
-same walk over `Epochs` that scenario 5's assignment fold already does,
-just accumulating a second thing per grid entry instead of a first thing
-per wheel entry.
+is the concatenation of that slice across every grid epoch in order.
+
+This is one loop over `Epochs`, not two: the same single pass also derives
+assignment history in scenario 5, just picking up different data depending
+on each entry's `Mode` — a wheel entry contributes its position's
+`Assignment` fact (scenario 5), a grid entry contributes a slice of level
+history (here).
 
 **Persisted:** `GridLevels`, static config only (`Pair` per level, reusing
 `WallerStateV2.TradePairs`' shape: `[]*Pair`, no wrapper struct needed once
@@ -319,7 +322,7 @@ Follows house style: version-wrapped (`XState { V1 *XStateV1 }`) with an
 `Options map[string]string` on job states for `SetOption` support.
 
 ```go
-// Copyright (c) 2026 BVK Chaitanya
+// Copyright (c) 2026 Deepak Vankadaru
 
 package gobs
 
