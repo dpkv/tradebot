@@ -250,23 +250,33 @@ type Position struct {
     outcomeAt time.Time
 
     active *job.Job // the currently running leg, nil if none in flight
+
+    // Held at construction (New/Load), not re-passed to every method —
+    // decided, see decision #2. runtime builds each leg's trader.Runtime.
+    optEx exchange.OptionsExchange
+    db    kv.Database
+    msg   trader.Messenger
 }
 
-// newRuntime builds the trader.Runtime for one leg's OptLimiter.Run call —
+// runtime builds the trader.Runtime for one leg's OptLimiter.Run call —
 // same shape as Server.Runtime(product) in server/server.go, with Product
 // set to the optlimiter adapter instead of a spot product.
-func newRuntime(ex exchange.Exchange, db kv.Database, msg trader.Messenger, p exchange.Product) *trader.Runtime {
-    return &trader.Runtime{Exchange: ex, Database: db, Product: p, Messenger: msg}
+func (v *Position) runtime(p exchange.Product) *trader.Runtime {
+    return &trader.Runtime{Exchange: v.optEx, Database: v.db, Product: p, Messenger: v.msg}
 }
 
-func (v *Position) Open(ctx context.Context, fctx context.Context, optEx exchange.OptionsExchange, db kv.Database, msg trader.Messenger, c *Constraint) error {
+func New(uid, exchangeName, underlying string, selector ContractSelector, policy RollPolicy, optEx exchange.OptionsExchange, db kv.Database, msg trader.Messenger) *Position {
+    panic("unimplemented")
+}
+
+func (v *Position) Open(ctx context.Context, fctx context.Context, c *Constraint) error {
     panic("unimplemented") // scenario 1
 }
 
 // Check re-derives what should happen right now — expiry, then RollPolicy,
 // then acts. Called by the owning greeler every iteration while this
 // position is open; a no-op once Outcome is set by anyone (scenario 4).
-func (v *Position) Check(ctx context.Context, fctx context.Context, optEx exchange.OptionsExchange, db kv.Database, msg trader.Messenger) error {
+func (v *Position) Check(ctx context.Context, fctx context.Context) error {
     panic("unimplemented") // scenario 2
 }
 
@@ -274,7 +284,7 @@ func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
     panic("unimplemented")
 }
 
-func Load(ctx context.Context, uid string, r kv.Reader) (*Position, error) {
+func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelector, policy RollPolicy, optEx exchange.OptionsExchange, db kv.Database, msg trader.Messenger) (*Position, error) {
     panic("unimplemented") // scenario 5
 }
 ```
@@ -283,22 +293,33 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Position, error) {
 
 ## Open questions for this checkpoint
 
-1. **How Layer 1 knobs reach the `ContractSelector`/`RollPolicy`.**
-   Proposed above: injected at construction (closures over config), not
-   passed per-call — `Constraint` carries only what genuinely varies call
-   to call (the greeler's own levels). Not yet reviewed: whether presets
-   (`--wheel-profile=conservative|balanced|aggressive`, Layer 0) construct
-   these two interfaces directly, or configure a shared knob struct both
-   read from.
-2. **`newRuntime`'s five parameters, repeated at every call site.** Passing
-   `(ex, db, msg)` into both `Open` and `Check` every time is a plausible
-   sign `Position` should just hold them at construction instead (a
-   `runtimeFactory` field) rather than threading them through every method
-   — deferred to implementation, doesn't change any persisted shape.
-3. **Does `Check` need to be told "spot is far / near" at all, or is that
+## Decisions made at this checkpoint
+
+1. **Layer 1 knobs reach `ContractSelector`/`RollPolicy` via one shared
+   knob struct, injected at construction — decided.** Presets (Layer 0,
+   `--wheel-profile=conservative|balanced|aggressive`) are "named bundles
+   of Layer-1 knobs" per project.md's own phrase — one bundle, not two
+   separately-shaped ones. A preset constructs a single knob struct
+   (`target-delta`, `dte-range`, `min-premium-yield`, `min-open-interest`,
+   `max-spread-pct`, `roll-dte`, `profit-take-pct`, `loss-close-multiple`),
+   and both the `ContractSelector` and `RollPolicy` implementations close
+   over it — avoids two separate configs drifting apart for knobs that
+   conceptually belong to the same preset (e.g. `dte-range` plausibly
+   matters to both initial selection and roll timing).
+2. **`Position` holds its exchange/db/messenger dependencies at
+   construction, not per-call — decided.** `New`/`Load` take them once;
+   `Open`/`Check` shrink to just the arguments that vary per call
+   (`Constraint`, nothing). `runtime(p)` becomes a method reading the held
+   fields instead of a free function taking five parameters. Reflected in
+   the skeleton above.
+
+## Open questions for this checkpoint
+
+1. **Does `Check` need to be told "spot is far / near" at all, or is that
    entirely the greeler's problem?** As sketched, `Position` only reacts to
    expiry and `RollPolicy`'s verdict — it never looks at spot directly.
    That matches "the position doesn't own zone geometry," but means the
    greeler must already have decided wheel mode should continue before
-   calling `Check` at all — worth confirming once the `greeler` story
-   defines that call site precisely.
+   calling `Check` at all — deferred to the `greeler` story, which defines
+   that call site precisely; this is the one real open question left in
+   this module.

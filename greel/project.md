@@ -304,7 +304,7 @@ developer checkpoints at every step.
 
 - [x] `gobs/greel.go` story — drafted in [gobs-story.md](gobs-story.md), reviewed
 - [x] `optlimiter` story — drafted in [optlimiter-story.md](optlimiter-story.md), reviewed
-- [ ] `optpos` story — drafted in [optpos-story.md](optpos-story.md), awaiting review
+- [ ] `optpos` story — drafted in [optpos-story.md](optpos-story.md); one open item (does `Check` need spot info) deferred to the `greeler` story
 - [ ] `greeler` story — TBD
 - [ ] `greelladder` story — TBD
 
