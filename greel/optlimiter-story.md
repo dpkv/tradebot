@@ -150,8 +150,8 @@ is one atomic broker order across two contracts (`PriorContractID` →
 `ContractID`, one fill, one net credit/debit) — `exchange.OptionsProduct`
 can't express that; it's scoped to a single contract.
 
-**Resolution — approved:** add one narrow method to `exchange.OptionsExchange`
-(exchange/api.go) rather than inventing new plumbing:
+**Resolution — approved and implemented:** `exchange.OptionsExchange`
+(exchange/api.go) gained one narrow method, already committed:
 
 ```go
 type OptionsExchange interface {
@@ -160,24 +160,24 @@ type OptionsExchange interface {
     GetOptionsProduct(ctx context.Context, contractID string) (*gobs.OptionContract, error)
     OpenOptionsProduct(ctx context.Context, contractID string) (OptionsProduct, error)
 
-    // OpenRollProduct opens a two-contract roll: closing priorContractID
-    // and opening contractID as a single broker order. RollProduct
-    // satisfies exchange.Product directly — LimitSell places the roll at
-    // a net credit, LimitBuy at a net debit — so it needs no separate
-    // optlimiter adapter; a wrapped limiter.Limiter can trade it exactly
-    // like any other Product.
-    OpenRollProduct(ctx context.Context, priorContractID, contractID string) (RollProduct, error)
+    // OpenOptionsRollProduct opens a two-contract roll: closing
+    // priorContractID and opening contractID as a single atomic broker
+    // order (one fill, one net credit/debit). OptionsRollProduct is
+    // exchange.Product itself, so an unmodified limiter.Limiter can trade
+    // it directly: LimitSell places the roll for a net credit, LimitBuy
+    // for a net debit.
+    OpenOptionsRollProduct(ctx context.Context, priorContractID, contractID string) (OptionsRollProduct, error)
 }
 
-// RollProduct is exchange.Product, scoped to one roll order.
-type RollProduct = Product
+// OptionsRollProduct is exchange.Product, scoped to one roll order.
+type OptionsRollProduct = Product
 ```
 
-Because `RollProduct` is defined to be exactly `exchange.Product`'s shape
-(a type alias, not a new interface), a roll leg needs **no adapter code
-beyond `optlimiter` already having one** — `OptLimiter` for `Intent ==
+Because `OptionsRollProduct` is defined to be exactly `exchange.Product`'s
+shape (a type alias, not a new interface), a roll leg needs **no adapter
+code beyond `optlimiter` already having one** — `OptLimiter` for `Intent ==
 "roll"` wraps a `*limiter.Limiter` built directly against the
-`RollProduct`, with `productID` set to a synthetic key (e.g.
+`OptionsRollProduct`, with `productID` set to a synthetic key (e.g.
 `priorContractID + "->" + contractID`, matching the `cleanUID`-style prefix
 conventions already used elsewhere) since there's no single `ContractID`
 to check against. `point.Side()` here means something different than for a
@@ -189,9 +189,9 @@ This keeps the "optlimiter reuses limiter.Limiter, unmodified" decision
 (project.md decision-log #1) intact even for rolls — the new surface is
 entirely at the exchange layer (one method, one type alias), not in
 `limiter` or `optlimiter` itself. The `etrade` package implementing
-`OpenRollProduct` against E*TRADE's real multi-leg order API is separate,
-follow-on work — out of scope for this story, which only needs the
-interface to exist.
+`OpenOptionsRollProduct` against E*TRADE's real multi-leg order API is
+separate, follow-on work — out of scope for this story, which only needed
+the interface to exist.
 
 ### 7. Keyspace isolation: a prerequisite, not a detail
 
@@ -359,16 +359,20 @@ what the next stage fills in.
 
 ## Decisions made at this checkpoint
 
-1. **`OpenRollProduct`/`RollProduct` addition to `exchange/api.go` —
-   approved.** The one piece of this story that reaches outside
-   `optlimiter` itself, into an already-committed file — signed off in
-   scenario 6's shape (one new `OptionsExchange` method, `RollProduct` as a
-   type alias for `exchange.Product`, no new adapter code needed for roll
-   legs). The corresponding `etrade` implementation of `OpenRollProduct`
-   against E*TRADE's real multi-leg order API is separate follow-on work
-   this story doesn't cover.
+1. **`OpenOptionsRollProduct`/`OptionsRollProduct` addition to
+   `exchange/api.go` — approved and implemented.** The one piece of this
+   story that reaches outside `optlimiter` itself, into an already-
+   committed file — signed off and landed in scenario 6's shape (one new
+   `OptionsExchange` method, `OptionsRollProduct` as a type alias for
+   `exchange.Product`, no new adapter code needed for roll legs). Named to
+   match the package's existing `Options`-prefixed convention
+   (`OptionsProduct`, `OptionsExchange`, `OpenOptionsProduct`) rather than
+   the first-draft `RollProduct`/`OpenRollProduct`. The corresponding
+   `etrade` implementation of `OpenOptionsRollProduct` against E*TRADE's
+   real multi-leg order API is separate follow-on work this story doesn't
+   cover.
 2. **`ExchangeName()` accessor added to `exchange.OptionsProduct` —
-   approved.** A second, smaller addition to the same already-committed
+   approved and implemented.** A second, smaller addition to the same already-committed
    file: `OptionsProduct` gains `ExchangeName() string`, mirroring
    `Product`'s existing accessor. The adapter's own `ExchangeName()`
    becomes a straight passthrough (`p.wrapped.ExchangeName()`) rather than

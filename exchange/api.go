@@ -91,6 +91,8 @@ type OptionsProduct interface {
 	Expiry() time.Time
 	ContractSize() decimal.Decimal // shares per contract, typically 100
 
+	ExchangeName() string
+
 	GetPriceUpdates() (*topic.Receiver[PriceUpdate], error)
 	GetOrderUpdates() (*topic.Receiver[OrderUpdate], error)
 
@@ -150,4 +152,15 @@ type OptionsExchange interface {
 
 	// OpenOptionsProduct opens a specific options contract for active trading.
 	OpenOptionsProduct(ctx context.Context, contractID string) (OptionsProduct, error)
+
+	// OpenOptionsRollProduct opens a two-contract roll: closing
+	// priorContractID and opening contractID as a single atomic broker
+	// order (one fill, one net credit/debit). OptionsRollProduct is
+	// exchange.Product itself, so an unmodified limiter.Limiter can trade
+	// it directly: LimitSell places the roll for a net credit, LimitBuy
+	// for a net debit.
+	OpenOptionsRollProduct(ctx context.Context, priorContractID, contractID string) (OptionsRollProduct, error)
 }
+
+// OptionsRollProduct is exchange.Product, scoped to one roll order.
+type OptionsRollProduct = Product
