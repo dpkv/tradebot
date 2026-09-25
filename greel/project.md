@@ -303,7 +303,7 @@ developer checkpoints at every step.
 ## Story Placeholders
 
 - [x] `gobs/greel.go` story — drafted in [gobs-story.md](gobs-story.md), reviewed
-- [ ] `optlimiter` story — TBD
+- [ ] `optlimiter` story — drafted in [optlimiter-story.md](optlimiter-story.md), awaiting review
 - [ ] `optpos` story — TBD
 - [ ] `greeler` story — TBD
 - [ ] `greelladder` story — TBD
