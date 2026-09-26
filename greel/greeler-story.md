@@ -202,6 +202,15 @@ func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) error {
     //   }
 }
 
+// DerivedStock is the greeler's total current stock inventory — scenario
+// 1's per-level fold, summed across all levels. Exported so greelladder's
+// positions-poll fallback reconciliation (greelladder-story.md scenario 2)
+// can compare it against the account's actual stock holding, without
+// reaching into greeler's own derivation internals.
+func (v *Greeler) DerivedStock() decimal.Decimal {
+    panic("unimplemented")
+}
+
 // allocate implements scenario 3's rule: lowest GridLevels index first,
 // filling each level's size before the next, until shares is exhausted.
 // Used both for CSP-assigned sell-limiter placement and CC-assigned sale
@@ -248,3 +257,10 @@ var _ trader.Trader = (*Greeler)(nil)
    freeze/retire (scenario 4) — no cross-greeler awareness. This is now a
    settled boundary for the `greelladder` story to build on, not something
    it needs to re-derive.
+4. **`DerivedStock()` exported — added for `greelladder`.** Surfaced by
+   `greelladder-story.md` scenario 2's fallback reconciliation, which needs
+   to compare a greeler's derived stock inventory against the account's
+   actual holding. Rather than have `greelladder` reach into `greeler`'s
+   internals, `greeler` exports the scenario 1 fold's sum directly (see the
+   skeleton). No new persisted state — this is a read of an already-derived
+   value.

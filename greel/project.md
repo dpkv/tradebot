@@ -306,7 +306,7 @@ developer checkpoints at every step.
 - [x] `optlimiter` story — drafted in [optlimiter-story.md](optlimiter-story.md), reviewed
 - [x] `optpos` story — drafted in [optpos-story.md](optpos-story.md), reviewed (last open item resolved by the `greeler` story)
 - [x] `greeler` story — drafted in [greeler-story.md](greeler-story.md), reviewed
-- [ ] `greelladder` story — TBD
+- [x] `greelladder` story — drafted in [greelladder-story.md](greelladder-story.md), reviewed
 
 ---
 
