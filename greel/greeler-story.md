@@ -17,70 +17,77 @@ item 9 (the deterministic share-allocation rule for CSP/CC assignment).
 
 ### 1. Grid-mode derivation: the same fold as `Looper`, generalized
 
-Per level *i*, the posture (bought/sold, next action) is derived by folding
-`FilledSize()` over every limiter in that level's history — exactly
-`Looper.Run`'s `bought`/`sold`/`action` derivation
-(`looper/run.go:87-125`), with one difference: a level's limiter history
-isn't one flat list, it's `LevelLimiterIDs[i]` concatenated across every
-grid epoch in `Epochs`, in order (gobs-story.md scenario 2). The fold
-itself — sum filled sizes, compare against `Pair.Buy.Size`/`Pair.Sell.Size`,
-decide BUY/SELL/STOP — is unchanged from `Looper`'s; only *where the
-history comes from* differs.
+Per level *i*, the posture (bought/sold, next action) is derived the way
+`Looper.Run` derives its `bought`/`sold`/`action` (`looper/run.go:87-125`),
+with two differences:
 
-This derivation runs **per level**, independently — `greeler.Run`'s grid-
-mode loop is `for i, level := range GridLevels { deriveAndAct(i, level) }`,
-each iteration deciding whether that level needs a new `limiter.Limiter`
-created, same as `Looper` decides BUY vs SELL vs STOP.
+- **Where the limiter history comes from:** not one flat list, but
+  `LevelLimiterIDs[i]` concatenated across every grid epoch in `Epochs`, in
+  order (gobs-story.md scenario 2).
+- **A second source of shares:** assignments move shares into or out of a
+  level with no limiter behind them (project.md decision #4: "merge two
+  sources"). Looper's fold alone can't absorb that — a level that received
+  assigned shares later has a sell with no matching buy, which trips
+  Looper's STOP guard (`nbuys < nsells`, `looper/run.go:104`). So the fold
+  is a **chronological replay over `Epochs`**: grid epochs contribute their
+  limiter fills; each wheel epoch whose position was assigned contributes
+  that assignment's per-level attribution (scenario 3) at the point the
+  epoch ended.
+
+The result is each level's current holdings and cycle position, from which
+the greeler decides, per level independently, whether that level needs a
+new `limiter.Limiter` — the same BUY/SELL/STOP decision `Looper` makes.
 
 ### 2. Mode-flip mechanics, tied to `Epochs`
 
 project.md already specifies the sequence; this scenario is about which
 persisted pieces each step touches:
 
-**Flip to wheel (grid → wheel):**
-1. Cancel all levels' live limiters (each level's derivation this iteration
-   naturally converges to "no order should be live" once the dwell clock —
-   `Epochs[last].PendingFlip`/`PendingFlipAt`, gobs-story.md decision #8 —
-   has fired; cancellation reuses each `limiter.Limiter`'s own idempotent
-   cancel, nothing new).
-2. Once no live limiters remain (await confirmations — an ordinary
-   iteration-to-iteration wait, not a blocking call), verify qualification:
-   all-cash (CSP) or all-shares (CC) — the all-or-nothing rule from
-   gobs-story.md/project.md, checked by folding the same per-level history
-   from scenario 1 across *every* level at once.
-3. Call `optpos.New(...).Open(ctx, fctx, constraint)` — `constraint` is
-   built from `GridLevels` per optpos-story.md scenario 1.
-4. **Append the wheel epoch**: `{Mode: "wheel", StartAt: now, PositionID:
-   position.UID()}` to `Epochs`. This is the "journaled in greeler state"
-   project.md's mode-flip section names — concretely, it's this one
-   append, in the greeler's own `Save`.
+**Flip to wheel (grid → wheel)**, once the dwell clock
+(`Epochs[last].PendingFlip`/`PendingFlipAt`, gobs-story.md decision #8) has
+fired:
+1. Check qualification from scenario 1's fold: all-cash (CSP) or
+   all-shares (CC) — the all-or-nothing rule. If it doesn't hold, don't
+   start the flip.
+2. Cancel all levels' live limiters (each `limiter.Limiter`'s own
+   idempotent cancel) and wait for confirmations — an ordinary
+   iteration-to-iteration wait, not a blocking call.
+3. Re-check qualification. A fill can race the cancel and leave a level
+   mixed; then **the flip is blocked**: the greeler stays in grid mode,
+   its levels re-arm through ordinary grid derivation, and the dwell clock
+   resets (so the flip can't retry every iteration and churn orders).
+4. **Write-ahead:** in one transaction, append the wheel epoch
+   `{Mode: "wheel", StartAt: now, PositionID: path.Join(greelerUID,
+   "pos-%06d")}` and save the empty position record.
+5. Call `position.Open(ctx, fctx, constraint)` — `constraint` is built
+   from `GridLevels` per optpos-story.md scenario 1, plus the ladder's
+   sibling exclusion if any.
 
 **Flip to grid (wheel → grid):**
 1. `greeler.Run` calls `optpos.Position.Check(ctx, fctx)` every iteration
    while the last epoch is `"wheel"` and its position isn't terminal
    (optpos-story.md scenario 2) — **unconditionally**, not gated on spot's
-   zone. This is the answer to optpos-story.md's open question: `Check`
-   needs no spot/zone information because the greeler never force-closes a
-   position on a zone change — project.md is explicit that "existing
-   orders/positions drift through untouched" in the buffer, and the same
-   principle extends past the buffer into wheel mode itself. A position
-   only becomes terminal when `RollPolicy` decides to close it, it
-   expires, or it's assigned — never because spot re-entered the grid
-   band. `greeler` just keeps calling `Check`; the flip back to grid is a
-   *consequence* of the position going terminal, not something `greeler`
-   commands.
-2. Once `Position`'s `Outcome` is non-empty (observed on load, or via
-   `Check`'s own return), `greeler` derives post-assignment posture
-   (scenario 3) and creates the levels' limiters per that posture.
-3. **Append the grid epoch**: `{Mode: "grid", StartAt: now}` to `Epochs`.
+   zone. `Check` needs no spot/zone information because the greeler never
+   force-closes a position on a zone change — project.md is explicit that
+   "existing orders/positions drift through untouched" in the buffer, and
+   the same principle extends past the buffer into wheel mode itself. A
+   position only becomes terminal when `RollPolicy` closes it or the
+   broker reports it assigned or expired (`Check`'s settlement step,
+   optpos-story.md scenario 6) — never because spot re-entered the grid
+   band. The flip back to grid is a *consequence* of the position going
+   terminal, not something `greeler` commands.
+2. Once the position's `Outcome` is non-empty, **append the grid epoch**
+   `{Mode: "grid", StartAt: now}`.
+3. Derive post-assignment posture (scenarios 1, 3) and create the levels'
+   limiters in the new epoch — each limiter's UID appended to
+   `LevelLimiterIDs[i]` and saved before it runs (write-ahead, the way
+   `Looper.addNewBuy` saves before running).
 
-Both directions are crash-safe by the same argument gobs-story.md already
-made: nothing here is a phase pointer. A crash before step 3 in either
-direction just means the greeler re-derives the same desired state next
-iteration and re-issues the same idempotent calls; the `Epochs` append is
-a journal entry appended *after* the transition is already real (design
-principle 2, gobs-story.md decision #5's "closed epochs are frozen, only
-the last is live" invariant).
+Both directions are crash-safe because every child is named in persisted
+state before it can place an order (gobs-story.md scenario 3a): restart
+reads the mode from `Epochs[last]`, finds every child by UID, re-issues
+idempotent calls, and converges. Nothing is ever created without a
+reference, so nothing can be orphaned or duplicated.
 
 ### 3. The allocation rule — decided, closing project.md open item 9
 
@@ -88,31 +95,36 @@ Both CSP and CC assignment need to attribute a 100-share delta to specific
 `GridLevels` indices. **One rule serves both directions**: `GridLevels` is
 stored in ascending-price order (an invariant established at greeler
 creation, gobs-story.md's `GridLevels []*Pair` is never reordered) —
-allocate **lowest level first**, filling each level's full size before
-moving to the next, until the 100 shares are exhausted.
+attribute **lowest level first, over all levels**, filling each level's
+full size before moving to the next, until the 100 shares are exhausted.
 
 - **CC assigned** (100 shares leave at strike K): this *is* project.md's
   already-proposed rule ("lowest-level-first") — the lowest levels are
   where the earliest, lowest-cost-basis inventory sits, so crediting the
   sale to them first is the natural FIFO reading of "which shares left."
 - **CSP assigned** (100 shares arrive at strike K): the same rule, same
-  direction — the new sell limiters get created starting at the lowest
-  `GridLevels` index above spot, filling each level's size before the
-  next. This wasn't previously decided (project.md flagged it as a
-  separate TODO); using the identical rule for both directions means
-  there's exactly one allocation function, parameterized by direction
-  (deliver vs. depart), not two separate policies to keep in sync — and it
-  biases toward the levels closest to spot/strike getting filled first,
-  which maximizes how quickly that capital cycles back through a grid
-  buy/sell round-trip.
+  direction. One allocation function, parameterized by direction (deliver
+  vs. depart), not two policies to keep in sync. The lowest levels also
+  have the lowest sell prices, so the delivered shares cycle back to cash
+  soonest.
 
-This allocation is **never stored** — consistent with gobs-story.md's
-derivation-over-state stance throughout: it's applied fresh, by this same
-rule, every time `greeler` derives which level should own the next sell
-limiter (post-CSP-assignment) or which level's inventory a CC sale
-satisfies. Nothing about the rule depends on history beyond what's already
-in `GridLevels` (static) and each level's own current derived inventory
-(scenario 1) — nothing new to persist.
+**Why "over all levels", not "above spot" (revised after design
+review):** an earlier draft started CSP attribution at "the lowest level
+above spot". Spot changes, so re-deriving later would give a different
+split, and the fold (scenario 1) wouldn't be deterministic. Qualification
+makes spot unnecessary: at the moment a wheel epoch opens, every level was
+cash (CSP) or every level held shares (CC), so attribution over all levels
+is fully determined by `GridLevels` sizes alone. *Where sell orders go now*
+is a separate, spot-dependent placement decision — each level holding
+shares simply places its sell limiter at its own sell price — and isn't
+part of attribution.
+
+This attribution is **never stored** — it's recomputed by the same rule
+during scenario 1's chronological replay, at the point each assigned wheel
+epoch ended, from persisted data only (`GridLevels` and the position's
+`Assignment` fact). With spillover (level sizes summing to more than 100),
+at most one level ends up partially attributed; the fold treats it like
+Looper's partial-fill case.
 
 ### 4. `SetOption`: freeze and retire, per-greeler
 
@@ -125,7 +137,7 @@ options.go`):
   (existing ones still resolve normally) — the greeler can still flip to
   wheel mode if dwell/hysteresis fire, since that's not "grid activity."
 - `freeze=wheel`: scenario 2's flip-to-wheel step never fires (dwell clock
-  still accumulates and gets journaled — `PendingFlip`/`PendingFlipAt`
+  still accumulates and gets persisted — `PendingFlip`/`PendingFlipAt`
   aren't gated by freeze, only the resulting action is); an *already open*
   position keeps running its own lifecycle (`Check` still gets called —
   freezing new wheel entries isn't the same as abandoning an open one).
@@ -137,7 +149,25 @@ options.go`):
 
 None of this needs new persisted fields — `Options map[string]string` on
 `GreelerStateV1` already carries it (gobs-story.md), read the same way
-`Limiter.Load`/`Looper` already read theirs.
+`Limiter.Load`/`Looper` already read theirs. Per the `trader.Trader`
+contract, options change only while the job isn't running — operators
+pause, set, and resume, as with `Looper`.
+
+### 5. Restart: rebuilding from the record alone
+
+The server reloads jobs generically — `server.Load(ctx, r, uid, typename)`
+(`server/load.go:75`) gets only a KV reader — so `greeler.Load(ctx, uid,
+r)` must rebuild everything from `GreelerStateV1`: `GridLevels`, zone
+parameters, and the `ContractSelector`/`RollPolicy` looked up by their
+persisted names and built from the persisted `WheelKnobs` (gobs-story.md
+decision #11). The one runtime dependency the record can't hold, the
+options exchange, comes from `rt.Exchange.(exchange.OptionsExchange)` in
+`Run`; positions load lazily there (decision #1). `server.Load` gains
+`greeler`/`greelladder` cases.
+
+`trader.Trader` also requires `Actions`, `BudgetAt`, and `GetSummary`. The
+accounting model is deferred (project.md open item 2), so these get
+minimal implementations — stock-side limiter fills only — until it lands.
 
 ---
 
@@ -150,34 +180,40 @@ package greeler
 
 import (
     "context"
+    "time"
 
     "github.com/bvk/tradebot/exchange"
     "github.com/bvk/tradebot/gobs"
     "github.com/bvk/tradebot/limiter"
     "github.com/bvk/tradebot/optpos"
     "github.com/bvk/tradebot/point"
+    "github.com/bvk/tradebot/timerange"
     "github.com/bvk/tradebot/trader"
     "github.com/bvkgo/kv"
     "github.com/shopspring/decimal"
 )
 
-// Greeler runs one greel: derives per-level posture from spot, fills, and
-// recorded events. Job (trader.Trader), not a component — registered like
-// Limiter/Looper/Waller.
+// Greeler runs one greel: derives per-level posture from spot, limiter
+// fills, and the outcomes its positions report. A job (trader.Trader), so
+// it's runnable standalone; under a ladder, the ladder drives it.
 type Greeler struct {
     uid          string
     exchangeName string
     productID    string
 
-    gridLevels []*point.Point // Pair, actually — Buy/Sell per level
+    gridLevels []*point.Pair // ascending price order, never reordered
 
     gridPct, farPct, hysteresisPct decimal.Decimal
-    dwellTime                       int64 // time.Duration
+    dwellTime                       time.Duration
 
     epochs []*Epoch // mirrors gobs.GreelEpoch; last entry is current
 
+    // Rebuilt in Load from the persisted names and WheelKnobs (scenario 5).
     selector optpos.ContractSelector
     policy   optpos.RollPolicy
+
+    // exclude is set by the ladder (greelladder-story); nil standalone.
+    exclude func(contractID string) bool
 
     freezeGridOpt, freezeWheelOpt, retireOpt bool
 }
@@ -185,38 +221,45 @@ type Greeler struct {
 // Epoch mirrors gobs.GreelEpoch as an in-memory working type; Save/Load
 // convert to/from the persisted shape directly (gobs-story.md).
 type Epoch struct {
-    Mode       string
+    Mode    string
+    StartAt time.Time
+
+    PendingFlip   string
+    PendingFlipAt time.Time
+
     PositionID string
     Position   *optpos.Position // loaded lazily, nil until needed
 
-    LevelLimiters [][]*limiter.Limiter // loaded lazily per level
+    LevelLimiterIDs [][]string
+    LevelLimiters   [][]*limiter.Limiter // loaded lazily per level
 }
 
 func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) error {
     panic("unimplemented")
+    // optEx, ok := rt.Exchange.(exchange.OptionsExchange) — required.
     // Loop:
-    //   last := v.epochs[len(v.epochs)-1]
+    //   last := v.epochs[len(v.epochs)-1]   // authoritative (write-ahead)
     //   switch last.Mode {
-    //   case "grid": v.runGrid(ctx, rt, last)   // scenario 1
+    //   case "grid": v.runGrid(ctx, rt, last)   // scenarios 1, 2
     //   case "wheel": v.runWheel(ctx, rt, last) // scenario 2
     //   }
 }
 
 // DerivedStock is the greeler's total current stock inventory — scenario
-// 1's per-level fold, summed across all levels. Exported so greelladder's
-// positions-poll fallback reconciliation (greelladder-story.md scenario 2)
-// can compare it against the account's actual stock holding, without
-// reaching into greeler's own derivation internals.
+// 1's per-level fold, summed across all levels. Exported so the ladder's
+// delta-based reconciliation (greelladder-story.md scenario 3) can compare
+// its change against the account's, without reaching into greeler's own
+// derivation internals.
 func (v *Greeler) DerivedStock() decimal.Decimal {
     panic("unimplemented")
 }
 
-// allocate implements scenario 3's rule: lowest GridLevels index first,
-// filling each level's size before the next, until shares is exhausted.
-// Used both for CSP-assigned sell-limiter placement and CC-assigned sale
-// attribution — direction only changes what the caller does with each
-// (level index, size) pair this returns, not the rule itself.
-func (v *Greeler) allocate(shares decimal.Decimal) []struct {
+// attribute implements scenario 3's rule: lowest GridLevels index first,
+// over all levels, filling each level's size before the next, until shares
+// is exhausted. Depends only on GridLevels — never on spot — so the replay
+// in scenario 1 is deterministic. Used for both CSP (shares arrive) and CC
+// (shares leave) assignments.
+func (v *Greeler) attribute(shares decimal.Decimal) []struct {
     LevelIndex int
     Size       decimal.Decimal
 } {
@@ -227,9 +270,16 @@ func (v *Greeler) Save(ctx context.Context, rw kv.ReadWriter) error {
     panic("unimplemented")
 }
 
-func Load(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsExchange, selector optpos.ContractSelector, policy optpos.RollPolicy) (*Greeler, error) {
+// Load rebuilds a greeler from its record alone — server.Load can't inject
+// dependencies (scenario 5).
+func Load(ctx context.Context, uid string, r kv.Reader) (*Greeler, error) {
     panic("unimplemented")
 }
+
+// Minimal until the accounting model lands (scenario 5).
+func (v *Greeler) Actions() []*gobs.Action                        { panic("unimplemented") }
+func (v *Greeler) BudgetAt(feePct decimal.Decimal) decimal.Decimal { panic("unimplemented") }
+func (v *Greeler) GetSummary(r *timerange.Range) *gobs.Summary     { panic("unimplemented") }
 
 var _ trader.Trader = (*Greeler)(nil)
 ```
@@ -251,16 +301,30 @@ var _ trader.Trader = (*Greeler)(nil)
    per level for order-placement decisions, just read across every level
    at once rather than acted on individually. One fold, two call sites,
    not two folds to keep in sync.
-3. **`greelladder` owns cross-greeler risk gates — confirmed.** Max open
-   contracts, max assignment exposure (project.md open item 6) sit above
-   `greeler`, at the ladder level. `greeler` itself enforces only its own
-   freeze/retire (scenario 4) — no cross-greeler awareness. This is now a
-   settled boundary for the `greelladder` story to build on, not something
-   it needs to re-derive.
-4. **`DerivedStock()` exported — added for `greelladder`.** Surfaced by
-   `greelladder-story.md` scenario 2's fallback reconciliation, which needs
-   to compare a greeler's derived stock inventory against the account's
-   actual holding. Rather than have `greelladder` reach into `greeler`'s
-   internals, `greeler` exports the scenario 1 fold's sum directly (see the
-   skeleton). No new persisted state — this is a read of an already-derived
-   value.
+3. **Cross-greeler risk gates belong to `greelladder` — TODO, revisit.**
+   Max open contracts and max assignment exposure (project.md open item 6)
+   sit above `greeler`. How the ladder enforces them is open: the earlier
+   plan (calling `SetOption` on running greelers) violates the
+   `trader.Trader` contract. `greeler` itself enforces only its own
+   freeze/retire (scenario 4).
+4. **`DerivedStock()` exported — added for `greelladder`.** The ladder's
+   delta-based reconciliation (greelladder-story.md scenario 3) compares
+   changes in a greeler's derived stock against changes in the account's
+   holding. Rather than have `greelladder` reach into `greeler`'s
+   internals, `greeler` exports the scenario 1 fold's sum directly. No new
+   persisted state — this is a read of an already-derived value.
+5. **Flips are write-ahead — decided after design review.** Each epoch is
+   appended before anything is created in it, and every child is saved
+   before it can place an order (scenario 2; gobs-story.md decision #9).
+6. **A blocked wheel flip leaves the greeler in grid mode — decided after
+   design review.** If qualification fails on the re-check after cancel
+   (a fill raced it), the greeler re-arms its levels and resets the dwell
+   clock (scenario 2).
+7. **Attribution is over all levels, not "above spot" — revised after
+   design review.** Keeps the replay in scenario 1 deterministic; placement
+   stays a separate, spot-dependent decision (scenario 3).
+8. **`Load` rebuilds from the record alone — decided after design
+   review.** Selector/policy from persisted names and knobs; options
+   exchange from `rt.Exchange` in `Run` (scenario 5).
+9. **Minimal `Actions`/`BudgetAt`/`GetSummary` until the accounting model
+   lands** (scenario 5).

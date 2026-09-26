@@ -48,27 +48,27 @@ now concretely: `optpos` does this for each `OptLimiter` leg it owns.
 
 ### 1. optpos opens a position: sell-to-open
 
-`optpos` picks a contract (via `ContractSelector`, gobs-story deferred to
-the `optpos` story) and constructs one `OptLimiter` with intent `"open"`,
+`optpos` picks a contract (via `ContractSelector`, see the `optpos` story)
+and constructs one `OptLimiter` with intent `"open"`, side `"SELL"`,
 `numContracts`, and a limit premium. `New` builds the wrapped
 `*limiter.Limiter` with:
 
 - `productID` = the contract's `ContractID` (this is *why* it must match:
   `Limiter.Run`'s `rt.Product.ProductID() != v.productID` check means the
-  adapter's `ProductID()` must also return `ContractID`, unmodified — not a
-  synthetic key — for anything but a roll leg, see scenario 4).
+  adapter's `ProductID()` must also return `ContractID`, unmodified; roll
+  legs differ, see scenario 6).
 - `point.Size` = `numContracts` (contract units, not shares — see scenario
   3 for why).
 - `point.Price` = the limit premium per contract.
-- `point.Cancel` = a far-side price chosen so the ticker realistically never
-  crosses it (scenario 2).
+- `point.Cancel` = a far-side price on the given side, chosen so the ticker
+  realistically never crosses it (scenario 4).
 
-Since intent is `"open"` and a short option position is what greel ever
-writes, `point.Side()` resolves to SELL (`Cancel < Price`), so
-`Limiter.Run`'s `create()` calls the adapter's `LimitSell`, which the
-adapter maps to `LimitSellToOpen`. A future debit strategy opening long
-would resolve to BUY → `LimitBuyToOpen` — the mapping is symmetric, `greel`
-just never exercises the BUY-to-open path today.
+Side is an explicit constructor argument, encoded into the point (a SELL
+point has `Cancel < Price`), so `Limiter.Run`'s `create()` calls the
+adapter's `LimitSell`, which the adapter maps to `LimitSellToOpen`. greel
+only ever writes options, so it opens with SELL and closes with BUY; a
+future debit strategy opening long would pass BUY → `LimitBuyToOpen` — the
+mapping is symmetric.
 
 ### 2. The adapter must satisfy `exchange.Product` exactly
 
@@ -78,7 +78,7 @@ literal `exchange.Product`. Method by method, wrapping an
 
 | `exchange.Product` method | Adapter behavior |
 |---|---|
-| `ProductID()` | `optionsProduct.ContractID()` (roll: see scenario 4) |
+| `ProductID()` | `optionsProduct.ContractID()` (roll legs don't use the adapter — scenario 6) |
 | `ExchangeName()` | passthrough |
 | `BaseMinSize()` | `decimal.NewFromInt(1)` — one contract, the natural minimum; the exchange doesn't express fractional contracts |
 | `GetPriceUpdates()` / `GetOrderUpdates()` | passthrough |
@@ -136,12 +136,19 @@ This is worth a named helper (`farCancel(side, price) decimal.Decimal`) in
 the adapter/constructor rather than inlined, since both scenario 1 (open)
 and scenario 5 (close) need it identically.
 
+**This only neutralizes the cancel side.** `Limiter.Run` also gates
+*placement* on the ticker: a BUY order is created only while
+`Price <= ticker < Cancel` (`limiter/run.go:182`), and any order is created
+only when a price update arrives. A buy-to-close at limit P therefore isn't
+placed while the option trades below P. See the TODO at the end of this
+story.
+
 ### 5. optpos closes a position: buy-to-close
 
-Same construction as scenario 1, `intent = "close"`, same `ContractID`
-(the position hasn't rolled). `point.Side()` resolves to BUY (a short
-position is closed by buying back) → `Limiter.Run` calls the adapter's
-`LimitBuy` → `LimitBuyToClose`.
+Same construction as scenario 1, `intent = "close"`, side `"BUY"` (a short
+position is closed by buying back), same `ContractID` (the position hasn't
+rolled). `Limiter.Run` calls the adapter's `LimitBuy` → `LimitBuyToClose` —
+subject to the BUY placement gating noted in scenario 4.
 
 ### 6. Rolling: the exchange-layer gap, resolved here
 
@@ -177,13 +184,14 @@ Because `OptionsRollProduct` is defined to be exactly `exchange.Product`'s
 shape (a type alias, not a new interface), a roll leg needs **no adapter
 code beyond `optlimiter` already having one** — `OptLimiter` for `Intent ==
 "roll"` wraps a `*limiter.Limiter` built directly against the
-`OptionsRollProduct`, with `productID` set to a synthetic key (e.g.
-`priorContractID + "->" + contractID`, matching the `cleanUID`-style prefix
-conventions already used elsewhere) since there's no single `ContractID`
-to check against. `point.Side()` here means something different than for a
-plain option order — SELL = enter for a net credit, BUY = enter for a net
-debit — but mechanically it's identical: one order, one fill, and the same
-far-cancel neutralization from scenario 4 applies unchanged.
+`OptionsRollProduct`, with `productID` set to **`rollProduct.ProductID()`**
+(decision #4). `Limiter.Run` refuses to run unless the product's ID equals
+the limiter's, and a roll product's ID is defined by the exchange, so the
+limiter takes whatever ID the exchange returned rather than inventing one.
+Side here means something different than for a plain option order — SELL =
+enter for a net credit, BUY = enter for a net debit — but mechanically it's
+identical: one order, one fill, and the same far-cancel neutralization from
+scenario 4 applies (as does its BUY-gating caveat, for net-debit rolls).
 
 This keeps the "optlimiter reuses limiter.Limiter, unmodified" decision
 (project.md decision-log #1) intact even for rolls — the new surface is
@@ -204,15 +212,27 @@ existing caller) and `cleanUID` needs `/optlimiters/` added to its known
 prefixes. This is the first implementation task for this module, before
 `optlimiter.go` itself.
 
+**TODO — isolation gaps found in design review.** Keyspace scans aren't
+the only path in. Every `Limiter.Run` registers itself with limiter's
+background finish-time fixer (`asyncUpdateFinishTime`), which works from
+the in-memory instance, not a scan (`limiter/fix-finish-times.go`):
+- it saves the limiter through its own `Save` — so the keyspace must be a
+  field on the `Limiter` instance, not just a `Save`/`Load` parameter, or
+  option limiters get written into `/limiters/`;
+- it calls `ex.GetOrder(ctx, v.productID, id)` on the spot exchange with an
+  option contract ID (or a roll product's ID). If that call fails for
+  option orders, the fixer retries every 5 seconds indefinitely.
+
 ### 8. Leak mitigation recap (from project.md, now concrete)
 
-- **Cancel-offset machinery neutralized** — scenario 4's far-cancel formula.
+- **Cancel-offset machinery neutralized** — scenario 4's far-cancel formula
+  (cancel side only; placement gating is the TODO at the end).
 - **Contract/premium units scaled by `ContractSize()` at the wrapper
   boundary** — scenario 3: never inside `optlimiter`, always by its caller,
   using the field `optlimiter` carries but doesn't consume itself.
 - **Own keyspace (`/optlimiters/`)** — scenario 7, so `/limiters/`-scanning
-  background tasks (`limiter/all.go`, `limiter/fix-finish-times.go`) skip
-  option orders without needing to know they exist.
+  background tasks (`limiter/all.go`, `limiter/fix-finish-times.go`'s scan)
+  skip option orders; the fixer's in-memory path is a TODO (scenario 7).
 
 ---
 
@@ -231,6 +251,7 @@ import (
     "github.com/bvk/tradebot/gobs"
     "github.com/bvk/tradebot/limiter"
     "github.com/bvk/tradebot/point"
+    "github.com/bvk/tradebot/trader"
     "github.com/bvkgo/kv"
     "github.com/google/uuid"
     "github.com/shopspring/decimal"
@@ -240,6 +261,8 @@ import (
 const DefaultKeyspace = "/optlimiters/"
 
 // Intent is fixed at construction — one wrapped limiter, one order intent.
+// These are also the values persisted in gobs.OptLimiterStateV1.Intent;
+// side (BUY/SELL) is encoded in the wrapped limiter's point, not here.
 type Intent string
 
 const (
@@ -315,11 +338,11 @@ type OptLimiter struct {
     limiter *limiter.Limiter
 }
 
-// New constructs a fresh OptLimiter for a plain (non-roll) option order.
-func New(uid, exchangeName, contractID string, intent Intent, contractSize, numContracts, limitPrice decimal.Decimal) (*OptLimiter, error) {
-    side := "SELL" // greel only ever writes (sells) options today; see scenario 1
-    cancel := farCancel(side, limitPrice)
-    p := &point.Point{Size: numContracts, Price: limitPrice, Cancel: cancel}
+// New constructs an OptLimiter for a single-contract order (IntentOpen or
+// IntentClose). side is "BUY" or "SELL"; greel opens with SELL and closes
+// with BUY (scenarios 1, 5).
+func New(uid, exchangeName, contractID string, intent Intent, side string, contractSize, numContracts, limitPrice decimal.Decimal) (*OptLimiter, error) {
+    p := &point.Point{Size: numContracts, Price: limitPrice, Cancel: farCancel(side, limitPrice)}
     lim, err := limiter.New(uid, exchangeName, contractID, p /*, limiter.WithKeyspace(DefaultKeyspace) */)
     if err != nil {
         return nil, fmt.Errorf("could not create wrapped limiter: %w", err)
@@ -329,6 +352,21 @@ func New(uid, exchangeName, contractID string, intent Intent, contractSize, numC
         contractSize: contractSize, limiter: lim,
     }, nil
 }
+
+// NewRoll constructs an OptLimiter for one atomic roll order. productID
+// must be rollProduct.ProductID() (scenario 6, decision #4). side is
+// "SELL" for a net credit, "BUY" for a net debit.
+func NewRoll(uid, exchangeName, productID, priorContractID, contractID string, side string, contractSize, numContracts, netPrice decimal.Decimal) (*OptLimiter, error) {
+    panic("unimplemented") // same as New, with IntentRoll and priorContractID set
+}
+
+// Run drives the wrapped limiter. rt.Product is NewProduct(...) for open/
+// close legs, or the OptionsRollProduct itself for roll legs.
+func (v *OptLimiter) Run(ctx context.Context, rt *trader.Runtime) error {
+    return v.limiter.Run(ctx, rt)
+}
+
+func (v *OptLimiter) UID() string { return v.uid }
 
 // farCancel picks a cancel price the ticker will not plausibly cross, so
 // Limiter.Run's cancel/recreate loop never fires — see scenario 4.
@@ -384,3 +422,57 @@ what the next stage fills in.
    constants, so they stay sane across a $0.50 weekly option and a $500
    LEAP. The specific formula isn't decided here — it's implementation
    work for this module's next stage.
+4. **A roll leg's limiter uses `rollProduct.ProductID()` — decided after
+   design review.** Replaces the first draft's invented `prior->new` key,
+   which the exchange's roll product would have had no reason to match —
+   and `Limiter.Run` refuses to run on a mismatch (`limiter/run.go:27`).
+5. **Intent vocabulary is `open | close | roll`, side is a constructor
+   argument — decided after design review.** The first draft persisted
+   `sell-to-open`-style intents in `gobs` while `optlimiter` used
+   `open|close|roll`, and `New` hardcoded SELL even for buy-to-close legs.
+   Now one vocabulary is shared, and side is encoded in the wrapped
+   limiter's point, the way `Limiter` already derives buy/sell.
+
+## TODO: replace the wrapped `Limiter` with an option order state machine
+
+Must be resolved before this module is implemented.
+
+**Problem.** Unmodified `Limiter.Run` creates a BUY order only while
+`Price <= ticker < Cancel`, and creates any order only on a price update
+(scenario 4). That blocks profit-take buy-to-close legs and net-debit
+rolls, and stalls on quiet contracts. Separately, option spreads are wide,
+so **re-pricing an unfilled order will be routine** — and `Limiter` trades
+one fixed price per instance. Both meet project.md's own escape-hatch
+condition ("suppress rather than translate a behavior → fork").
+
+**Likely direction (not yet decided).** `OptLimiter` becomes its own small
+state machine: one order intent (e.g. sell-to-open 1 contract) that places
+a broker order immediately, re-prices on a timer by cancelling and
+re-placing until filled or stopped, and keeps every broker order it placed.
+It would reuse `idgen` and `exchange.SimpleOrder` directly, and copy
+`Limiter`'s crash-recovery and cancel-then-confirm patterns. Considered and
+rejected:
+- *An opt-in "resting" mode on `Limiter`*: every re-price would be a new
+  leg — two KV records per attempt, legs that never filled cluttering the
+  position's chain, and partial fills split across legs.
+- *Feeding the limiter fake prices*: exactly the "suppress" hack the escape
+  hatch forbids.
+
+**Consequences if taken:**
+- Removes the `OptionsProduct`→`Product` adapter (call the four verbs
+  directly), the far-cancel workaround, the `limiter` keyspace override, and
+  the keyspace-isolation TODO in scenario 7 — `optlimiter` would no longer
+  touch the `limiter` package or `/limiters/`.
+- `gobs.OptLimiterStateV1` drops `LimiterID` and stores its own orders and
+  client-ID seed/offset, like `LimiterStateV2`; gobs-story decision #1
+  (embed vs. reference) becomes moot.
+- project.md decision-log #1 ("optlimiter reuses limiter.Limiter") is
+  superseded; this story is largely rewritten.
+- `OptionsRollProduct` stays as is — roll orders still go through its
+  `LimitSell`/`LimitBuy`.
+
+**Re-price rule, proposed:** start at the mid price; every N minutes, move
+toward the far side of the spread by a set step; never past a limit the
+caller sets (minimum premium for a sell-to-open, maximum cost for a
+buy-to-close). Step and interval become `WheelKnobs`, so they persist. A
+roll is priced on the net of both contracts' quotes.

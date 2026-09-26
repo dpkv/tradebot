@@ -19,14 +19,21 @@ own reported outcome.
 
 The ladder (or a subcommand, for standalone use) creates a greeler with its
 configuration: exchange, underlying product, its slice of adjacent grid levels
-(a buy/sell price pair and size per level, reusing `gobs.Pair`), and its zone
-parameters (`g`, `f`, `h` as percentages, dwell `d` as a duration).
+(a buy/sell price pair and size per level, reusing `gobs.Pair`), its zone
+parameters (`g`, `f`, `h` as percentages, dwell `d` as a duration), and its
+wheel behavior: which `ContractSelector`/`RollPolicy` implementations to use
+(by registered name) and their resolved knob values.
 
 **Persisted:** all of the above — configuration is static state, set once at
 creation. Zone parameters are copied into the greeler (not referenced from the
-ladder) so a greeler is fully self-describing and standalone-runnable. Also
-seeded here: `Epochs` starts with one entry, `{Mode: "grid", StartAt:
-creation time}` — see scenario 3a.
+ladder) so a greeler is fully self-describing and standalone-runnable. The
+wheel behavior must be persisted too: the server reloads jobs generically
+(`server.Load(ctx, r, uid, typename)`, with only a KV reader), so anything
+`Load` needs to rebuild the selector and policy has to come from the record.
+Presets only pre-fill knob values at creation; the resolved values are what's
+stored, so a restart rebuilds exactly the same behavior even if a preset's
+definition changes later. Also seeded here: `Epochs` starts with one entry,
+`{Mode: "grid", StartAt: creation time}` — see scenario 3a.
 
 ### 2. Grid mode: levels trade through limiters
 
@@ -72,13 +79,11 @@ crossed the threshold; zeroed whenever spot retreats. These fields live on
 `Epochs[last]` — the currently open epoch — not as separate top-level
 greeler fields; see scenario 3a for why watching for its own termination is
 the current epoch's job, structurally, not the greeler's.
-**Not persisted:** the current mode *as a control-flow fact* — that stays
-derived each iteration from spot plus open children (a live option position
-⇒ wheel; live limiters ⇒ grid), exactly as before. What changes below is
-that completed transitions get an append-only journal for reporting, which
-is a different thing from trusting a stored flag to drive behavior.
+**Mode is recorded, not derived:** `Epochs[last].Mode` *is* the current mode,
+because epochs are appended write-ahead — an epoch exists before anything is
+created in it (scenario 3a).
 
-### 3a. Mode history: `Epochs`, a journal of transitions already derived
+### 3a. Mode history: `Epochs`, the record of mode periods and their children
 
 The dwell clock (above) says *when a flip is pending*; nothing so far
 records *when a flip actually completed*, or gives an easy way to answer
@@ -122,20 +127,31 @@ information: filtering `Epochs` for `Mode == "wheel"` and collecting
   at creation with one `{Mode: "grid", StartAt: creation time}` entry, so
   `Epochs` is never empty and "current mode" is always `Epochs[last].Mode`
   by construction, no special-casing an empty list.
-- **Crucial scoping rule, to avoid reintroducing what the last redesign
-  removed:** `Epochs` is a **journal of transitions the greeler has
-  already derived**, not the authority that decides current mode. The
-  authority is still exactly what scenario 3 (and design principle 1) say
-  it is: cross-check the last wheel epoch's `PositionID` against that
-  position's own `Outcome`. Appending the *next* epoch happens on the
-  greeler's own next iteration, once it notices (by loading that position)
-  that a transition occurred — not atomically with the position's own
-  terminal write. That keeps position termination a single-record
-  transaction, exactly as decided in scenario 5; a crash between "position
-  went terminal" and "greeler appends the next epoch" leaves `Epochs` one
-  entry short for at most one iteration — a reporting lag, self-healing on
-  the next run, never a correctness bug (design principle 2's "crash
-  mid-flip is harmless," unchanged).
+- **Write-ahead: an epoch is appended before anything is created in it
+  (revised after design review).** An earlier draft treated `Epochs` as a
+  journal appended *after* a transition was real. That's safe for
+  observations but not for creations: if a child places an order before
+  its reference is saved, a crash in between leaves an orphaned order at
+  the broker, and restart creates a duplicate — for a wheel flip, a second
+  short contract against the same collateral (levels still look all-cash,
+  since an option doesn't move stock). So `Epochs` is authoritative for
+  which children exist, and every child is named in persisted state
+  before it can act. Child UIDs are deterministic (derived from the
+  greeler UID, epoch index, level index, and sequence), the same way
+  `Looper.addNewBuy` builds `path.Join(uid, "buy-%06d")` and saves before
+  running:
+  - **grid → wheel:** in one transaction, append the wheel epoch naming
+    the position's UID and save the empty position record; *then* open
+    the position.
+  - **wheel → grid:** the position is already terminal (its outcome is
+    persisted on its own record, scenario 5); append the grid epoch;
+    *then* create limiters in it, each limiter's UID appended to
+    `LevelLimiterIDs` and saved before it runs.
+
+  `Epochs[last].Mode` is therefore the current mode. Position termination
+  stays a single-record write (scenario 5); the grid epoch is appended by
+  the greeler afterwards, and nothing is created in the new epoch until it
+  exists.
 - **Grid epochs are self-contained the same way wheel epochs are.** A wheel
   epoch's `PositionID` points at everything that happened during it; a grid
   epoch's `LevelLimiterIDs` does the same job for the levels — each grid
@@ -197,9 +213,9 @@ removes both problems and is simply more accurate:
   is always live, simplifying that guarantee rather than merely satisfying
   it.
 - **Assigned or expired positions still have no closing leg** — unchanged
-  from the first draft: both are things that happen *to* the position from
-  outside (no exchange mutation for assignment; expiry is a calendar fact),
-  so the terminal outcome is recorded separately (below), not as a leg.
+  from the first draft: both are things that happen *to* the position,
+  reported by the broker (no exchange mutation on our side), so the
+  terminal outcome is recorded separately (below), not as a leg.
 - **The top-level `Contract` field is a cache of the current contract**,
   refreshed on open and on every roll — unchanged from the first draft; the
   authoritative contract for leg *i* is always that leg's own `optlimiter`
@@ -209,18 +225,12 @@ removes both problems and is simply more accurate:
   question, since intent (now including `roll`) still lives entirely on the
   referenced `optlimiter` record.
 
-**Exchange-layer gap, flagged not solved here:** `exchange.OptionsProduct`
-(exchange/api.go) currently exposes only the four single-contract verbs
-(`LimitBuyToOpen`/`SellToOpen`/`BuyToClose`/`SellToClose`); there is no
-combo/multi-leg order primitive to place an atomic roll against. Placing
-one will need either a new `OptionsExchange` method taking both contract
-IDs and a net price, or a synthetic two-contract product that `optlimiter`
-can still wrap through the existing `limiter.Limiter`/`exchange.Product`
-shape (mapping net-credit/net-debit onto `LimitSell`/`LimitBuy`, the same
-way `optlimiter` already remaps the 4 option verbs onto 2). This is a
-mechanism question for the `optlimiter` module story — the persisted shape
-here (`Intent = "roll"`, `ContractID` + `PriorContractID`, one wrapped
-limiter) is agnostic to which mechanism wins.
+**Placing an atomic roll** needed an exchange primitive that
+`exchange.OptionsProduct` (single-contract) lacked. Resolved in
+optlimiter-story scenario 6: `OptionsExchange.OpenOptionsRollProduct`
+returns an `OptionsRollProduct` (an `exchange.Product`) that a wrapped
+limiter trades directly. The persisted shape here (`Intent = "roll"`,
+`ContractID` + `PriorContractID`, one wrapped limiter) didn't change.
 
 **Persisted:**
 - On the greeler: a wheel entry in `Epochs` (scenario 3a) carrying the
@@ -250,12 +260,24 @@ shares at strike K" — taken literally: that whole clause, shares and strike
 included, is the position's outcome, not a separate record correlated to it
 from outside.
 
-The ladder's positions poll detects an assignment and applies it in **one
-KV transaction, touching one record — the position's own**: set
+The position itself — driven by its greeler — asks the broker how its
+contract stands (optpos-story), and applies an assignment in **one KV
+transaction, touching one record — the position's own**: set
 `Outcome = "assigned"` plus the fact (shares delta, strike, and a key for
-audit/idempotency). `Outcome` starting empty and ending non-empty *is* the
-idempotency guard — a duplicate poll delivery finds it already set and
-no-ops. Nothing else is patched; the greeler's posture is derived, next
+audit/idempotency). The greeler's own tree is the only writer of that
+record — nothing outside it (not the ladder) writes positions. `Outcome`
+starting empty and ending non-empty *is* the idempotency guard — a repeated
+detection finds it already set and no-ops.
+
+**Expiry is recorded the same way, from broker truth only (revised after
+design review).** In-the-money contracts are assigned *at* expiry and the
+broker reports it the next day, so the calendar can't distinguish "expired
+worthless" from "assigned at expiry". Past `Contract.Expiry`, with no broker
+report yet, the position is *settling*: `Outcome` stays empty. Settling is
+derived (`Outcome == ""` and now past `Expiry`), not a stored state.
+`"expired"` is written only on an explicit broker expiration record.
+
+Nothing else is patched; the greeler's posture is derived, next
 iteration, by walking `Epochs`' wheel entries and folding over whichever
 referenced positions report `Outcome == "assigned"` — the same "parent
 holds an ordered UID list, child holds the facts" shape already used for
@@ -301,10 +323,12 @@ per position (`Legs`), and one terminal marker (`Outcome`/`OutcomeAt`/
 
 ### 6. Crash and restart
 
-Restart loads the greeler record, re-derives mode and per-level posture, and
-resumes children by UID. Nothing in any struct is a "phase pointer" that a
-missed fill or assignment could invalidate. This scenario adds no fields — it
-is the test that the previous five persisted the right (minimal) set.
+Restart loads the greeler record, rebuilds its selector and policy from the
+persisted config (scenario 1), reads the current mode from `Epochs[last]`,
+re-derives per-level posture, and resumes children by UID — every child was
+named before it could act (scenario 3a), so none can be orphaned. Nothing in
+any struct is a "phase pointer" that a missed fill or assignment could
+invalidate.
 
 ### 7. The ladder above
 
@@ -351,11 +375,13 @@ type OptLimiterStateV1 struct {
     PriorContractID string
     ExchangeName    string
 
-    // Intent is one of "sell-to-open", "buy-to-close", "buy-to-open",
-    // "sell-to-close", "roll"; fixed at construction. "roll" is a
-    // single atomic broker order (one fill, one net credit/debit) that
-    // closes PriorContractID and opens ContractID together — never
-    // modeled as separate close/open legs.
+    // Intent is "open" | "close" | "roll"; fixed at construction. Side
+    // (BUY/SELL) isn't stored here — it's derived from the wrapped
+    // limiter's point (Cancel vs. Price), the same way Limiter derives
+    // buy/sell, and the adapter maps intent × side onto one of the four
+    // broker verbs. "roll" is a single atomic broker order (one fill, one
+    // net credit/debit) that closes PriorContractID and opens ContractID
+    // together — never modeled as separate close/open legs.
     Intent string
 
     // ContractSize scales contract/premium units at the wrapper
@@ -366,8 +392,8 @@ type OptLimiterStateV1 struct {
     // stored alongside this one under "/optlimiters/" (not
     // "/limiters/"). Loaded via limiter.Load the same way a Looper
     // loads its buy/sell limiters. For "roll", the wrapped limiter
-    // trades a synthetic two-contract product, not a plain
-    // OptionsProduct — see the exchange-layer gap noted in scenario 4.
+    // trades the exchange's OptionsRollProduct directly
+    // (optlimiter-story scenario 6).
     LimiterID string
 }
 
@@ -399,8 +425,11 @@ type OptPositionStateV1 struct {
     // OptLimiterState record, not duplicated here.
     Legs []string
 
-    // Outcome is empty while open; exactly one of
-    // "expired" | "assigned" | "closed" once terminal.
+    // Outcome is empty while open, and while settling (past
+    // Contract.Expiry, before the broker reports how it ended —
+    // scenario 5). Exactly one of "expired" | "assigned" | "closed" once
+    // terminal: "expired"/"assigned" only from broker truth, "closed"
+    // when the position's own buy-to-close leg fills.
     Outcome   string
     OutcomeAt time.Time
 
@@ -462,24 +491,44 @@ type GreelerStateV1 struct {
     HysteresisPct decimal.Decimal
     DwellTime     time.Duration
 
-    // --- State: the one dynamic field. Everything else behavioral
-    // (mode, posture, inventory, assignment history) is derived, not
-    // stored — project.md's own claim that a greeler persists "almost
-    // nothing: a dwell-clock timestamp and an append-only event log"
-    // has fully collapsed into this single field (scenario 3a). ---
+    // ContractSelector and RollPolicy name the compiled-in
+    // implementations (project.md: "registered by name"); empty means
+    // the default. With WheelKnobs, this is everything Load needs to
+    // rebuild them — the server's generic job loader can't inject them
+    // (scenario 1).
+    ContractSelector string
+    RollPolicy       string
+    WheelKnobs       *WheelKnobs
 
-    // Epochs is the append-only journal of mode periods, seeded at
-    // creation with one {Mode: "grid", StartAt: creation time} entry
-    // (scenario 3a) so it is never empty. It replaces a bare
-    // PositionIDs list: filtering for Mode == "wheel" and collecting
-    // PositionID reproduces the position history, while StartAt gives
-    // transition timing for free. Each grid entry also owns that
-    // stint's per-level limiter history (LevelLimiterIDs) — the only
-    // place that history is recorded; GridLevels above holds config
-    // only. It is a journal of transitions the greeler has already
-    // derived, not the authority for current mode — see scenario 3a's
-    // scoping rule.
+    // --- State: the one dynamic field. Posture, inventory, and
+    // assignment history are derived, not stored; the dwell clock and
+    // the record of every child live in this single field
+    // (scenario 3a). ---
+
+    // Epochs is the append-only list of mode periods, seeded at creation
+    // with one {Mode: "grid", StartAt: creation time} entry (scenario 3a)
+    // so it is never empty. Filtering for Mode == "wheel" and collecting
+    // PositionID gives the position history; StartAt gives transition
+    // timing. Each grid entry also owns that stint's per-level limiter
+    // history (LevelLimiterIDs) — the only place that history is
+    // recorded; GridLevels above holds config only. Appended write-ahead
+    // (scenario 3a): authoritative for which children exist, and
+    // Epochs[last].Mode is the current mode.
     Epochs []*GreelEpoch
+}
+
+// WheelKnobs are the resolved Layer-1 knob values (project.md contract
+// selection) the greeler's ContractSelector and RollPolicy are built from.
+// Presets only pre-fill these at creation.
+type WheelKnobs struct {
+    TargetDelta       decimal.Decimal
+    MinDTE, MaxDTE    int
+    MinPremiumYield   decimal.Decimal
+    MinOpenInterest   decimal.Decimal
+    MaxSpreadPct      decimal.Decimal
+    RollDTE           int
+    ProfitTakePct     decimal.Decimal
+    LossCloseMultiple decimal.Decimal
 }
 
 type GreelEpoch struct {
@@ -558,15 +607,26 @@ type GreelLadderStateV1 struct {
   `/loopers/`); adding `/optlimiters/` to that list is the matching
   other half. See the embed-vs-reference decision below for why this is
   worth the touch.
+- **TODO — isolation gaps:** the keyspace must be a field on the `Limiter`
+  instance, not just a `Save`/`Load` parameter, because limiter's background
+  finish-time fixer saves active limiters through their own `Save`. That
+  fixer also calls `GetOrder` on the spot exchange with the option limiter's
+  product ID (optlimiter-story scenario 7).
+- **TODO — `OptLimiterStateV1` may change:** optlimiter-story's closing TODO
+  would replace the wrapped `Limiter` with an option order state machine.
+  If taken, `OptLimiterStateV1` drops `LimiterID` and stores its own orders
+  and client-ID seed/offset (like `LimiterStateV2`), decision #1 below
+  becomes moot, and the keyspace override and isolation TODO above go away.
+  Resolve before implementing `OptLimiterState`.
 
 ### Deliberately absent (derived, per design principle 1)
 
-- A live "current mode" flag — control flow still derives it each
-  iteration (scenario 3). `Epochs`' per-entry `Mode` (scenario 3a) is a
-  different kind of field: an append-only journal of transitions already
-  derived, never itself consulted to decide what to do next.
+- A separate "current mode" flag — `Epochs[last].Mode` is the mode
+  (scenario 3a).
+- A stored "settling" state — it's derived: `Outcome == ""` and now past
+  `Contract.Expiry` (scenario 5).
 - An `EndAt` on `GreelEpoch` — computed at read time from the next entry's
-  `StartAt` (or now), keeping every field write-once.
+  `StartAt` (or now), so closed epochs are never touched again.
 - A flat, top-level `LimiterIDs` per level spanning the greeler's whole
   life — it would duplicate exactly what each grid epoch's
   `LevelLimiterIDs` already records; a level's full history is the
@@ -652,15 +712,14 @@ type GreelLadderStateV1 struct {
    | What it records | Wheel periods only (position UIDs, in order) | Every mode period, grid and wheel, with `StartAt` |
    | Time-in-mode / transition traversal | Not derivable without loading every position and correlating against level limiter timestamps | Single pass over one list |
    | Reproduces the old list? | — | Yes exactly: filter `Mode == "wheel"`, collect `PositionID` |
-   | Authority for current mode | N/A — mode was already derived from spot + children (scenario 3), unchanged | Still N/A — `Epochs` is a journal of already-derived transitions, explicitly not consulted to decide current mode, so this doesn't reopen decision-log #2's dual-source concern |
-   | Transactional cost of appending | One record (the greeler), on flip | Same — one record, one append, on the greeler's own next iteration after it notices (via the referenced position's `Outcome`) that a transition occurred; not atomic with the position's own terminal write |
+   | Authority for current mode | N/A — mode was derived from spot + children | `Epochs[last].Mode` — authoritative, since epochs are appended write-ahead (decision #9) |
+   | Transactional cost of appending | One record (the greeler), on flip | Same — one record, one append, on the greeler's own record; not atomic with the position's terminal write |
 
    **Why it's a strict upgrade, not just an addition:** `Epochs` carries
    everything `PositionIDs` did (as a filter) plus transition timing, at no
-   extra transactional cost and no new dual-source risk — appending stays
-   scoped as a best-effort journal entry, never something control-flow
-   trusts without cross-checking the position it names. A crash that skips
-   an append leaves the journal briefly incomplete, never wrong.
+   extra transactional cost. (This decision originally framed `Epochs` as a
+   best-effort journal appended after the fact; decision #9 replaced that
+   with write-ahead.)
 
 6. **Per-level limiter history moves into grid epochs, not a top-level
    `GreelLevel.LimiterIDs` — decided.** Raised as: if a wheel epoch is
@@ -723,3 +782,25 @@ type GreelLadderStateV1 struct {
    instead of saying so structurally — the same gap `GridLevels`'
    `LevelLimiterIDs` closed for grid-mode history, now closed for the
    dwell clock too.
+
+9. **Epochs are appended write-ahead, with deterministic child UIDs —
+   decided after design review.** Supersedes the "journal appended after
+   the transition is real" framing. Recording a child after it has placed
+   an order lets a crash orphan the order and restart duplicate it (a
+   second short contract, for a wheel flip). Every child is now named in
+   persisted state before it can act — the pattern `Looper.addNewBuy`
+   already follows — and `Epochs[last].Mode` is the current mode
+   (scenario 3a).
+10. **A written contract's outcome comes only from broker truth; settling is
+    derived — decided after design review.** The calendar can't tell
+    "expired worthless" from "assigned at expiry", and an earlier design
+    that wrote `"expired"` at the calendar deadline would have made a later
+    assignment report a no-op against the idempotency guard — losing the
+    assignment. Past `Expiry` the position is settling (`Outcome` empty)
+    until the broker reports; the greeler's own tree is the only writer of
+    the position record (scenario 5).
+11. **Selector/policy names and resolved knob values persisted in
+    `GreelerStateV1` — decided after design review.** `server.Load` has
+    only a KV reader, so the greeler must rebuild its `ContractSelector` and
+    `RollPolicy` from its own record; the options exchange comes from
+    `rt.Exchange` at `Run` time (scenario 1).

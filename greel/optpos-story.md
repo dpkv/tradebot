@@ -46,27 +46,28 @@ calling a blocking method inline.
 
 ### 1. Position born: contract selection, then sell-to-open
 
-`Position.Open` (called by the owning `greeler` once qualification holds —
-gobs-story.md's all-or-nothing rule) does, in order:
+By the time `Position.Open` is called, the greeler has already appended the
+wheel epoch naming this position's UID and saved the empty position record
+(write-ahead, gobs-story.md scenario 3a). `Open` then does, in order:
 
 1. Fetch the chain: `optionsExchange.GetOptionsChain(ctx, underlying)`.
 2. `ContractSelector.Select(ctx, chain, constraint)` picks one contract —
    `constraint` carries the greeler-derived bounds (strike ≤ greeler's
    levels / ≤ cash÷100 for a CSP, strike ≥ levels' sell prices for a CC;
-   project.md's contract-selection section), not DTE/liquidity knobs, which
-   live on the selector itself (Layer 1, injected at construction — see
-   Open questions).
+   project.md's contract-selection section), plus the ladder's sibling
+   exclusion when there is one (greelladder-story) — not DTE/liquidity
+   knobs, which live on the selector itself (decision #1).
 3. `optionsExchange.OpenOptionsProduct(ctx, contract.ContractID)` opens the
    live product.
-4. `optlimiter.New(uid, exchangeName, contract.ContractID, optlimiter.IntentOpen, contract.ContractSize, numContracts, limitPrice)`
-   builds the leg (limit price from the selector's own premium target, not
+4. `optlimiter.New(legUID, exchangeName, contract.ContractID, optlimiter.IntentOpen, "SELL", contract.ContractSize, numContracts, limitPrice)`
+   builds the leg, with a deterministic `legUID = path.Join(positionUID,
+   "leg-%06d")` (limit price from the selector's own premium target, not
    re-derived here).
-5. `job.Run` spawns it (per Grounding above); `Position` records the
-   `OptLimiter` UID as `Legs[0]` and saves — this is the leg-chain's first
-   entry, matching gobs-story's grammar (`sell-to-open roll* (buy-to-close)?`).
-6. `Position.Contract` (the cache field, gobs-story.md) is set from
-   `contract` directly — no round-trip through the exchange needed since
-   the selector already returned the full snapshot.
+5. **Write-ahead:** append the leg's UID as `Legs[0]`, set `Contract` (the
+   cache field) from the selected contract, and save — one transaction,
+   *before* anything is placed. A crash after this point resumes the same
+   leg against the same contract (scenario 5) instead of re-selecting.
+6. Only then does `job.Run` spawn the leg (per Grounding above).
 
 ### 2. Position lives: one decision function, asked repeatedly
 
@@ -100,16 +101,23 @@ checking each threshold itself — `Position` only needs to know what to *do*
 with the answer:
 
 - `ActionHold`: nothing.
-- `ActionClose`: place a `buy-to-close` `OptLimiter` leg (append to `Legs`,
-  same shape as scenario 1's sell-to-open but `Intent = "close"`), and once
-  it fills, set `Outcome = "closed"` (scenario 4).
+- `ActionClose`: place a buy-to-close `OptLimiter` leg (`Intent = "close"`,
+  side `"BUY"`; UID appended to `Legs` and saved before it runs, like
+  scenario 1), and once it fills, set `Outcome = "closed"` (scenario 4).
 - `ActionRoll`: scenario 3.
 
-Expiry itself isn't a `RollPolicy` decision — it's a calendar fact
-(`Contract.Expiry` vs. wall clock, gobs-story.md's own framing for why it's
-not a `GreelEvent`/`Assignment`-style external fact either). `Position`
-checks this directly on every call, ahead of consulting `RollPolicy` at
-all: past expiry, the position is already terminal by the time anyone asks.
+Each `Check` runs in this order, and stops at the first step that applies:
+
+1. `Outcome` already set → terminal; nothing to do.
+2. **Settlement check** (scenario 6, at most hourly): if the broker reports
+   the contract assigned or expired, record it (scenario 4) and stop.
+3. **Past `Contract.Expiry`** → the position is *settling*: no decisions,
+   no new legs, just wait for step 2 to see broker truth. Expiry is not a
+   calendar fact — an in-the-money contract is assigned at expiry and the
+   broker reports it the next day, so the calendar alone can't say which
+   way it ended.
+4. A leg already in flight → wait for it.
+5. Otherwise, ask `RollPolicy` (skipped if nil) and act on the answer.
 
 ### 3. Rolling: one `OptionsRollProduct` leg, not two orders
 
@@ -118,45 +126,39 @@ When `RollPolicy.Decide` returns `ActionRoll`, `Position`:
 1. Picks the replacement contract — `ContractSelector.Select` again, same
    `constraint` (the greeler's levels haven't moved).
 2. `optionsExchange.OpenOptionsRollProduct(ctx, currentContract.ContractID, newContract.ContractID)`
-   — the new interface method from optlimiter-story.md decision #1.
-3. `optlimiter.New(uid, exchangeName, "" /* no single ContractID */, optlimiter.IntentRoll, ...)`
-   with `PriorContractID`/`ContractID` set per gobs-story.md's
-   `OptLimiterStateV1` shape, wrapping the `OptionsRollProduct` via
-   `optlimiter.NewProduct` (which already accepts any `exchange.
-   OptionsProduct`-shaped wrapped value per its signature — a
-   `RollProduct`/`OptionsRollProduct` is `exchange.Product` directly, so
-   the roll leg's `OptLimiter` doesn't even go through the adapter at all;
-   see optlimiter-story.md scenario 6 — it wraps a `*limiter.Limiter` built
-   straight against the `OptionsRollProduct`).
-4. `job.Run` spawns it; on fill, `Position.Contract` is refreshed to the
-   new contract (gobs-story.md: "refreshed on every roll") and `Legs` gets
-   the one new roll-leg UID appended — never two.
+   — the interface method from optlimiter-story.md decision #1.
+3. `optlimiter.NewRoll(legUID, exchangeName, rollProduct.ProductID(), currentContract.ContractID, newContract.ContractID, side, ...)`
+   — side `"SELL"` for a net credit, `"BUY"` for a net debit. The roll leg
+   does **not** go through `optlimiter.NewProduct`: an `OptionsRollProduct`
+   already is an `exchange.Product`, so it's passed directly as the leg's
+   `trader.Runtime.Product` (optlimiter-story.md scenario 6).
+4. **Write-ahead:** append the one roll-leg UID to `Legs` and save, then
+   `job.Run` spawns it. On fill, `Contract` is refreshed to the new
+   contract; since it's only a cache, `Load` also refreshes it from the
+   last filled leg, so a crash between fill and save loses nothing.
 
 No separate close-then-open bookkeeping exists anywhere in `optpos` — the
 one atomic roll leg *is* the whole operation, matching the broker reality
 gobs-story.md's decision required.
 
-### 4. Position dies: two different writers, one struct
+### 4. Position dies: one writer, three outcomes
 
-gobs-story.md already decided where each terminal outcome is written, but
-`optpos`'s story is what has to *respect* that boundary operationally:
+Every terminal outcome is written by the position itself, inside its
+greeler's tree — nothing outside that tree (not the ladder) ever writes a
+position record, so there's no stale-copy overwrite to guard against:
 
-- **`"closed"`** (scenario 2's `ActionClose` path) and **`"expired"`**
-  (scenario 2's calendar check) are both detected and written by `optpos`
-  itself — `Outcome`/`OutcomeAt` set directly, no `Assignment` fact (that
-  field is `nil` for these two outcomes).
-- **`"assigned"`** is written by the ladder's positions poll, reaching
-  directly into `OptPositionState` — not through any `optpos` code path at
-  all (gobs-story.md scenario 5). `optpos` never initiates this.
+- **`"closed"`**: its own buy-to-close leg filled (scenario 2) — local
+  truth, our own order. `Assignment` stays nil.
+- **`"assigned"`**: the settlement check (scenario 6) reports an
+  assignment. `Outcome`, `OutcomeAt`, and the `Assignment` fact (broker
+  transaction key; shares = contracts × `ContractSize`, positive for a
+  put, negative for a call; price = strike) are set in one transaction.
+- **`"expired"`**: the settlement check reports an explicit expiration
+  record. Never inferred from the calendar, and never from the contract
+  merely disappearing from the account — absence alone could be a
+  reporting lag.
 
-The operational consequence: every `Position` method that's about to act
-(scenario 2's live check, scenario 1's open) must **load-and-check `Outcome`
-first**, since it can go non-empty behind `optpos`'s back between one
-greeler iteration and the next. Discovering `Outcome == "assigned"` on
-what `optpos` thought was still an open position isn't an error — it's
-exactly the crash-safe, externally-caused termination gobs-story.md
-designed for. `Position` just stops: no more legs, nothing to place,
-report terminal upward.
+Once `Outcome` is set, `Legs` is frozen and `Check` is a no-op.
 
 ### 5. Crash and resume: load, find the live leg, reattach
 
@@ -169,7 +171,34 @@ product (`OpenOptionsProduct`/`OpenOptionsRollProduct` again, using
 `Contract`'s cached identity, or `ContractID`/`PriorContractID` off the
 resumed `OptLimiter` itself), rebuild the adapter, and `job.Run` it again.
 Nothing here is new state — it's the same "re-derive, re-issue idempotent
-calls, converge" pattern the whole design already relies on.
+calls, converge" pattern the whole design already relies on. A position
+with no legs yet (the greeler crashed between saving the empty record and
+`Open`) simply runs `Open` again.
+
+### 6. Settlement check: broker truth about the contract
+
+The one piece of new exchange surface this module needs — **proposed, not
+yet signed off** (touches `exchange/api.go`):
+
+```go
+// OptionsSettlement is broker truth about a contract this account wrote.
+type OptionsSettlement struct {
+    Status    string          // "open" | "assigned" | "expired"
+    Key       string          // broker transaction ID, for assigned/expired
+    Contracts decimal.Decimal // contracts assigned or expired
+    At        time.Time
+}
+
+// GetOptionsSettlement reports how a written contract stands. "expired"
+// and "assigned" come only from explicit broker records.
+GetOptionsSettlement(ctx context.Context, contractID string) (*OptionsSettlement, error)
+```
+
+`Check` calls this at most **hourly** — the interval decided earlier for
+the ladder's poll, which this replaces. That catches early assignment
+(ex-dividend risk) the same day, and expiry-time assignment the morning
+after it's reported. The last-check time is in memory only; after a
+restart the first `Check` just checks immediately.
 
 ---
 
@@ -202,6 +231,11 @@ type Constraint struct {
 
     MaxStrike decimal.Decimal // CSP: <= levels and <= cash/100
     MinStrike decimal.Decimal // CC: >= levels' sell prices
+
+    // Exclude reports contracts a sibling greeler already holds or is
+    // selecting, so two siblings never write the same contract series
+    // (greelladder-story). Nil when the greeler runs standalone.
+    Exclude func(contractID string) bool
 }
 
 // ContractSelector picks the next contract to open for one position.
@@ -251,6 +285,8 @@ type Position struct {
 
     active *job.Job // the currently running leg, nil if none in flight
 
+    lastSettlementCheck time.Time // in memory only; hourly cadence (scenario 6)
+
     // Held at construction (New/Load), not re-passed to every method —
     // decided, see decision #2. runtime builds each leg's trader.Runtime.
     optEx exchange.OptionsExchange
@@ -269,16 +305,23 @@ func New(uid, exchangeName, underlying string, selector ContractSelector, policy
     panic("unimplemented")
 }
 
+// Open selects a contract and places the sell-to-open leg. The greeler has
+// already saved this position's empty record under its wheel epoch
+// (write-ahead); Open saves the leg's UID before the leg can place an order.
 func (v *Position) Open(ctx context.Context, fctx context.Context, c *Constraint) error {
     panic("unimplemented") // scenario 1
 }
 
-// Check re-derives what should happen right now — expiry, then RollPolicy,
-// then acts. Called by the owning greeler every iteration while this
-// position is open; a no-op once Outcome is set by anyone (scenario 4).
+// Check re-derives what should happen right now — settlement, then expiry
+// (settling), then RollPolicy — and acts. Called by the owning greeler
+// every iteration while this position is open; a no-op once Outcome is set
+// (scenarios 2, 4).
 func (v *Position) Check(ctx context.Context, fctx context.Context) error {
     panic("unimplemented") // scenario 2
 }
+
+// Outcome is empty while open or settling; terminal otherwise.
+func (v *Position) Outcome() string { return v.outcome }
 
 func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
     panic("unimplemented")
@@ -320,4 +363,26 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
    buffer, and that principle extends past the buffer into wheel mode
    itself. The flip back to grid is a *consequence* of `RollPolicy`/expiry/
    assignment making the position terminal, never something `greeler`
-   commands directly. No open questions remain in this module.
+   commands directly.
+4. **Terminal outcomes come only from broker truth or the position's own
+   fill; past expiry the position is settling — decided after design
+   review.** Replaces the first draft's calendar-based `"expired"`, which
+   would have recorded every expiry-time assignment as an expiry and then
+   ignored the broker's assignment report as a duplicate (scenarios 2, 4).
+5. **Assignment detection lives in the position, driven by its greeler —
+   decided after design review.** Replaces the ladder's positions poll.
+   The greeler's tree becomes the only writer of position records (no
+   stale-copy overwrites), and a standalone greeler detects its own
+   assignments. The hourly cadence moved here from the ladder (scenario 6).
+6. **Legs are written ahead with deterministic UIDs — decided after design
+   review.** A leg's UID (`path.Join(positionUID, "leg-%06d")`) is saved
+   before it can place an order, so a crash can't orphan an order or
+   re-select a different contract on restart (scenarios 1, 3).
+7. **Sibling exclusion via `Constraint.Exclude` — decided after design
+   review**, provided by the ladder; nil when standalone. TODO: revisit
+   the restriction (greelladder-story).
+
+## Open questions for this checkpoint
+
+1. **`OptionsExchange.GetOptionsSettlement` (scenario 6) — proposed, needs
+   sign-off** before touching `exchange/api.go`.
