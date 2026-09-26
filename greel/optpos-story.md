@@ -177,8 +177,8 @@ with no legs yet (the greeler crashed between saving the empty record and
 
 ### 6. Settlement check: broker truth about the contract
 
-The one piece of new exchange surface this module needs — **proposed, not
-yet signed off** (touches `exchange/api.go`):
+The one piece of new exchange surface this module needs — **approved and
+implemented** in `exchange/api.go` (decision #8):
 
 ```go
 // OptionsSettlement is broker truth about a contract this account wrote.
@@ -381,8 +381,8 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
 7. **Sibling exclusion via `Constraint.Exclude` — decided after design
    review**, provided by the ladder; nil when standalone. TODO: revisit
    the restriction (greelladder-story).
-
-## Open questions for this checkpoint
-
-1. **`OptionsExchange.GetOptionsSettlement` (scenario 6) — proposed, needs
-   sign-off** before touching `exchange/api.go`.
+8. **`OptionsExchange.GetOptionsSettlement` added — approved and
+   implemented.** The broker query behind scenario 6, with
+   `exchange.OptionsSettlement` as its result. Like the other options
+   methods, no exchange implements it yet; the `etrade` implementation is
+   follow-on work. No open questions remain in this module.

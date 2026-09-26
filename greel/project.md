@@ -298,8 +298,7 @@ developer checkpoints at every step.
 
 1. **Assignment detection** — *resolved* (optpos-story): each position asks
    the broker how its own contract stands; only broker truth writes
-   `expired`/`assigned`. Needs an `OptionsExchange` settlement query —
-   proposed, pending sign-off.
+   `expired`/`assigned`, via `OptionsExchange.GetOptionsSettlement` (added).
 2. **Accounting model**: `gobs.Summary` is stock-centric. Premium, assignment
    cost basis, and per-greeler netting (e.g., CC sale recorded at greeler
    level against level cost bases) need an extended P&L model
@@ -339,7 +338,7 @@ developer checkpoints at every step.
 
 - [x] `gobs/greel.go` story — drafted in [gobs-story.md](gobs-story.md), reviewed
 - [ ] `optlimiter` story — drafted in [optlimiter-story.md](optlimiter-story.md); reopened by design review: TODO — option order state machine with re-pricing
-- [ ] `optpos` story — drafted in [optpos-story.md](optpos-story.md); reopened by design review: `GetOptionsSettlement` interface needs sign-off
+- [x] `optpos` story — drafted in [optpos-story.md](optpos-story.md), reviewed (design-review items resolved)
 - [x] `greeler` story — drafted in [greeler-story.md](greeler-story.md), reviewed
 - [x] `greelladder` story — drafted in [greelladder-story.md](greelladder-story.md), reviewed
 

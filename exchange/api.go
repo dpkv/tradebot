@@ -160,7 +160,21 @@ type OptionsExchange interface {
 	// it directly: LimitSell places the roll for a net credit, LimitBuy
 	// for a net debit.
 	OpenOptionsRollProduct(ctx context.Context, priorContractID, contractID string) (OptionsRollProduct, error)
+
+	// GetOptionsSettlement reports how a contract this account wrote
+	// stands. "assigned" and "expired" must come from explicit broker
+	// records, never inferred from the calendar or from the contract
+	// disappearing from the account.
+	GetOptionsSettlement(ctx context.Context, contractID string) (*OptionsSettlement, error)
 }
 
 // OptionsRollProduct is exchange.Product, scoped to one roll order.
 type OptionsRollProduct = Product
+
+// OptionsSettlement is broker truth about a contract this account wrote.
+type OptionsSettlement struct {
+	Status    string          // "open" | "assigned" | "expired"
+	Key       string          // broker transaction ID, for assigned/expired
+	Contracts decimal.Decimal // contracts assigned or expired
+	At        time.Time
+}
