@@ -291,8 +291,6 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
 
 ---
 
-## Open questions for this checkpoint
-
 ## Decisions made at this checkpoint
 
 1. **Layer 1 knobs reach `ContractSelector`/`RollPolicy` via one shared
@@ -313,13 +311,13 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
    fields instead of a free function taking five parameters. Reflected in
    the skeleton above.
 
-## Open questions for this checkpoint
-
-1. **Does `Check` need to be told "spot is far / near" at all, or is that
-   entirely the greeler's problem?** As sketched, `Position` only reacts to
-   expiry and `RollPolicy`'s verdict — it never looks at spot directly.
-   That matches "the position doesn't own zone geometry," but means the
-   greeler must already have decided wheel mode should continue before
-   calling `Check` at all — deferred to the `greeler` story, which defines
-   that call site precisely; this is the one real open question left in
-   this module.
+3. **`Check` needs no spot/zone information — resolved by the `greeler`
+   story.** greeler-story.md scenario 2 settles this: `greeler` calls
+   `Check` unconditionally every iteration while the last epoch is
+   `"wheel"` and its position isn't terminal, never gated on spot's zone.
+   The greeler never force-closes a position on a zone change — project.md
+   already says "existing orders/positions drift through untouched" in the
+   buffer, and that principle extends past the buffer into wheel mode
+   itself. The flip back to grid is a *consequence* of `RollPolicy`/expiry/
+   assignment making the position terminal, never something `greeler`
+   commands directly. No open questions remain in this module.
