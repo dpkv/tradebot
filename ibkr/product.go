@@ -305,6 +305,7 @@ func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetai
 	}
 
 	if order != nil && order.IsDone() {
+		p.exchange.markFillObserved(ctx, order)
 		p.pendingCancels.Delete(orderID)
 		return order, nil
 	}
@@ -413,24 +414,6 @@ func (p *Product) Cancel(ctx context.Context, serverID string) error {
 // goWatchOrderUpdates subscribes to the per-symbol orders topic published by
 // goWatchOrders in the client. For each incoming order whose cOID matches a
 // known clientID, it updates the cached order snapshot in clientIDStatusMap.
-// fetchCommission calls the trades API and sets order.Commission from the
-// matching execution record. Logs and returns on any error — commission
-// staying at zero is non-fatal; the order is still persisted correctly.
-func (p *Product) fetchCommission(ctx context.Context, order *internal.Order) {
-	trades, err := p.client.GetTrades(ctx, 1)
-	if err != nil {
-		slog.Warn("ibkr: could not fetch trades for commission", "clientOrderID", order.ClientOrderID, "err", err)
-		return
-	}
-	for _, t := range trades {
-		if t.OrderRef == order.ClientOrderID {
-			order.Commission = t.Commission
-			return
-		}
-	}
-	slog.Warn("ibkr: no trade found for commission", "clientOrderID", order.ClientOrderID)
-}
-
 func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 	defer p.wg.Done()
 
@@ -472,16 +455,7 @@ func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 		cstatus.mu.Unlock()
 
 		if order.IsDone() {
-			if existing, ok := p.exchange.findOrderByServerID(order.OrderID); ok && existing.FillObservedAt != 0 {
-				order.FillObservedAt = existing.FillObservedAt
-				order.Commission = existing.Commission
-			} else {
-				if order.FillObservedAt == 0 {
-					order.FillObservedAt = time.Now().UnixMilli()
-				}
-				p.fetchCommission(ctx, order)
-			}
-			p.exchange.persistOrder(ctx, order)
+			p.exchange.markFillObserved(ctx, order)
 
 			if p.onBuyFill != nil && order.OrderSide() == "BUY" && order.FilledQty.IsPositive() {
 				if _, alreadyNotified := p.notifiedFills.LoadOrStore(order.OrderID, struct{}{}); !alreadyNotified {

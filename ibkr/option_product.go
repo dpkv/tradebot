@@ -213,6 +213,7 @@ func (p *OptionsProduct) Get(ctx context.Context, serverID string) (exchange.Ord
 		if cstatus.order != nil && cstatus.order.OrderID == orderID {
 			o := cstatus.order
 			cstatus.mu.Unlock()
+			p.exchange.markFillObserved(ctx, o)
 			return o, nil
 		}
 		cstatus.mu.Unlock()
@@ -224,6 +225,7 @@ func (p *OptionsProduct) Get(ctx context.Context, serverID string) (exchange.Ord
 	}
 	for _, o := range orders {
 		if o.OrderID == orderID {
+			p.exchange.markFillObserved(ctx, o)
 			return o, nil
 		}
 	}
@@ -285,7 +287,7 @@ func (p *OptionsProduct) goWatchOrderUpdates(ctx context.Context) {
 		cstatus.mu.Unlock()
 
 		if order.IsDone() {
-			p.exchange.persistOrder(ctx, order)
+			p.exchange.markFillObserved(ctx, order)
 
 			if p.onBuyFill != nil && order.OrderSide() == "BUY" && order.FilledQty.IsPositive() {
 				if _, alreadyNotified := p.notifiedFills.LoadOrStore(order.OrderID, struct{}{}); !alreadyNotified {

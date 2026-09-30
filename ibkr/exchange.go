@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
@@ -197,9 +198,10 @@ func (v *Exchange) GetSpotProduct(ctx context.Context, base, quote string) (*gob
 }
 
 // GetOrder fetches the current state of an order by server ID. It polls the
-// full orders list and finds the matching entry. Returns os.ErrNotExist if
-// the order is not found (it may have been purged from the gateway's live
-// order cache after completion).
+// full orders list and finds the matching entry, then stamps a fill
+// timestamp via markFillObserved if the order is done and doesn't have one
+// yet. Returns os.ErrNotExist if the order is not found (it may have been
+// purged from the gateway's live order cache after completion).
 func (v *Exchange) GetOrder(ctx context.Context, productID string, serverID string) (exchange.OrderDetail, error) {
 	orderID, err := strconv.ParseInt(serverID, 10, 64)
 	if err != nil {
@@ -212,10 +214,58 @@ func (v *Exchange) GetOrder(ctx context.Context, productID string, serverID stri
 	}
 	for _, o := range orders {
 		if o.OrderID == orderID {
+			v.markFillObserved(ctx, o)
 			return o, nil
 		}
 	}
 	return nil, fmt.Errorf("ibkr: order %q not found in live orders: %w", serverID, os.ErrNotExist)
+}
+
+// fetchCommission calls the trades API and sets order.Commission and
+// order.FillObservedAt from the matching execution record. trade_time_r is
+// the authoritative fill timestamp reported by the broker — it can differ
+// from LastExecutionTimeMilli (the orders API's last order-book event, which
+// FinishedAt otherwise falls back to) by hours, since a resting limit order
+// can be accepted long before it fills. Logs and returns on any error or a
+// missing match; the provisional FillObservedAt set by the caller and a zero
+// commission are non-fatal.
+func (v *Exchange) fetchCommission(ctx context.Context, order *internal.Order) {
+	trades, err := v.client.GetTrades(ctx, 1)
+	if err != nil {
+		slog.Warn("ibkr: could not fetch trades for commission", "clientOrderID", order.ClientOrderID, "err", err)
+		return
+	}
+	for _, t := range trades {
+		if t.OrderRef == order.ClientOrderID {
+			order.Commission = t.Commission
+			if t.TradeTimeMilli != 0 {
+				order.FillObservedAt = t.TradeTimeMilli
+			}
+			return
+		}
+	}
+	slog.Warn("ibkr: no trade found for commission", "clientOrderID", order.ClientOrderID)
+}
+
+// markFillObserved stamps FillObservedAt and fetches the commission (and the
+// authoritative fill time — see fetchCommission) for order the first time it
+// is seen as Done, then persists it. Every code path that can be the first to
+// observe an order as Done — the per-product topic watcher, a plain Get poll,
+// or this exchange's own GetOrder — calls this rather than duplicating the
+// logic, so whichever gets there first stamps a real timestamp instead of
+// leaving it to fall back to LastExecutionTimeMilli.
+func (v *Exchange) markFillObserved(ctx context.Context, order *internal.Order) {
+	if !order.IsDone() || order.FillObservedAt != 0 {
+		return
+	}
+	if existing, ok := v.findOrderByServerID(order.OrderID); ok && existing.FillObservedAt != 0 {
+		order.FillObservedAt = existing.FillObservedAt
+		order.Commission = existing.Commission
+	} else {
+		order.FillObservedAt = time.Now().UnixMilli()
+		v.fetchCommission(ctx, order)
+	}
+	v.persistOrder(ctx, order)
 }
 
 // resolveConid returns the conid for a symbol, using the cache to avoid
