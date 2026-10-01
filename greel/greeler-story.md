@@ -164,7 +164,7 @@ pause, set, and resume, as with `Looper`.
 
 The server reloads jobs generically — `server.Load(ctx, r, uid, typename)`
 (`server/load.go:75`) gets only a KV reader — so `greeler.Load(ctx, uid,
-r)` must rebuild everything from `GreelerStateV1`: `GridLevels`, zone
+r)` must rebuild everything from `GreelerStateV1.Config`: `GridLevels`, zone
 parameters, and the `ContractSelector` looked up by its persisted name and
 built from the persisted `WheelKnobs` (gobs-story.md decision #11). The one runtime dependency the record can't hold, the
 options exchange, comes from `rt.Exchange.(exchange.OptionsExchange)` in
