@@ -240,20 +240,24 @@ func (v *OptLimiter) Save(ctx context.Context, rw kv.ReadWriter) error {
 	v.mu.Lock()
 	gv := &gobs.OptLimiterState{
 		V1: &gobs.OptLimiterStateV1{
-			ExchangeName:    v.exchangeName,
-			ContractID:      v.contractID,
-			ContractSize:    v.contractSize,
-			NumContracts:    v.numContracts,
-			MinPremium:      v.minPremium,
-			RepriceStep:     v.repriceStep,
-			RepriceInterval: v.repriceInterval,
-			ClientIDSeed:    v.idgen.Seed(),
-			ClientIDOffset:  v.idgen.Offset(),
-			Orders:          make(map[string]*gobs.Order, len(v.orders)),
+			Config: &gobs.OptLimiterConfig{
+				ExchangeName:    v.exchangeName,
+				ContractID:      v.contractID,
+				ContractSize:    v.contractSize,
+				NumContracts:    v.numContracts,
+				MinPremium:      v.minPremium,
+				RepriceStep:     v.repriceStep,
+				RepriceInterval: v.repriceInterval,
+				ClientIDSeed:    v.idgen.Seed(),
+			},
+			Progress: &gobs.OptLimiterProgress{
+				ClientIDOffset: v.idgen.Offset(),
+				Orders:         make(map[string]*gobs.Order, len(v.orders)),
+			},
 		},
 	}
 	for id, order := range v.orders {
-		gv.V1.Orders[id] = toGobOrder(order)
+		gv.V1.Progress.Orders[id] = toGobOrder(order)
 	}
 	v.mu.Unlock()
 
@@ -273,28 +277,29 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*OptLimiter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not load optlimiter state: %w", err)
 	}
-	if gv.V1 == nil {
-		return nil, fmt.Errorf("optlimiter state at %q has no known version", key)
+	if gv.V1 == nil || gv.V1.Config == nil || gv.V1.Progress == nil {
+		return nil, fmt.Errorf("optlimiter state at %q is incomplete", key)
 	}
+	config, progress := gv.V1.Config, gv.V1.Progress
 	seed := uid
-	if len(gv.V1.ClientIDSeed) > 0 {
-		seed = gv.V1.ClientIDSeed
+	if len(config.ClientIDSeed) > 0 {
+		seed = config.ClientIDSeed
 	}
 	v := &OptLimiter{
 		uid:             uid,
-		exchangeName:    gv.V1.ExchangeName,
-		contractID:      gv.V1.ContractID,
-		contractSize:    gv.V1.ContractSize,
-		numContracts:    gv.V1.NumContracts,
-		minPremium:      gv.V1.MinPremium,
-		repriceStep:     gv.V1.RepriceStep,
-		repriceInterval: gv.V1.RepriceInterval,
+		exchangeName:    config.ExchangeName,
+		contractID:      config.ContractID,
+		contractSize:    config.ContractSize,
+		numContracts:    config.NumContracts,
+		minPremium:      config.MinPremium,
+		repriceStep:     config.RepriceStep,
+		repriceInterval: config.RepriceInterval,
 		// The saved offset is written before each order is placed, so it
 		// already covers every client ID that may be at the broker.
-		idgen:  idgen.New(seed, gv.V1.ClientIDOffset),
-		orders: make(map[string]*exchange.SimpleOrder, len(gv.V1.Orders)),
+		idgen:  idgen.New(seed, progress.ClientIDOffset),
+		orders: make(map[string]*exchange.SimpleOrder, len(progress.Orders)),
 	}
-	for id, gorder := range gv.V1.Orders {
+	for id, gorder := range progress.Orders {
 		order, err := fromGobOrder(gorder)
 		if err != nil {
 			return nil, fmt.Errorf("could not decode optlimiter order %q: %w", id, err)

@@ -13,6 +13,12 @@ type OptLimiterState struct {
 }
 
 type OptLimiterStateV1 struct {
+	Config   *OptLimiterConfig
+	Progress *OptLimiterProgress
+}
+
+// OptLimiterConfig is fixed at creation.
+type OptLimiterConfig struct {
 	ExchangeName string
 	ContractID   string
 
@@ -25,8 +31,12 @@ type OptLimiterStateV1 struct {
 	RepriceStep     decimal.Decimal // fraction of the bid-ask spread per step
 	RepriceInterval time.Duration
 
+	ClientIDSeed string
+}
+
+// OptLimiterProgress is everything trading writes.
+type OptLimiterProgress struct {
 	// ClientIDOffset is saved before each order is placed, so any lower ID may be at the broker.
-	ClientIDSeed   string
 	ClientIDOffset uint64
 
 	// Orders maps server order ID to order; at most one is live at a time.

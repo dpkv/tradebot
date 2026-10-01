@@ -337,6 +337,13 @@ type OptLimiterState struct {
 }
 
 type OptLimiterStateV1 struct {
+    Config   *OptLimiterConfig
+    Progress *OptLimiterProgress
+}
+
+// OptLimiterConfig is fixed at creation; Load rebuilds the order intent
+// from it plus Progress.
+type OptLimiterConfig struct {
     ExchangeName string
     ContractID   string
 
@@ -355,20 +362,24 @@ type OptLimiterStateV1 struct {
     RepriceStep     decimal.Decimal
     RepriceInterval time.Duration
 
-    // ClientIDSeed/ClientIDOffset drive idgen. The offset is saved ahead
-    // of each broker order, so every client ID below it was possibly
-    // placed; on resume, any not in Orders is looked up with
-    // OptionsExchange.GetOptionsOrderByClientID (optlimiter-story
-    // scenario 4).
-    ClientIDSeed   string
+    // ClientIDSeed drives idgen with ClientIDOffset below.
+    ClientIDSeed string
+
+    // v2 adds Intent ("open" | "close" | "roll") and PriorContractID; a
+    // v1 record decodes with both empty, meaning "open".
+}
+
+// OptLimiterProgress is everything trading writes.
+type OptLimiterProgress struct {
+    // ClientIDOffset is saved ahead of each broker order, so every client
+    // ID below it was possibly placed; on resume, any not in Orders is
+    // looked up with OptionsExchange.GetOptionsOrderByClientID
+    // (optlimiter-story scenario 4).
     ClientIDOffset uint64
 
     // Orders holds every broker order this intent placed, by server
     // order ID. At most one is ever live.
     Orders map[string]*Order
-
-    // v2 adds Intent ("open" | "close" | "roll") and PriorContractID; a
-    // v1 record decodes with both empty, meaning "open".
 }
 
 // OptPositionState persists one written-option position from open to its
@@ -791,3 +802,9 @@ type GreelLadderStateV1 struct {
     trading. `PendingFlip`/`PendingFlipAt` stay in `GreelEpoch` (decision
     #8). `GreelProgress` was chosen over `GreelState` (too close to
     `GreelerState`) and `GreelRuntime` (reads as in-memory).
+16. **`OptLimiterStateV1` splits into `Config *OptLimiterConfig` and
+    `Progress *OptLimiterProgress` — decided**, the same way as decision
+    #15. Config is everything fixed at creation (exchange, contract,
+    contract size and count, `MinPremium`, re-price parameters,
+    `ClientIDSeed`); Progress is everything trading writes
+    (`ClientIDOffset`, `Orders`).
