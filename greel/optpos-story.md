@@ -39,8 +39,10 @@ and holds the returned `*job.Job` — not registered anywhere, exactly
 ### 1. Position born: contract selection, then sell-to-open
 
 By the time `Position.Open` is called, the greeler has already appended the
-wheel epoch naming this position's UID and saved the empty position record
-(write-ahead, gobs-story.md scenario 3a). `Open` then does, in order:
+wheel epoch naming this position's UID and saved the position record, its
+`Config` (exchange, underlying) set and its `Progress` empty (write-ahead,
+gobs-story.md scenario 3a and decision #17). Everything `Open` and `Check`
+write below lands in `Progress`. `Open` then does, in order:
 
 1. Fetch the chain: `optEx.GetOptionsChain(ctx, underlying)`.
 2. `ContractSelector.Select(ctx, chain, constraint)` returns a `Selection`:
@@ -272,6 +274,8 @@ func (v *Position) Abandon(ctx context.Context) error {
 // Outcome is empty while open or settling; terminal otherwise.
 func (v *Position) Outcome() string { return v.outcome }
 
+// Save writes Config (exchangeName, underlying) and Progress (contract,
+// legIDs, outcome, assignment) as gobs.OptPositionStateV1.
 func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
     panic("unimplemented")
 }

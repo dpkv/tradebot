@@ -308,7 +308,12 @@ here reserves only the obvious fields.
 
 Follows house style: version-wrapped (`XState { V1 *XStateV1 }`),
 `decimal.Decimal` for money/size, `Options map[string]string` on job states
-(greeler, ladder) for `SetOption` support. No `Upgrade()` methods yet: each
+(greeler, ladder) for `SetOption` support. Every `XStateV1` splits into
+`Config` (everything fixed at creation; `Load` rebuilds the object from it)
+and `Progress` (everything trading writes), with `Options` alone at top
+level (decisions #15–#18). A state with nothing yet that trading writes
+still carries an empty `Progress` struct, so every state has the same
+shape and later fields land there without a layout change. No `Upgrade()` methods yet: each
 loader calls `Upgrade()` explicitly to patch older records, and a V1 has
 nothing older to patch — it's added with the first V2. Implemented one file
 per owning package, the `gobs` convention (`limiter.go`, `looper.go`, ...):
@@ -391,9 +396,22 @@ type OptPositionState struct {
 type OptPositionStateV1 struct {
     // No Options field: SetOption is for jobs, and a position is a
     // component.
+    Config   *OptPositionConfig
+    Progress *OptPositionProgress
+}
+
+// OptPositionConfig is fixed at creation: the greeler saves it, with an
+// empty Progress, under the wheel epoch before Open runs (scenario 4).
+// The selector and re-price knobs are not here: the owning greeler
+// passes them to optpos.Load from its own Config.
+type OptPositionConfig struct {
     ExchangeName string
     Underlying   string
+}
 
+// OptPositionProgress is everything trading writes: the current
+// contract, the attempts, and the terminal fact.
+type OptPositionProgress struct {
     // Contract is a cache of the current attempt's contract, not a second
     // source of truth — the authoritative contract for any leg is that
     // leg's own optlimiter record. Pricing fields are point-in-time and
@@ -574,11 +592,26 @@ type GreelLadderState struct {
 type GreelLadderStateV1 struct {
     Options map[string]string
 
+    Config   *GreelLadderConfig
+    Progress *GreelLadderProgress
+}
+
+// GreelLadderConfig is fixed at creation. GreelerIDs is set once, when
+// New spawns one greeler per band (as WallerStateV2.LooperIDs); each
+// greeler's dynamic state lives on its own record.
+type GreelLadderConfig struct {
     ProductID    string
     ExchangeName string
 
     GreelerIDs []string
 }
+
+// GreelLadderProgress is everything trading writes, which for now is
+// nothing: sibling-exclusion claims are in memory and reconciliation only
+// alerts (greelladder-story scenarios 2–3). Kept, empty, so the ladder has
+// the same Config/Progress shape as every other state; risk-gate state,
+// if the gates need any, would be its first field.
+type GreelLadderProgress struct{}
 ```
 
 ### Registration and keyspaces
@@ -808,3 +841,17 @@ type GreelLadderStateV1 struct {
     contract size and count, `MinPremium`, re-price parameters,
     `ClientIDSeed`); Progress is everything trading writes
     (`ClientIDOffset`, `Orders`).
+17. **`OptPositionStateV1` splits into `Config *OptPositionConfig` and
+    `Progress *OptPositionProgress` — decided**, the same way as
+    decisions #15–#16. Config is `ExchangeName` and `Underlying`;
+    Progress is the `Contract` cache, `Legs`, `Outcome`/`OutcomeAt` and
+    `Assignment`. No `Options` (a position is a component). The selector
+    and `WheelKnobs` stay on the greeler's Config, passed to
+    `optpos.Load`, not copied here.
+18. **`GreelLadderStateV1` splits into `Config *GreelLadderConfig` and
+    an empty `Progress *GreelLadderProgress` — decided.** Config is
+    `ProductID`, `ExchangeName` and `GreelerIDs` (fixed when `New` spawns
+    the bands); `Options` stays top level as on the greeler. Nothing on
+    the ladder is written while trading, but the empty Progress keeps the
+    same shape as every other state and is where risk-gate state would
+    go.
