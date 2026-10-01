@@ -424,8 +424,8 @@ type AssignmentFact struct {
     Price  decimal.Decimal
 }
 
-// GreelerState persists one greeler: static configuration, the dwell
-// clock, and Epochs (mode-transition journal + position UIDs). Everything
+// GreelerState persists one greeler: static Config, and Progress (the dwell
+// clock and Epochs: mode-transition journal + position UIDs). Everything
 // else — including assignment history — is derived by walking Epochs and
 // reading each referenced position's own outcome. Lives in "/greelers/".
 type GreelerState struct {
@@ -433,12 +433,17 @@ type GreelerState struct {
 }
 
 type GreelerStateV1 struct {
-    // --- Config: static after creation, except Options (runtime-
-    // mutable via SetOption/freeze, but not trading-derived — it
-    // doesn't cleanly fit "state" either). ---
-
+    // Options is runtime-mutable via SetOption/freeze but never written
+    // by trading, so it belongs to neither Config nor Progress.
     Options map[string]string
 
+    Config   *GreelConfig
+    Progress *GreelProgress
+}
+
+// GreelConfig is static after creation. Load rebuilds the greeler,
+// including its ContractSelector, from this alone (scenario 1).
+type GreelConfig struct {
     ProductID    string
     ExchangeName string
 
@@ -468,12 +473,13 @@ type GreelerStateV1 struct {
     // job loader can't inject it (scenario 1). v2 adds a RollPolicy name.
     ContractSelector string
     WheelKnobs       *WheelKnobs
+}
 
-    // --- State: the one dynamic field. Posture, inventory, and
-    // assignment history are derived, not stored; the dwell clock and
-    // the record of every child live in this single field
-    // (scenario 3a). ---
-
+// GreelProgress is everything trading writes: the one dynamic field.
+// Posture, inventory, and assignment history are derived, not stored;
+// the dwell clock and the record of every child live in Epochs
+// (scenario 3a).
+type GreelProgress struct {
     // Epochs is the append-only list of mode periods, seeded at creation
     // with one {Mode: "grid", StartAt: creation time} entry (scenario 3a)
     // so it is never empty. Filtering for Mode == "wheel" and collecting
@@ -777,3 +783,11 @@ type GreelLadderStateV1 struct {
     decided.** A position whose opening order never fills ends `unfilled`
     when the greeler abandons it (optpos-story scenario 3); the fold skips
     zero-fill attempts (scenario 4).
+15. **`GreelerStateV1` splits into `Config *GreelConfig` and `Progress
+    *GreelProgress` — decided.** Config is everything fixed at creation
+    (product, exchange, `GridLevels`, zone geometry, `DwellTime`, selector
+    name, `WheelKnobs`); Progress is everything trading writes (`Epochs`).
+    `Options` stays top level: mutable via SetOption but never written by
+    trading. `PendingFlip`/`PendingFlipAt` stay in `GreelEpoch` (decision
+    #8). `GreelProgress` was chosen over `GreelState` (too close to
+    `GreelerState`) and `GreelRuntime` (reads as in-memory).
