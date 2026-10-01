@@ -281,7 +281,7 @@ is mostly expiry/DTE plus liquidity guards.
 
 | Module | Package / files | Responsibility |
 |---|---|---|
-| **persistence** | `gobs/optlimiter.go`, `gobs/optpos.go`, `gobs/greeler.go`, `gobs/greelladder.go` | `GreelerState` (config + `Epochs`), `OptPositionState` (legs + outcome/assignment fact), `OptLimiterState`, `GreelLadderState` |
+| **persistence** | `gobs/optlimiter.go`, `gobs/optpos.go`, `gobs/greeler.go`, `gobs/greelladder.go` | each split into creation-time `Config` and trading-written `Progress`: `GreelerState` (config; progress `Epochs`), `OptPositionState` (exchange + underlying; progress legs + outcome/assignment fact), `OptLimiterState` (order intent; progress orders), `GreelLadderState` (config + greeler UIDs only) |
 | **optlimiter** | `optlimiter/optlimiter.go` | `OptLimiter`: option order state machine — re-pricing, never two live orders, crash-safe client IDs |
 | **optpos** | `optpos/position.go`, `optpos/selector.go` | `Position` lifecycle incl. broker settlement checks, re-selection, `Abandon`; `ContractSelector`, presets (`RollPolicy` in v2) |
 | **greeler** | `greeler/greeler.go`, `greeler/run.go`, `greeler/options.go` | Per-level posture derivation; mode flips (buffer/hysteresis/dwell); assignment attribution; `SetOption` (retire/freeze) |

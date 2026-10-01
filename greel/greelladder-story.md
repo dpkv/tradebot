@@ -25,8 +25,9 @@ runs only because its waller runs it. (The first draft of this story said
 both wrong.)
 
 `GreelLadder` follows this exactly: `New` constructs one child `Greeler`
-per price band; `Save`/`Load` persist `GreelerIDs` (`GreelLadderStateV1`,
-gobs-story.md) and reload the children; `Run` drives them; aggregation
+per price band; `Save`/`Load` persist `GreelerIDs` in the ladder's
+`Config` (`GreelLadderStateV1` has no `Progress`, gobs-story.md decision
+#18) and reload the children; `Run` drives them; aggregation
 (`Actions`/`BudgetAt`/`GetSummary`) sums across children, minimal until
 the accounting model lands (project.md open item 2).
 
@@ -128,7 +129,7 @@ func (v *GreelLadder) Run(ctx context.Context, rt *trader.Runtime) error {
 }
 
 func (v *GreelLadder) Save(ctx context.Context, rw kv.ReadWriter) error {
-    panic("unimplemented") // mirrors waller.Save: save each greeler, persist GreelerIDs
+    panic("unimplemented") // mirrors waller.Save: save each greeler, persist Config.GreelerIDs
 }
 
 // Load rebuilds the ladder and its greelers from their records alone, then
