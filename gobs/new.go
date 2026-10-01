@@ -19,6 +19,14 @@ func NewByTypename(typename string) (any, error) {
 		v = new(WallerState)
 	case "WatcherState":
 		v = new(WatcherState)
+	case "OptLimiterState":
+		v = new(OptLimiterState)
+	case "OptPositionState":
+		v = new(OptPositionState)
+	case "GreelerState":
+		v = new(GreelerState)
+	case "GreelLadderState":
+		v = new(GreelLadderState)
 	case "KeyValue":
 		v = new(KeyValue)
 	case "NameData":

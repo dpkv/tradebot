@@ -2,7 +2,7 @@
 
 Companion to [project.md](project.md) and [gobs-story.md](gobs-story.md).
 Second stage of the dependency order
-(`gobs/greel.go → optlimiter → optpos → greeler → greelladder`).
+(`gobs → optlimiter → optpos → greeler → greelladder`).
 
 An `OptLimiter` is **one option order intent** — in v1, "sell to open N
 contracts of this contract, no cheaper than this floor." Over its life it

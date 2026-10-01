@@ -2,7 +2,7 @@
 
 Companion to [project.md](project.md), [gobs-story.md](gobs-story.md), and
 [optlimiter-story.md](optlimiter-story.md). Third stage of the dependency
-order (`gobs/greel.go → optlimiter → optpos → greeler → greelladder`).
+order (`gobs → optlimiter → optpos → greeler → greelladder`).
 
 **v1 scope:** a position opens with a sell-to-open and holds until the
 broker settles it — expired or assigned — or ends `unfilled` if its opening

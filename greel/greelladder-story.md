@@ -2,7 +2,7 @@
 
 Companion to [project.md](project.md) and the four prior stories. Final
 stage of the dependency order
-(`gobs/greel.go → optlimiter → optpos → greeler → greelladder`). This
+(`gobs → optlimiter → optpos → greeler → greelladder`). This
 module is mostly the existing `Waller`-over-`Looper` pattern. After the
 design review it carries less than the first draft did: assignment
 detection moved into each greeler's own position (optpos-story scenario 6),

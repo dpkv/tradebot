@@ -281,7 +281,7 @@ is mostly expiry/DTE plus liquidity guards.
 
 | Module | Package / files | Responsibility |
 |---|---|---|
-| **persistence** | `gobs/greel.go` | `GreelerState` (config + `Epochs`), `OptPositionState` (legs + outcome/assignment fact), `OptLimiterState`, `GreelLadderState` |
+| **persistence** | `gobs/optlimiter.go`, `gobs/optpos.go`, `gobs/greeler.go`, `gobs/greelladder.go` | `GreelerState` (config + `Epochs`), `OptPositionState` (legs + outcome/assignment fact), `OptLimiterState`, `GreelLadderState` |
 | **optlimiter** | `optlimiter/optlimiter.go` | `OptLimiter`: option order state machine — re-pricing, never two live orders, crash-safe client IDs |
 | **optpos** | `optpos/position.go`, `optpos/selector.go` | `Position` lifecycle incl. broker settlement checks, re-selection, `Abandon`; `ContractSelector`, presets (`RollPolicy` in v2) |
 | **greeler** | `greeler/greeler.go`, `greeler/run.go`, `greeler/options.go` | Per-level posture derivation; mode flips (buffer/hysteresis/dwell); assignment attribution; `SetOption` (retire/freeze) |
@@ -290,7 +290,7 @@ is mostly expiry/DTE plus liquidity guards.
 Dependency and implementation order (each stage independently runnable):
 
 ```
-gobs/greel.go → optlimiter → optpos → greeler → greelladder
+gobs → optlimiter → optpos → greeler → greelladder
 ```
 
 Each module runs the full workflow cycle: story → execution state → function
@@ -343,7 +343,7 @@ developer checkpoints at every step.
 
 ## Story Placeholders
 
-- [x] `gobs/greel.go` story — drafted in [gobs-story.md](gobs-story.md), reviewed
+- [x] `gobs` story — drafted in [gobs-story.md](gobs-story.md), reviewed; implemented
 - [x] `optlimiter` story — rewritten in [optlimiter-story.md](optlimiter-story.md) as the option order state machine, reviewed
 - [x] `optpos` story — drafted in [optpos-story.md](optpos-story.md), reviewed (design-review items resolved)
 - [x] `greeler` story — drafted in [greeler-story.md](greeler-story.md), reviewed
@@ -363,7 +363,10 @@ tradebot/
 │   ├── greeler-story.md
 │   └── greelladder-story.md
 ├── gobs/
-│   └── greel.go             ← serializable state structs
+│   ├── optlimiter.go        ← OptLimiterState
+│   ├── optpos.go            ← OptPositionState, AssignmentFact
+│   ├── greeler.go           ← GreelerState, WheelKnobs, GreelEpoch
+│   └── greelladder.go       ← GreelLadderState
 ├── optlimiter/
 │   └── optlimiter.go        ← option order state machine
 ├── optpos/

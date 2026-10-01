@@ -3,7 +3,7 @@
 Companion to [project.md](project.md), [gobs-story.md](gobs-story.md),
 [optlimiter-story.md](optlimiter-story.md), and
 [optpos-story.md](optpos-story.md). Fourth stage of the dependency order
-(`gobs/greel.go → optlimiter → optpos → greeler → greelladder`) and the
+(`gobs → optlimiter → optpos → greeler → greelladder`) and the
 module every earlier decision was made to serve: it owns the levels, drives
 the mode flip, and is the one caller of `optpos.Position`.
 

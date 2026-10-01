@@ -1,4 +1,4 @@
-# Story: `gobs/greel.go` — serializable state for the greel job tree
+# Story: `gobs` — serializable state for the greel job tree
 
 Companion to [project.md](project.md). This module defines every struct that
 greel persists in the KV store. It is the foundation stage: everything later
@@ -306,9 +306,16 @@ here reserves only the obvious fields.
 
 ## Proposed structs
 
-Follows house style: version-wrapped (`XState { V1 *XStateV1 }`) with an
-`Upgrade()` method from day one, `decimal.Decimal` for money/size,
-`Options map[string]string` on job states for `SetOption` support.
+Follows house style: version-wrapped (`XState { V1 *XStateV1 }`),
+`decimal.Decimal` for money/size, `Options map[string]string` on job states
+(greeler, ladder) for `SetOption` support. No `Upgrade()` methods yet: each
+loader calls `Upgrade()` explicitly to patch older records, and a V1 has
+nothing older to patch — it's added with the first V2. Implemented one file
+per owning package, the `gobs` convention (`limiter.go`, `looper.go`, ...):
+`gobs/optlimiter.go`, `gobs/optpos.go`, `gobs/greeler.go`,
+`gobs/greelladder.go`, each helper type (`AssignmentFact`, `WheelKnobs`,
+`GreelEpoch`) beside the state that uses it. Field comments there are
+terse; the rationale stays here.
 
 ```go
 // Copyright (c) 2026 Deepak Vankadaru
@@ -371,8 +378,8 @@ type OptPositionState struct {
 }
 
 type OptPositionStateV1 struct {
-    Options map[string]string
-
+    // No Options field: SetOption is for jobs, and a position is a
+    // component.
     ExchangeName string
     Underlying   string
 
