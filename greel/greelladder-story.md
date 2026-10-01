@@ -26,7 +26,7 @@ both wrong.)
 
 `GreelLadder` follows this exactly: `New` constructs one child `Greeler`
 per price band; `Save`/`Load` persist `GreelerIDs` in the ladder's
-`Config` (`GreelLadderStateV1` has no `Progress`, gobs-story.md decision
+`Config` (`GreelLadderStateV1`'s `Progress` is empty, gobs-story.md decision
 #18) and reload the children; `Run` drives them; aggregation
 (`Actions`/`BudgetAt`/`GetSummary`) sums across children, minimal until
 the accounting model lands (project.md open item 2).

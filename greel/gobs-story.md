@@ -312,8 +312,8 @@ Follows house style: version-wrapped (`XState { V1 *XStateV1 }`),
 `Config` (everything fixed at creation; `Load` rebuilds the object from it)
 and `Progress` (everything trading writes), with `Options` alone at top
 level (decisions #15–#18). A state with nothing yet that trading writes
-carries `Config` only; a later `Progress` decodes as nil from older
-records. No `Upgrade()` methods yet: each
+still carries an empty `Progress` struct, so every state has the same
+shape and later fields land there without a layout change. No `Upgrade()` methods yet: each
 loader calls `Upgrade()` explicitly to patch older records, and a V1 has
 nothing older to patch — it's added with the first V2. Implemented one file
 per owning package, the `gobs` convention (`limiter.go`, `looper.go`, ...):
@@ -592,12 +592,8 @@ type GreelLadderState struct {
 type GreelLadderStateV1 struct {
     Options map[string]string
 
-    Config *GreelLadderConfig
-
-    // No Progress yet: the ladder writes nothing while trading. Its
-    // sibling-exclusion claims are in memory and reconciliation only
-    // alerts (greelladder-story scenarios 2–3). Risk-gate state, if the
-    // gates need any, would be the first Progress field.
+    Config   *GreelLadderConfig
+    Progress *GreelLadderProgress
 }
 
 // GreelLadderConfig is fixed at creation. GreelerIDs is set once, when
@@ -609,6 +605,13 @@ type GreelLadderConfig struct {
 
     GreelerIDs []string
 }
+
+// GreelLadderProgress is everything trading writes, which for now is
+// nothing: sibling-exclusion claims are in memory and reconciliation only
+// alerts (greelladder-story scenarios 2–3). Kept, empty, so the ladder has
+// the same Config/Progress shape as every other state; risk-gate state,
+// if the gates need any, would be its first field.
+type GreelLadderProgress struct{}
 ```
 
 ### Registration and keyspaces
@@ -845,9 +848,10 @@ type GreelLadderConfig struct {
     `Assignment`. No `Options` (a position is a component). The selector
     and `WheelKnobs` stay on the greeler's Config, passed to
     `optpos.Load`, not copied here.
-18. **`GreelLadderStateV1` carries `Config *GreelLadderConfig` only —
-    decided.** Config is `ProductID`, `ExchangeName` and `GreelerIDs`
-    (fixed when `New` spawns the bands); `Options` stays top level as on
-    the greeler. Nothing on the ladder is written while trading, so there
-    is no Progress yet; one added later (risk-gate state, say) decodes as
-    nil from v1 records.
+18. **`GreelLadderStateV1` splits into `Config *GreelLadderConfig` and
+    an empty `Progress *GreelLadderProgress` — decided.** Config is
+    `ProductID`, `ExchangeName` and `GreelerIDs` (fixed when `New` spawns
+    the bands); `Options` stays top level as on the greeler. Nothing on
+    the ladder is written while trading, but the empty Progress keeps the
+    same shape as every other state and is where risk-gate state would
+    go.
