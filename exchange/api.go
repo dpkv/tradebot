@@ -153,23 +153,19 @@ type OptionsExchange interface {
 	// OpenOptionsProduct opens a specific options contract for active trading.
 	OpenOptionsProduct(ctx context.Context, contractID string) (OptionsProduct, error)
 
-	// OpenOptionsRollProduct opens a two-contract roll: closing
-	// priorContractID and opening contractID as a single atomic broker
-	// order (one fill, one net credit/debit). OptionsRollProduct is
-	// exchange.Product itself, so an unmodified limiter.Limiter can trade
-	// it directly: LimitSell places the roll for a net credit, LimitBuy
-	// for a net debit.
-	OpenOptionsRollProduct(ctx context.Context, priorContractID, contractID string) (OptionsRollProduct, error)
-
 	// GetOptionsSettlement reports how a contract this account wrote
 	// stands. "assigned" and "expired" must come from explicit broker
 	// records, never inferred from the calendar or from the contract
 	// disappearing from the account.
 	GetOptionsSettlement(ctx context.Context, contractID string) (*OptionsSettlement, error)
-}
 
-// OptionsRollProduct is exchange.Product, scoped to one roll order.
-type OptionsRollProduct = Product
+	// GetOptionsOrderByClientID finds an options order this account placed
+	// with the given client ID, including filled and canceled ones. Returns
+	// os.ErrNotExist if no such order was ever placed. Crash recovery
+	// depends on it: the broker can't dedupe client IDs, so an order placed
+	// just before a crash is found here or not at all.
+	GetOptionsOrderByClientID(ctx context.Context, clientID uuid.UUID) (OrderDetail, error)
+}
 
 // OptionsSettlement is broker truth about a contract this account wrote.
 type OptionsSettlement struct {

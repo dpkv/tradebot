@@ -35,8 +35,8 @@ greelladder.GreelLadder (job)      ladder of greelers across price bands;
       │                            from spot + fills + recorded events
       ├── limiter.Limiter × N      one stock order intent (reused untouched)
       └── optpos.Position × 0..1   one written-option position (component,
-            │                      not a job); terminal: expired|assigned|closed
-            └── optlimiter.OptLimiter   one option order (wraps limiter.Limiter)
+            │                      not a job); terminal: expired|assigned|unfilled
+            └── optlimiter.OptLimiter   one option order; re-prices until filled
 ```
 
 - **Jobs** (`trader.Trader`, agent nouns, independently runnable):
@@ -107,8 +107,8 @@ transaction, append the wheel epoch naming the position's (deterministic) UID
 and save the empty position record → open the position. If the re-check fails
 (e.g. a partial fill raced the cancel), the flip is blocked: the greeler stays
 in grid mode and the dwell clock resets. Flip to grid mode: the position must
-be terminal first (settled by broker truth, or closed by its own
-buy-to-close) → append the grid epoch → create stock limiters per derived
+be terminal first (settled by broker truth, or abandoned `unfilled` if its
+opening order never filled) → append the grid epoch → create stock limiters per derived
 posture. Every child is recorded before it can place an order, so a crash
 mid-flip is harmless: restart finds every child by UID, re-issues idempotent
 cancels, and converges.
@@ -159,28 +159,26 @@ via limit orders at designated level prices.
 
 ## Option atoms
 
-### optlimiter — one option order (reuses limiter.Limiter)
+### optlimiter — one option order (its own state machine)
 
-`optlimiter` is a thin wrapper around the existing `limiter.Limiter`, not a
-new order state machine. The hardened parts of an executor (idempotent client
-IDs, crash resume via order-map reconciliation, live-order sanity checks) are
-not options-specific, and `exchange.OptionsProduct` already returns the same
-`Order`/`OrderDetail` types as `exchange.Product`.
+One `OptLimiter` is one order intent — in v1, "sell to open N contracts, no
+cheaper than this floor." It places a broker order immediately and
+re-prices it toward the market on a timer until it fills (option spreads
+are wide, so re-pricing is routine). An earlier design wrapped
+`limiter.Limiter`; that took this section's own escape hatch, because
+`Limiter` is a grid order — it holds an order only while the market is near
+its fixed price, so it can't re-price and won't place a buy below market.
+See optlimiter-story for the full comparison.
 
-- **Downstream adapter** (`optlimiter/product.go`): adapts
-  `exchange.OptionsProduct` to `exchange.Product`. Collapses the 4 option
-  verbs (buy/sell × open/close — kept separate in the exchange interface
-  because the broker validates them differently and explicit intent turns
-  stale-state mistakes into rejections) into `LimitBuy`/`LimitSell` via an
-  open/close intent fixed at construction (one wrapped limiter = one order
-  intent, matching its single-shot design).
-- **Leak mitigations**, all local: cancel-offset machinery neutralized by a
-  far-side cancel price (order placed once, rests); contract/premium units
-  scaled by `ContractSize()` at the wrapper boundary; own keyspace
-  (`/optlimiters/`) so `/limiters/`-scanning background tasks skip them.
-- **Escape hatch**: if the wrapper ever needs to reach into `Limiter`
-  internals or suppress (rather than translate) a behavior, stop and fork a
-  bespoke state machine inside `optlimiter`.
+- **Never two live orders**: cancel, confirm, recompute remaining, then
+  place — two fills of a sell-to-open would be a naked short.
+- **Crash-safe client IDs**: saved ahead of each order; on resume, any
+  unmatched ID is looked up at the broker by client ID (etrade can't
+  dedupe client IDs).
+- **Regular-session day orders**; re-pricing restarts from the mid each
+  session.
+- Reuses `idgen` and `exchange.SimpleOrder`; the `limiter` package is not
+  involved, so no `/limiters/` task ever sees an option order.
 
 ### optpos — one written-option position (component, not a job)
 
@@ -188,14 +186,17 @@ Manages a short option position from open to termination; put-vs-call side is
 derived from the contract (as `Limiter` derives buy/sell from its point).
 
 - Born: sell-to-open via `optlimiter` (contract picked by injected selector).
-- Lives: each check, a `RollPolicy` decides whether to hold, close
-  (buy-to-close — profit-take or loss-close), or roll. **A roll is one atomic
-  broker order** replacing the contract within the same position chain. A nil
-  `RollPolicy` holds until settlement. Past expiry the position is
-  *settling*: no decisions, just waiting for broker truth.
+  The contract is re-selected at each session start while the opening order
+  hasn't filled.
+- Lives (v1): holds until settlement. Past expiry the position is
+  *settling*: waiting for broker truth.
 - Dies: exactly one terminal outcome — `expired` | `assigned` (broker
-  truth) | `closed` (its own buy-to-close filled) — recorded truthfully,
-  forever. Never owns collateral or stock.
+  truth) | `unfilled` (the greeler abandoned it before its opening order
+  ever filled) — recorded truthfully, forever. Never owns collateral or
+  stock.
+- v2: a `RollPolicy` decides, each check, whether to hold, close
+  (buy-to-close — profit-take or loss-close), or roll (one atomic broker
+  order); adds the `closed` outcome.
 
 A future standalone classic-wheel bot (`wheeler` — the name fits there, since
 that job runs the full cycle) would compose `optpos.Position` components the
@@ -211,27 +212,24 @@ is mostly expiry/DTE plus liquidity guards.
   named bundles of Layer-1 knobs.
 - **Layer 1 — knobs** (defaults; presets pre-fill): `target-delta`,
   `dte-range`, `min-premium-yield`, `min-open-interest`, `max-spread-pct`,
-  `roll-dte`, `profit-take-pct`, `loss-close-multiple`.
+  plus re-pricing: `reprice-step` (fraction of the spread, default 0.20)
+  and `reprice-interval` (default 2 minutes). v2 adds `roll-dte`,
+  `profit-take-pct`, `loss-close-multiple`.
 - **Layer 2 — interfaces** (the real contract):
 
   ```go
-  // ContractSelector picks the next contract to open for one position.
+  // ContractSelector picks the next contract to open for one position,
+  // with the minimum per-share premium worth selling it for.
   type ContractSelector interface {
       Select(ctx context.Context, chain []*gobs.OptionContract,
-          constraint *Constraint) (*gobs.OptionContract, error)
-  }
-
-  // RollPolicy decides hold | close | roll for an open position.
-  // Nil holds until settlement.
-  type RollPolicy interface {
-      Decide(ctx context.Context, contract *gobs.OptionContract,
-          greeks *exchange.Greeks) (RollAction, error)
+          constraint *Constraint) (*Selection, error)
   }
   ```
 
-  New strategies are new implementations registered by name; compiled-in.
-  The greeler persists the chosen names and the resolved knob values, so a
-  restart rebuilds the same selector and policy.
+  v2 adds `RollPolicy` (hold | close | roll). New strategies are new
+  implementations registered by name; compiled-in. The greeler persists the
+  chosen name and the resolved knob values, so a restart rebuilds the same
+  selector.
 - **Layer 3 — expression DSL**: deferred until Layer 2 proves insufficient.
 
 ---
@@ -239,10 +237,7 @@ is mostly expiry/DTE plus liquidity guards.
 ## Design decision log
 
 1. **optlimiter reuses limiter.Limiter** via a Product adapter (2026-07-06).
-   TODO: likely superseded by a small option order state machine in
-   `optlimiter` — `Limiter` only places a BUY order while the ticker is at
-   or above its limit price (blocking buy-to-close), and can't re-price,
-   which will be routine for options (optlimiter-story TODO).
+   Superseded by #9.
 2. **Exchange interface keeps 4 option order verbs** — broker-validated
    intent; explicit open/close turns stale-state bugs into order rejections.
 3. **No ledger module.** Early designs centered on a global cash/lot
@@ -269,6 +264,16 @@ is mostly expiry/DTE plus liquidity guards.
 7. **Budget is upfront and static.** New bands on re-centering are funded by
    user-guaranteed new budget; old greelers persist in low-yield wheel mode
    intentionally. Budget management may be plumbed later.
+8. **v1 holds positions to settlement; `RollPolicy` is v2.** Closes
+   (profit-take, loss-close) and rolls are deferred. Holding to settlement
+   fits greel: strikes sit at the levels, usually out of the money, and
+   assignment is how shares get into the grid.
+9. **optlimiter is its own option order state machine** (supersedes #1).
+   `Limiter` holds an order only near its fixed price, so it can't re-price
+   — routine for options — and won't place a buy below market. Changing it
+   would mean reworking the loop every production grid order runs through,
+   in an untested package; a separate machine reuses `idgen` and
+   `exchange.SimpleOrder` and leaves stock trading untouched.
 
 ---
 
@@ -277,8 +282,8 @@ is mostly expiry/DTE plus liquidity guards.
 | Module | Package / files | Responsibility |
 |---|---|---|
 | **persistence** | `gobs/greel.go` | `GreelerState` (config + `Epochs`), `OptPositionState` (legs + outcome/assignment fact), `OptLimiterState`, `GreelLadderState` |
-| **optlimiter** | `optlimiter/product.go`, `optlimiter/optlimiter.go` | `OptionsProduct`→`Product` adapter; `OptLimiter` wrapping `limiter.Limiter` (units, keyspace) |
-| **optpos** | `optpos/position.go`, `optpos/selector.go` | `Position` lifecycle incl. broker settlement checks; `ContractSelector`, `RollPolicy`, presets |
+| **optlimiter** | `optlimiter/optlimiter.go` | `OptLimiter`: option order state machine — re-pricing, never two live orders, crash-safe client IDs |
+| **optpos** | `optpos/position.go`, `optpos/selector.go` | `Position` lifecycle incl. broker settlement checks, re-selection, `Abandon`; `ContractSelector`, presets (`RollPolicy` in v2) |
 | **greeler** | `greeler/greeler.go`, `greeler/run.go`, `greeler/options.go` | Per-level posture derivation; mode flips (buffer/hysteresis/dwell); assignment attribution; `SetOption` (retire/freeze) |
 | **greelladder** | `greelladder/greelladder.go`, `greelladder/run.go` | Spawning and driving greelers; sibling contract exclusion; stock reconciliation (alert-only); risk gates (TODO); aggregate status |
 
@@ -306,10 +311,11 @@ developer checkpoints at every step.
    greeler and ladder still implement minimal `Actions`/`BudgetAt`/
    `GetSummary`, since `trader.Trader` requires them.
 3. **Runtime plumbing** — *resolved*: the greeler gets its
-   `OptionsExchange` from `rt.Exchange`; optpos builds each option leg's own
-   `trader.Runtime` (optpos-story).
-4. **Market hours**: options trade regular hours only; reuse etrade's
-   extended-hours handling to avoid overnight thrash.
+   `OptionsExchange` from `rt.Exchange` and passes it down; option orders
+   take it directly rather than a `trader.Runtime` (optpos-story).
+4. **Market hours**: options trade regular hours only. Option orders are
+   regular-session day orders and sleep outside the session (optlimiter-
+   story); reuse etrade's market-hours handling for that.
 5. **Corporate actions**: dividends (early-assignment risk), earnings dates
    (optional entry skip), splits (detect and freeze at minimum).
 6. **Risk limits / kill switch** — *TODO, revisit*: ladder-level max open
@@ -325,19 +331,20 @@ developer checkpoints at every step.
    first by size, over all levels, for both CSP and CC assignment.
 10. **Sibling contract restriction** — *TODO, revisit*: the ladder stops two
     of its greelers from writing the same contract series (greelladder-story).
-11. **Keyspace isolation gaps** — *TODO*: limiter's background finish-time
-    fixer still reaches option limiters (optlimiter-story scenario 7).
-12. **Option order execution** — *TODO, before implementing optlimiter*:
-    replace the wrapped `Limiter` with an option order state machine that
-    places immediately and re-prices on a timer (optlimiter-story TODO).
-    Would remove item 11 and change `OptLimiterStateV1`.
+11. **Keyspace isolation gaps** — *no longer applies*: option orders no
+    longer use the `limiter` package (decision #9).
+12. **Option order execution** — *resolved* (optlimiter-story): an option
+    order state machine that places immediately and re-prices on a timer.
+13. **`OpenOptionsRollProduct`/`OptionsRollProduct`** — *resolved*: removed
+    from `exchange/api.go` until v2, so v1 `OptionsExchange` implementations
+    don't need them (optlimiter-story decision #8).
 
 ---
 
 ## Story Placeholders
 
 - [x] `gobs/greel.go` story — drafted in [gobs-story.md](gobs-story.md), reviewed
-- [ ] `optlimiter` story — drafted in [optlimiter-story.md](optlimiter-story.md); reopened by design review: TODO — option order state machine with re-pricing
+- [x] `optlimiter` story — rewritten in [optlimiter-story.md](optlimiter-story.md) as the option order state machine, reviewed
 - [x] `optpos` story — drafted in [optpos-story.md](optpos-story.md), reviewed (design-review items resolved)
 - [x] `greeler` story — drafted in [greeler-story.md](greeler-story.md), reviewed
 - [x] `greelladder` story — drafted in [greelladder-story.md](greelladder-story.md), reviewed
@@ -358,14 +365,13 @@ tradebot/
 ├── gobs/
 │   └── greel.go             ← serializable state structs
 ├── optlimiter/
-│   ├── product.go           ← OptionsProduct → exchange.Product adapter
-│   └── optlimiter.go        ← OptLimiter wrapping *limiter.Limiter
+│   └── optlimiter.go        ← option order state machine
 ├── optpos/
 │   ├── position.go          ← single written-option position lifecycle
-│   └── selector.go          ← ContractSelector, RollPolicy, presets
+│   └── selector.go          ← ContractSelector, presets
 ├── greeler/
 │   ├── greeler.go           ← Greeler struct, trader.Trader impl, Save/Load
-│   ├── run.go               ← derivation loop, mode flips, event application
+│   ├── run.go               ← derivation loop, mode flips, assignment attribution
 │   └── options.go           ← SetOption handlers
 └── greelladder/
     ├── greelladder.go       ← GreelLadder struct, trader.Trader impl

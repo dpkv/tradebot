@@ -21,15 +21,16 @@ The ladder (or a subcommand, for standalone use) creates a greeler with its
 configuration: exchange, underlying product, its slice of adjacent grid levels
 (a buy/sell price pair and size per level, reusing `gobs.Pair`), its zone
 parameters (`g`, `f`, `h` as percentages, dwell `d` as a duration), and its
-wheel behavior: which `ContractSelector`/`RollPolicy` implementations to use
-(by registered name) and their resolved knob values.
+wheel behavior: which `ContractSelector` implementation to use (by
+registered name) and the resolved knob values for selection and
+re-pricing. (`RollPolicy` joins in v2.)
 
 **Persisted:** all of the above — configuration is static state, set once at
 creation. Zone parameters are copied into the greeler (not referenced from the
 ladder) so a greeler is fully self-describing and standalone-runnable. The
 wheel behavior must be persisted too: the server reloads jobs generically
 (`server.Load(ctx, r, uid, typename)`, with only a KV reader), so anything
-`Load` needs to rebuild the selector and policy has to come from the record.
+`Load` needs to rebuild the selector has to come from the record.
 Presets only pre-fill knob values at creation; the resolved values are what's
 stored, so a restart rebuilds exactly the same behavior even if a preset's
 definition changes later. Also seeded here: `Epochs` starts with one entry,
@@ -164,89 +165,53 @@ information: filtering `Epochs` for `Mode == "wheel"` and collecting
 
 ### 4. Wheel mode: a written-option position opens
 
-After qualification, the greeler opens an `optpos.Position` (CSP or CC). The
-position is a component whose record is the append-only order chain — the
-`Legs` list is the whole point of this scenario, so it's worth spelling out
-its shape precisely.
+After qualification, the greeler opens an `optpos.Position` (CSP or CC). In
+v1 the position opens with a sell-to-open and holds until the broker
+settles it; closes and rolls are v2 (optpos-story).
 
-**The leg chain has a fixed grammar**, following directly from project.md's
-lifecycle description ("born via sell-to-open… rolls are internal… dies with
-exactly one terminal outcome") — corrected here from the first draft to
-reflect that **a roll executes as one atomic broker order**, not as a
-separate buy-to-close followed by a separate sell-to-open:
+**`Legs` in v1 is a list of sell-to-open attempts.** Each attempt is one
+`optlimiter.OptLimiter` — one order intent that re-prices toward the
+market until it fills (optlimiter-story). An attempt can end with zero
+fills: stopped because the contract was re-selected at a session start, or
+because the greeler abandoned the position (optpos-story scenarios 2–3).
+So `Legs` holds any number of zero-fill attempts and at most one that
+filled — always the last. The fold skips zero-fill attempts.
 
-```
-sell-to-open   roll*         (buy-to-close)?
-└─ opens the   └─ each roll  └─ optional: only present
-   position       is ONE       if the position is
-                   order,       voluntarily closed
-                   one fill,
-                   replacing
-                   the contract
-```
+- **Assigned or expired positions have no closing leg**: both are things
+  that happen *to* the position, reported by the broker (no exchange
+  mutation on our side), so the terminal outcome is recorded separately
+  (scenario 5), not as a leg.
+- **The top-level `Contract` field is a cache** of the current attempt's
+  contract; the authoritative contract for each attempt is that attempt's
+  own `optlimiter` record.
+- **`Legs` is `[]string` of optlimiter UIDs**, no separate leg struct —
+  everything about an attempt lives on its own record.
 
-This is a genuine broker fact, not a modeling choice: E*TRADE (and brokers
-generally) submit a roll as a single multi-leg order — one client/server
-order ID, one net-credit-or-debit fill — closing the old contract and
-opening the new one together. Modeling it as two independent legs would
-claim a bookkeeping state (old contract closed, new one not yet open) that
-can never actually occur, and would need a pairing rule to say which
-buy-to-close belongs with which sell-to-open. Collapsing a roll to one leg
-removes both problems and is simply more accurate:
-
-- **One leg, one order, one fill.** `OptLimiterStateV1` gains `Intent =
-  "roll"` and a `PriorContractID` field alongside the existing
-  `ContractID` (which for a roll leg names the *new*, post-roll contract).
-  The wrapped `limiter.Limiter` still records exactly one order and one
-  fill/price — a roll's net premium is just that fill's price, credit or
-  debit, no different in shape from any other leg's fill.
-- **No pairing/matching logic, ever.** Walking `Legs` in order and reading
-  each optlimiter's `Intent` directly tells you whether that step opened,
-  rolled, or closed the position — `roll` is unambiguous on its own, unlike
-  the old two-leg encoding where a bare `buy-to-close` needed a lookahead
-  to know if it was "half of a roll" or "the final close."
-- **No mid-roll transient state to tolerate.** Design principle 2 already
-  promises a crash mid-flip is harmless because "the greeler cycles by
-  re-deriving desired posture, never by remembering where it was." With an
-  atomic roll, there is no broker-truth window where the position has zero
-  live contracts — the fold's "current contract" (last leg's `ContractID`)
-  is always live, simplifying that guarantee rather than merely satisfying
-  it.
-- **Assigned or expired positions still have no closing leg** — unchanged
-  from the first draft: both are things that happen *to* the position,
-  reported by the broker (no exchange mutation on our side), so the
-  terminal outcome is recorded separately (below), not as a leg.
-- **The top-level `Contract` field is a cache of the current contract**,
-  refreshed on open and on every roll — unchanged from the first draft; the
-  authoritative contract for leg *i* is always that leg's own `optlimiter`
-  record.
-- **`Legs` stays `[]string` of optlimiter UIDs**, no separate leg struct —
-  unchanged from the first draft; nothing about the roll fix reopens that
-  question, since intent (now including `roll`) still lives entirely on the
-  referenced `optlimiter` record.
-
-**Placing an atomic roll** needed an exchange primitive that
-`exchange.OptionsProduct` (single-contract) lacked. Resolved in
-optlimiter-story scenario 6: `OptionsExchange.OpenOptionsRollProduct`
-returns an `OptionsRollProduct` (an `exchange.Product`) that a wrapped
-limiter trades directly. The persisted shape here (`Intent = "roll"`,
-`ContractID` + `PriorContractID`, one wrapped limiter) didn't change.
+**v2: closes and rolls.** The leg chain becomes
+`sell-to-open roll* (buy-to-close)?`, counting only legs that filled. A
+roll is **one atomic broker order** — one order ID, one net
+credit-or-debit fill — closing the old contract and opening the new one
+together (E*TRADE submits rolls as a single multi-leg order). Modeling it as
+two legs would claim a state that can't occur (old closed, new not yet
+open) and need a pairing rule; as one leg with `Intent = "roll"` and a
+`PriorContractID`, walking `Legs` needs no lookahead, and a position never
+has zero live contracts mid-roll. It needs an exchange primitive for a
+two-contract order, removed from `exchange/api.go` until v2
+(optlimiter-story v2 notes).
 
 **Persisted:**
 - On the greeler: a wheel entry in `Epochs` (scenario 3a) carrying the
   position's UID (the last wheel epoch's position may be open; all earlier
   ones are terminal).
-- Per position: a cached snapshot of the *current* contract, the ordered
+- Per position: a cached snapshot of the current contract, the ordered
   `Legs []string` (optlimiter UIDs), terminal outcome + timestamp, and (for
   assignment) the fact of what happened — see scenario 5.
-- Per optlimiter (own record, own keyspace — see below): intent (including
-  `roll`), contract identity (`ContractID` + `PriorContractID` for rolls),
-  contract size, and the wrapped limiter's own state.
+- Per optlimiter (own record, own keyspace — see below): contract identity
+  and size, the premium floor, re-price parameters, client-ID state, and
+  every broker order it placed.
 
 **Not persisted:** collected premium, position P&L — derived from the legs'
-fill records. Put-vs-call side — derived from the contract. Roll boundaries —
-derived by reading each leg's `Intent` directly (`== "roll"`); no pairing or
-lookahead needed.
+fill records. Put-vs-call side — derived from the contract.
 
 ### 5. Assignment lands (the crux)
 
@@ -302,14 +267,14 @@ first draft's two-record version: there is exactly one append-only sequence
 per position (`Legs`), and one terminal marker (`Outcome`/`OutcomeAt`/
 `Assignment`) on that same record — no second sequence to correlate against.
 
-- **`Legs` is a strict, single-threaded chain.** By the grammar in scenario
-  4, a position has exactly one *live* contract at any time: the one named
-  by its most recent leg. There is never a moment with two live contracts
-  (legs are sequential, not concurrent) or — thanks to atomic rolls — a
-  moment with zero live contracts between a close and a reopen.
+- **`Legs` is a strict, single-threaded chain.** Attempts are sequential,
+  never concurrent: a new attempt starts only after the previous one is
+  stopped and its live order confirmed cancelled. So a position has at
+  most one live contract at any time — the one named by its most recent
+  leg. (In v2, atomic rolls keep this true across a roll too.)
 - **`Legs` freezes once `Outcome` is set.** Whether termination is an
-  assignment (`Outcome` and `Assignment` set together) or expiry/voluntary
-  close (`Outcome` set alone), no further legs are ever appended
+  assignment (`Outcome` and `Assignment` set together), an expiry, or
+  `unfilled` (`Outcome` set alone), no further legs are ever appended
   afterward — enforced operationally by `optpos` (a terminal position
   places no more orders), not by the schema. This is what makes "the
   position's current contract" and "the contract the terminal fact is
@@ -323,8 +288,8 @@ per position (`Legs`), and one terminal marker (`Outcome`/`OutcomeAt`/
 
 ### 6. Crash and restart
 
-Restart loads the greeler record, rebuilds its selector and policy from the
-persisted config (scenario 1), reads the current mode from `Epochs[last]`,
+Restart loads the greeler record, rebuilds its selector from the persisted
+config (scenario 1), reads the current mode from `Epochs[last]`,
 re-derives per-level posture, and resumes children by UID — every child was
 named before it could act (scenario 3a), so none can be orphaned. Nothing in
 any struct is a "phase pointer" that a missed fill or assignment could
@@ -356,45 +321,47 @@ import (
     "github.com/shopspring/decimal"
 )
 
-// OptLimiterState persists one option order: a limiter.Limiter wrapped with
-// a fixed open/close intent and contract-unit scaling. Lives in
-// "/optlimiters/" so "/limiters/"-scanning tasks skip it. The wrapped
-// limiter is a *reference* (its own LimiterState record, saved under this
-// same "/optlimiters/" keyspace via a limiter-package keyspace override —
-// see the embed-vs-reference decision below), not an embedded copy.
+// OptLimiterState persists one option order intent: an optlimiter
+// state machine that places a broker order and re-prices it until filled
+// (optlimiter-story). In v1 every intent is a sell-to-open. Lives in
+// "/optlimiters/"; the limiter package is not involved.
 type OptLimiterState struct {
     V1 *OptLimiterStateV1
 }
 
 type OptLimiterStateV1 struct {
-    // ContractID is the contract this order acts on. For Intent ==
-    // "roll" this is the *new*, post-roll contract; PriorContractID
-    // names the contract it replaces in that same atomic order.
-    // PriorContractID is empty for every other intent.
-    ContractID      string
-    PriorContractID string
-    ExchangeName    string
+    ExchangeName string
+    ContractID   string
 
-    // Intent is "open" | "close" | "roll"; fixed at construction. Side
-    // (BUY/SELL) isn't stored here — it's derived from the wrapped
-    // limiter's point (Cancel vs. Price), the same way Limiter derives
-    // buy/sell, and the adapter maps intent × side onto one of the four
-    // broker verbs. "roll" is a single atomic broker order (one fill, one
-    // net credit/debit) that closes PriorContractID and opens ContractID
-    // together — never modeled as separate close/open legs.
-    Intent string
-
-    // ContractSize scales contract/premium units at the wrapper
-    // boundary (typically 100).
+    // ContractSize is shares per contract (typically 100), carried for
+    // callers that account in dollars; never applied inside optlimiter.
     ContractSize decimal.Decimal
+    NumContracts decimal.Decimal
 
-    // LimiterID is the UID of the wrapped limiter.Limiter's own record,
-    // stored alongside this one under "/optlimiters/" (not
-    // "/limiters/"). Loaded via limiter.Load the same way a Looper
-    // loads its buy/sell limiters. For "roll", the wrapped limiter
-    // trades the exchange's OptionsRollProduct directly
-    // (optlimiter-story scenario 6).
-    LimiterID string
+    // MinPremium is the per-share floor the order is never re-priced
+    // below (from the contract selector).
+    MinPremium decimal.Decimal
+
+    // RepriceStep (fraction of the spread per step) and RepriceInterval
+    // are copied from the greeler's WheelKnobs at creation, so a resumed
+    // order behaves the same.
+    RepriceStep     decimal.Decimal
+    RepriceInterval time.Duration
+
+    // ClientIDSeed/ClientIDOffset drive idgen. The offset is saved ahead
+    // of each broker order, so every client ID below it was possibly
+    // placed; on resume, any not in Orders is looked up with
+    // OptionsExchange.GetOptionsOrderByClientID (optlimiter-story
+    // scenario 4).
+    ClientIDSeed   string
+    ClientIDOffset uint64
+
+    // Orders holds every broker order this intent placed, by server
+    // order ID. At most one is ever live.
+    Orders map[string]*Order
+
+    // v2 adds Intent ("open" | "close" | "roll") and PriorContractID; a
+    // v1 record decodes with both empty, meaning "open".
 }
 
 // OptPositionState persists one written-option position from open to its
@@ -409,27 +376,24 @@ type OptPositionStateV1 struct {
     ExchangeName string
     Underlying   string
 
-    // Contract is a cache of the *current* contract this position has
-    // written — refreshed on open and on every roll, not a second
-    // source of truth. A roll can change the contract mid-chain; the
-    // authoritative contract for any given leg is whatever that leg's
-    // own optlimiter record says. Pricing fields are point-in-time and
+    // Contract is a cache of the current attempt's contract, not a second
+    // source of truth — the authoritative contract for any leg is that
+    // leg's own optlimiter record. Pricing fields are point-in-time and
     // not authoritative.
     Contract *OptionContract
 
-    // Legs is the append-only, ordered list of optlimiter UIDs:
-    // sell-to-open, then zero or more "roll" legs (each one atomic
-    // broker order replacing the contract), then an optional final
-    // buy-to-close if the position was voluntarily closed. Intent,
-    // contract, and fill data for each leg live on its own
-    // OptLimiterState record, not duplicated here.
+    // Legs is the append-only, ordered list of optlimiter UIDs. In v1,
+    // sell-to-open attempts: any number that ended with zero fills, and
+    // at most one that filled — always the last (scenario 4). Contract
+    // and fill data for each live on its own OptLimiterState record.
     Legs []string
 
     // Outcome is empty while open, and while settling (past
     // Contract.Expiry, before the broker reports how it ended —
-    // scenario 5). Exactly one of "expired" | "assigned" | "closed" once
-    // terminal: "expired"/"assigned" only from broker truth, "closed"
-    // when the position's own buy-to-close leg fills.
+    // scenario 5). Exactly one of "expired" | "assigned" | "unfilled"
+    // once terminal: "expired"/"assigned" only from broker truth,
+    // "unfilled" when the greeler abandons a position whose opening
+    // order never filled. v2 adds "closed".
     Outcome   string
     OutcomeAt time.Time
 
@@ -491,13 +455,11 @@ type GreelerStateV1 struct {
     HysteresisPct decimal.Decimal
     DwellTime     time.Duration
 
-    // ContractSelector and RollPolicy name the compiled-in
-    // implementations (project.md: "registered by name"); empty means
-    // the default. With WheelKnobs, this is everything Load needs to
-    // rebuild them — the server's generic job loader can't inject them
-    // (scenario 1).
+    // ContractSelector names the compiled-in implementation (project.md:
+    // "registered by name"); empty means the default. With WheelKnobs,
+    // this is everything Load needs to rebuild it — the server's generic
+    // job loader can't inject it (scenario 1). v2 adds a RollPolicy name.
     ContractSelector string
-    RollPolicy       string
     WheelKnobs       *WheelKnobs
 
     // --- State: the one dynamic field. Posture, inventory, and
@@ -518,17 +480,23 @@ type GreelerStateV1 struct {
 }
 
 // WheelKnobs are the resolved Layer-1 knob values (project.md contract
-// selection) the greeler's ContractSelector and RollPolicy are built from.
-// Presets only pre-fill these at creation.
+// selection) the greeler's ContractSelector is built from, plus the
+// re-price parameters each opening attempt uses. Presets only pre-fill
+// these at creation.
 type WheelKnobs struct {
-    TargetDelta       decimal.Decimal
-    MinDTE, MaxDTE    int
-    MinPremiumYield   decimal.Decimal
-    MinOpenInterest   decimal.Decimal
-    MaxSpreadPct      decimal.Decimal
-    RollDTE           int
-    ProfitTakePct     decimal.Decimal
-    LossCloseMultiple decimal.Decimal
+    // Contract selection.
+    TargetDelta     decimal.Decimal
+    MinDTE, MaxDTE  int
+    MinPremiumYield decimal.Decimal
+    MinOpenInterest decimal.Decimal
+    MaxSpreadPct    decimal.Decimal
+
+    // Re-pricing (optlimiter-story scenario 2): defaults 0.20 of the
+    // spread per step, every 2 minutes.
+    RepriceStep     decimal.Decimal
+    RepriceInterval time.Duration
+
+    // v2 adds roll-dte, profit-take-pct, loss-close-multiple.
 }
 
 type GreelEpoch struct {
@@ -592,32 +560,15 @@ type GreelLadderStateV1 struct {
 ### Registration and keyspaces
 
 - `gobs.NewByTypename` gains cases for `OptLimiterState`,
-  `OptPositionState`, `GreelerState`, `GreelLadderState`. `LimiterState`
-  is already registered — no new case needed for the wrapped limiter.
+  `OptPositionState`, `GreelerState`, `GreelLadderState`.
 - Keyspaces: `/optlimiters/`, `/optpositions/`, `/greelers/`,
   `/greelladders/` (constants live in their owning packages, mirroring
   `limiter.DefaultKeyspace`).
-- The wrapped `limiter.Limiter` inside each `optlimiter.OptLimiter` also
-  lives under `/optlimiters/` — not `/limiters/`. Today `limiter.Save`/
-  `Load` hardcode `DefaultKeyspace` ("/limiters/"), so this needs one
-  small, additive change to the `limiter` package: an optional keyspace
-  override (e.g. a `New(..., WithKeyspace(ks))` option, defaulting to
-  `DefaultKeyspace` for every existing caller). `cleanUID` already
-  special-cases multiple prefixes (`/wallers/`, `/limiters/`,
-  `/loopers/`); adding `/optlimiters/` to that list is the matching
-  other half. See the embed-vs-reference decision below for why this is
-  worth the touch.
-- **TODO — isolation gaps:** the keyspace must be a field on the `Limiter`
-  instance, not just a `Save`/`Load` parameter, because limiter's background
-  finish-time fixer saves active limiters through their own `Save`. That
-  fixer also calls `GetOrder` on the spot exchange with the option limiter's
-  product ID (optlimiter-story scenario 7).
-- **TODO — `OptLimiterStateV1` may change:** optlimiter-story's closing TODO
-  would replace the wrapped `Limiter` with an option order state machine.
-  If taken, `OptLimiterStateV1` drops `LimiterID` and stores its own orders
-  and client-ID seed/offset (like `LimiterStateV2`), decision #1 below
-  becomes moot, and the keyspace override and isolation TODO above go away.
-  Resolve before implementing `OptLimiterState`.
+- No change to the `limiter` package. An earlier draft wrapped
+  `limiter.Limiter` inside each `OptLimiter` and needed a keyspace override
+  to keep its records out of `/limiters/`; the option order state machine
+  (decision #12) stores everything on its own record, so nothing under
+  `/limiters/` and no `limiter` background task ever sees an option order.
 
 ### Deliberately absent (derived, per design principle 1)
 
@@ -633,7 +584,7 @@ type GreelLadderStateV1 struct {
   concatenation across grid epochs, not a separately maintained copy.
 - Per-level cycle position, inventory or cash ledger, contribution lists.
 - Collected premium / P&L aggregates (derived from limiter and optlimiter
-  fills; see open question 3).
+  fills; see decision #3).
 - Collateral ownership itself stays with the greeler (design principle 3);
   only the *report* of what happened to it lives on the position.
 - A greeler-level event log — the position's own `Outcome`/`Assignment`
@@ -642,14 +593,16 @@ type GreelLadderStateV1 struct {
 - A leg-level pointer alongside `Assignment` — the live leg is always
   `Legs`' last entry when `Outcome` gets set (scenario 5a), so naming it
   again would be redundant.
-- Separate open/close pairing per roll — `Intent == "roll"` on one leg *is*
-  the pairing; no matching logic needed.
+- (v2) Separate open/close pairing per roll — `Intent == "roll"` on one
+  leg *is* the pairing; no matching logic needed.
 
 ---
 
 ## Decisions made at this checkpoint
 
-1. **Reference the wrapped limiter, don't embed it — decided.**
+1. **Reference the wrapped limiter, don't embed it — decided, then
+   superseded by decision #12** (`optlimiter` no longer wraps a
+   `limiter.Limiter` at all). Kept for history.
 
    | | Embed (`*LimiterStateV2` field, first draft) | Reference (`LimiterID string`, decided) |
    |---|---|---|
@@ -799,8 +752,21 @@ type GreelLadderStateV1 struct {
     assignment. Past `Expiry` the position is settling (`Outcome` empty)
     until the broker reports; the greeler's own tree is the only writer of
     the position record (scenario 5).
-11. **Selector/policy names and resolved knob values persisted in
+11. **Selector name and resolved knob values persisted in
     `GreelerStateV1` — decided after design review.** `server.Load` has
-    only a KV reader, so the greeler must rebuild its `ContractSelector` and
-    `RollPolicy` from its own record; the options exchange comes from
-    `rt.Exchange` at `Run` time (scenario 1).
+    only a KV reader, so the greeler must rebuild its `ContractSelector`
+    from its own record; the options exchange comes from `rt.Exchange` at
+    `Run` time (scenario 1). (`RollPolicy` and its name are v2.)
+12. **`OptLimiterStateV1` is the record of an option order state machine,
+    not a wrapped `limiter.Limiter` — decided.** It stores its own orders,
+    `idgen` seed/offset (offset saved ahead of each order), premium floor,
+    and re-price parameters (optlimiter-story). Supersedes decision #1 and
+    the `limiter` keyspace override.
+13. **v1 holds positions to settlement; closes and rolls are v2 —
+    decided.** v2-only fields (`Intent`, `PriorContractID`, the
+    `RollPolicy` name, the roll/close knobs) are left out of the v1
+    structs; added later, they decode as zero values from v1 records.
+14. **`Legs` keeps zero-fill attempts; new outcome `"unfilled"` —
+    decided.** A position whose opening order never fills ends `unfilled`
+    when the greeler abandons it (optpos-story scenario 3); the fold skips
+    zero-fill attempts (scenario 4).

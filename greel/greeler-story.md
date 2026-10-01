@@ -70,15 +70,22 @@ fired:
    zone. `Check` needs no spot/zone information because the greeler never
    force-closes a position on a zone change — project.md is explicit that
    "existing orders/positions drift through untouched" in the buffer, and
-   the same principle extends past the buffer into wheel mode itself. A
-   position only becomes terminal when `RollPolicy` closes it or the
-   broker reports it assigned or expired (`Check`'s settlement step,
-   optpos-story.md scenario 6) — never because spot re-entered the grid
-   band. The flip back to grid is a *consequence* of the position going
-   terminal, not something `greeler` commands.
-2. Once the position's `Outcome` is non-empty, **append the grid epoch**
+   the same principle extends past the buffer into wheel mode itself. In
+   v1 an open position only becomes terminal when the broker reports it
+   assigned or expired (`Check`'s settlement step, optpos-story.md
+   scenario 6) — never because spot re-entered the grid band. The flip
+   back to grid is a *consequence* of the position going terminal, not
+   something `greeler` commands. (v2 adds closes, decided by `RollPolicy`.)
+2. **The one exception: a position that never opened.** If the normal
+   flip-back rule (hysteresis + dwell toward grid) fires while the opening
+   order still hasn't filled, the greeler calls `position.Abandon()`
+   (optpos-story.md scenario 3). It succeeds with `Outcome = "unfilled"`
+   unless the order filled in the meantime — then the position is open
+   and holds to settlement. This isn't force-closing anything: nothing
+   was ever open, and the levels' holdings never changed.
+3. Once the position's `Outcome` is non-empty, **append the grid epoch**
    `{Mode: "grid", StartAt: now}`.
-3. Derive post-assignment posture (scenarios 1, 3) and create the levels'
+4. Derive post-assignment posture (scenarios 1, 3) and create the levels'
    limiters in the new epoch — each limiter's UID appended to
    `LevelLimiterIDs[i]` and saved before it runs (write-ahead, the way
    `Looper.addNewBuy` saves before running).
@@ -158,9 +165,8 @@ pause, set, and resume, as with `Looper`.
 The server reloads jobs generically — `server.Load(ctx, r, uid, typename)`
 (`server/load.go:75`) gets only a KV reader — so `greeler.Load(ctx, uid,
 r)` must rebuild everything from `GreelerStateV1`: `GridLevels`, zone
-parameters, and the `ContractSelector`/`RollPolicy` looked up by their
-persisted names and built from the persisted `WheelKnobs` (gobs-story.md
-decision #11). The one runtime dependency the record can't hold, the
+parameters, and the `ContractSelector` looked up by its persisted name and
+built from the persisted `WheelKnobs` (gobs-story.md decision #11). The one runtime dependency the record can't hold, the
 options exchange, comes from `rt.Exchange.(exchange.OptionsExchange)` in
 `Run`; positions load lazily there (decision #1). `server.Load` gains
 `greeler`/`greelladder` cases.
@@ -208,9 +214,10 @@ type Greeler struct {
 
     epochs []*Epoch // mirrors gobs.GreelEpoch; last entry is current
 
-    // Rebuilt in Load from the persisted names and WheelKnobs (scenario 5).
+    // Rebuilt in Load from the persisted name and WheelKnobs (scenario 5);
+    // knobs also carry each opening attempt's re-price parameters.
     selector optpos.ContractSelector
-    policy   optpos.RollPolicy
+    knobs    *gobs.WheelKnobs
 
     // exclude is set by the ladder (greelladder-story); nil standalone.
     exclude func(contractID string) bool
@@ -324,7 +331,11 @@ var _ trader.Trader = (*Greeler)(nil)
    design review.** Keeps the replay in scenario 1 deterministic; placement
    stays a separate, spot-dependent decision (scenario 3).
 8. **`Load` rebuilds from the record alone — decided after design
-   review.** Selector/policy from persisted names and knobs; options
-   exchange from `rt.Exchange` in `Run` (scenario 5).
+   review.** Selector from its persisted name and knobs; options exchange
+   from `rt.Exchange` in `Run` (scenario 5).
 9. **Minimal `Actions`/`BudgetAt`/`GetSummary` until the accounting model
    lands** (scenario 5).
+10. **An unopened position is abandoned by the normal flip-back rule —
+    decided.** `Abandon` ends it `unfilled`; an `unfilled` (or `expired`)
+    wheel epoch contributes nothing to the fold (scenario 2). In v1, open
+    positions end only by broker settlement.
