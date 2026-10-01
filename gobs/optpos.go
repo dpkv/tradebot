@@ -13,9 +13,19 @@ type OptPositionState struct {
 }
 
 type OptPositionStateV1 struct {
+	Config   *OptPositionConfig
+	Progress *OptPositionProgress
+}
+
+// OptPositionConfig is fixed at creation; the owning greeler supplies the
+// selector and re-price knobs.
+type OptPositionConfig struct {
 	ExchangeName string
 	Underlying   string
+}
 
+// OptPositionProgress is everything trading writes.
+type OptPositionProgress struct {
 	// Contract caches the current attempt's contract; each leg's own record is authoritative.
 	Contract *OptionContract
 
