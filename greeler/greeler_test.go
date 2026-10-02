@@ -179,7 +179,8 @@ type fakePosition struct {
 	mu         sync.Mutex
 	outcome    string
 	assignment *gobs.AssignmentFact
-	filled     bool // the opening order filled; Abandon fails
+	contract   *gobs.OptionContract // set by Open
+	filled     bool                 // the opening order filled; Abandon fails
 	opens      []*optpos.Constraint
 	checks     int
 	abandons   int
@@ -199,10 +200,17 @@ func (p *fakePosition) Assignment() *gobs.AssignmentFact {
 	return p.assignment
 }
 
+func (p *fakePosition) Contract() *gobs.OptionContract {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.contract
+}
+
 func (p *fakePosition) Open(ctx, fctx context.Context, c *optpos.Constraint) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.opens = append(p.opens, c)
+	p.contract = &gobs.OptionContract{ContractID: p.uid + "/contract", Underlying: c.Underlying, OptionType: c.OptionType}
 	return nil
 }
 
@@ -620,7 +628,7 @@ func TestGridCycle(t *testing.T) {
 	if ids := v.current().LevelLimiterIDs[0]; len(ids) != 3 || path.Base(ids[2]) != "buy-000002" {
 		t.Fatalf("level 0 limiters after sell = %v", ids)
 	}
-	if got := v.DerivedStock(); !got.IsZero() {
+	if got, ok := v.DerivedStock(); !ok || !got.IsZero() {
 		t.Errorf("DerivedStock = %s, want 0", got)
 	}
 }
@@ -669,6 +677,9 @@ func TestFlipToWheelPut(t *testing.T) {
 	}
 	if path.Base(pos.uid) != "pos-000001" {
 		t.Errorf("position uid = %s", pos.uid)
+	}
+	if id, known := v.HeldContract(); !known || id != pos.uid+"/contract" {
+		t.Errorf("HeldContract = %q, %v; want the opened contract", id, known)
 	}
 	// The wheel epoch and the position were saved ahead of Open.
 	w := e.reload(v)
@@ -769,6 +780,9 @@ func TestPutAssignedSellsAtLevels(t *testing.T) {
 	if got := fmt.Sprint(holdingsOf(t, v)); got != "[25 25 25 25]" {
 		t.Fatalf("holdings = %s", got)
 	}
+	if id, known := v.HeldContract(); !known || id != "" {
+		t.Errorf("HeldContract = %q, %v after assignment; want none", id, known)
+	}
 
 	e.stock.setPrice("99")
 	e.step(r, "99") // band [94.05, 103.95]: sells at 101..103 start; 104 waits
@@ -781,7 +795,7 @@ func TestPutAssignedSellsAtLevels(t *testing.T) {
 			t.Errorf("level %d limiter %s is not a 25-share sell", i, l.UID())
 		}
 	}
-	if got := v.DerivedStock(); !got.Equal(d("100")) {
+	if got, ok := v.DerivedStock(); !ok || !got.Equal(d("100")) {
 		t.Errorf("DerivedStock = %s, want 100", got)
 	}
 

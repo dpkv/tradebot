@@ -178,6 +178,11 @@ func (v *Greeler) loadChildren(ctx context.Context, db kv.Database, optEx exchan
 			}
 		}
 		v.loaded = true
+		var pos position
+		if last := v.current(); last.Mode == "wheel" {
+			pos = last.position
+		}
+		v.updateHeld(pos)
 		return nil
 	})
 }
@@ -446,7 +451,9 @@ func (r *runner) flipToWheel(ctx context.Context, now time.Time, flip string) er
 	r.notify(ctx, now, "Greeler %s flipped to wheel mode; writing a %s on %s (%s).", v.uid, optionType, v.cfg.ProductID, v.cfg.ExchangeName)
 
 	// Check opens it later if this fails.
-	if err := pos.Open(ctx, r.fctx, v.constraint(optionType)); err != nil {
+	err = pos.Open(ctx, r.fctx, v.constraint(optionType))
+	v.updateHeld(pos)
+	if err != nil {
 		slog.Warn("could not open option position (will retry)", "greeler", v, "position", uid, "err", err)
 	}
 	return nil
@@ -493,11 +500,13 @@ func (r *runner) stepWheel(ctx context.Context, now time.Time, holdings []decima
 				slog.Warn("could not check option position (will retry)", "greeler", v, "position", pos.UID(), "err", err)
 			}
 		}
+		v.updateHeld(pos)
 		if pos.Outcome() == "" {
 			return nil
 		}
 	}
 
+	v.updateHeld(pos)
 	ne := v.newGridEpoch(now)
 	v.appendEpoch(ne)
 	if err := kv.WithReadWriter(ctx, r.rt.Database, v.Save); err != nil {
