@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,9 +26,15 @@ import (
 // replacement, leaving the original resting at the broker, untracked,
 // indefinitely. Three TSLA buy orders sat like this for up to three weeks
 // before being noticed manually. This check catches that class of bug
-// within one interval instead of relying on a human to notice a stray
-// fill.
+// within one interval (plus orderReconcileConfirmDelay) instead of relying
+// on a human to notice a stray fill.
 const OrderReconcileInterval = 15 * time.Minute
+
+// orderReconcileConfirmDelay is how long we wait before re-checking orders
+// found untracked, and alert only if they are still untracked. It must
+// exceed the limiter's periodic flush interval (one minute), since a newly
+// created order is not in the persisted limiter state until then.
+const orderReconcileConfirmDelay = 2 * time.Minute
 
 // orderReconcileAlertFreeze is how long we wait before re-alerting on the
 // same untracked order, so a still-unresolved order doesn't re-send every
@@ -42,6 +49,11 @@ func (s *Server) watchForUntrackedOrders(ctx context.Context, ex exchange.Exchan
 	// where an order can go untracked this way, since its live-orders
 	// endpoint is a bulk snapshot that can come back incomplete right after a
 	// gateway reconnect, unlike Coinbase/CoinEx's per-order lookups.
+	//
+	// TODO: Replace the *ibkr.Exchange type assertion with an optional
+	// exchange-neutral interface for listing open orders, whose orders also
+	// expose symbol, size and limit price (exchange.OrderDetail doesn't), so
+	// this check doesn't depend on IBKR types and other exchanges can opt in.
 	ibkrEx, ok := ex.(*ibkr.Exchange)
 	if !ok {
 		return nil
@@ -62,10 +74,65 @@ func (s *Server) watchForUntrackedOrders(ctx context.Context, ex exchange.Exchan
 	}
 }
 
+// checkUntrackedOrders alerts on broker orders that are untracked both now
+// and orderReconcileConfirmDelay later.
+//
+// A single look is not enough: an order whose placement is still in flight,
+// or which its limiter has not yet persisted, is live at the broker but
+// missing from the persisted state (seen 2026-10-01: TSLA order 894300936
+// alerted ten seconds after its own limiter created it).
 func (s *Server) checkUntrackedOrders(ctx context.Context, ex *ibkr.Exchange) error {
-	brokerOrders, err := ex.GetOrders(ctx)
+	first, err := s.findUntrackedOrders(ctx, ex)
 	if err != nil {
 		return err
+	}
+	if len(first) == 0 {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-time.After(orderReconcileConfirmDelay):
+	}
+
+	second, err := s.findUntrackedOrders(ctx, ex)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	var lines []string
+	for id, line := range second {
+		if _, ok := first[id]; !ok {
+			continue
+		}
+
+		key := "alerts/untracked-order/" + ex.ExchangeName() + "/" + id
+		if deadline, ok := s.alertFreezeDeadlineMap[key]; ok && now.Before(deadline) {
+			continue
+		}
+		s.alertFreezeDeadlineMap[key] = now.Add(orderReconcileAlertFreeze)
+		lines = append(lines, line)
+	}
+
+	if len(lines) == 0 {
+		return nil
+	}
+	slices.Sort(lines)
+
+	s.SendMessage(ctx, now,
+		"Found %d order(s) live on %s but not tracked by any trading job (possible duplicate/orphan — check and cancel manually if unwanted):\n%s",
+		len(lines), ex.ExchangeName(), strings.Join(lines, "\n"))
+	return nil
+}
+
+// findUntrackedOrders returns the broker's live orders that no limiter
+// considers active, as a map from order id to a one-line description.
+func (s *Server) findUntrackedOrders(ctx context.Context, ex *ibkr.Exchange) (map[string]string, error) {
+	brokerOrders, err := ex.GetOrders(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	tracked := make(map[string]bool)
@@ -85,11 +152,10 @@ func (s *Server) checkUntrackedOrders(ctx context.Context, ex *ibkr.Exchange) er
 		return nil
 	}
 	if err := kv.WithReader(ctx, s.db, load); err != nil {
-		return fmt.Errorf("could not load limiters to check tracked orders: %w", err)
+		return nil, fmt.Errorf("could not load limiters to check tracked orders: %w", err)
 	}
 
-	now := time.Now()
-	var lines []string
+	untracked := make(map[string]string)
 	for _, o := range brokerOrders {
 		if o.IsDone() {
 			continue
@@ -99,26 +165,12 @@ func (s *Server) checkUntrackedOrders(ctx context.Context, ex *ibkr.Exchange) er
 			continue
 		}
 
-		key := "alerts/untracked-order/" + ex.ExchangeName() + "/" + id
-		if deadline, ok := s.alertFreezeDeadlineMap[key]; ok && now.Before(deadline) {
-			continue
-		}
-		s.alertFreezeDeadlineMap[key] = now.Add(orderReconcileAlertFreeze)
-
 		var created string
 		if o.LastExecutionTimeMilli != 0 {
 			created = time.UnixMilli(o.LastExecutionTimeMilli).Format(time.RFC3339)
 		}
-		lines = append(lines, fmt.Sprintf("order-id=%s %s %s %s qty=%s price=%s created=%s",
-			id, o.Symbol, o.Side, o.Status, o.OrderedQty.String(), o.LimitPrice.String(), created))
+		untracked[id] = fmt.Sprintf("order-id=%s %s %s %s qty=%s price=%s created=%s",
+			id, o.Symbol, o.Side, o.Status, o.OrderedQty.String(), o.LimitPrice.String(), created)
 	}
-
-	if len(lines) == 0 {
-		return nil
-	}
-
-	s.SendMessage(ctx, now,
-		"Found %d order(s) live on %s but not tracked by any trading job (possible duplicate/orphan — check and cancel manually if unwanted):\n%s",
-		len(lines), ex.ExchangeName(), strings.Join(lines, "\n"))
-	return nil
+	return untracked, nil
 }
