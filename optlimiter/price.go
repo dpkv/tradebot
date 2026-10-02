@@ -74,11 +74,11 @@ var newYork = func() *time.Location {
 	return loc
 }()
 
-// regularSession reports whether t is inside the US options regular
+// RegularSession reports whether t is inside the US options regular
 // session (9:30–16:00 New York time, Monday to Friday) and when that next
 // changes: the close if open, else the next open. Exchange holidays aren't
 // known here; on one, broker calls fail and Run returns the error.
-func regularSession(t time.Time) (bool, time.Time) {
+func RegularSession(t time.Time) (bool, time.Time) {
 	nt := t.In(newYork)
 	y, m, d := nt.Date()
 	open := time.Date(y, m, d, 9, 30, 0, 0, newYork)

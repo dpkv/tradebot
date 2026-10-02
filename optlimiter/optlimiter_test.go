@@ -356,7 +356,7 @@ func TestRegularSession(t *testing.T) {
 		{"2026-10-30 16:30", false, "2026-11-02 09:30"}, // across DST end
 	}
 	for _, tc := range tests {
-		open, next := regularSession(at(tc.now).UTC())
+		open, next := RegularSession(at(tc.now).UTC())
 		if open != tc.open || !next.Equal(at(tc.next)) {
 			t.Errorf("%s: got (%v, %s), want (%v, %s)", tc.now, open, next.In(newYork), tc.open, tc.next)
 		}
@@ -638,6 +638,35 @@ func TestRecoverFilledOrderPlacedBeforeCrash(t *testing.T) {
 	x := loadLimiter(t, db, "u1")
 	if !x.IsDone() {
 		t.Error("adopted fill was not saved")
+	}
+}
+
+func TestRunCanceledBeforeStartCancelsRecoveredOrder(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.failPlaceAfter = true
+	v := newTestLimiter(t, "u1", "1", "0.50")
+
+	if err := waitErr(t, runAsync(context.Background(), v, f, db)); err == nil {
+		t.Fatal("Run: want placement error")
+	}
+	if f.numLive() != 1 {
+		t.Fatalf("broker live orders: %d", f.numLive())
+	}
+
+	// A Run whose context is canceled before it starts still recovers the
+	// order and cancels it, without placing anything new.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := loadLimiter(t, db, "u1")
+	if err := waitErr(t, runAsync(ctx, w, f, db)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run: got %v, want context.Canceled", err)
+	}
+	if f.numLive() != 0 || f.numOrders() != 1 {
+		t.Errorf("broker live %d orders %d", f.numLive(), f.numOrders())
+	}
+	if _, ok := w.orders["order-0"]; !ok {
+		t.Error("order placed before the crash was not adopted")
 	}
 }
 

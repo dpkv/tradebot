@@ -96,7 +96,7 @@ func New(uid, exchangeName, contractID string, contractSize, numContracts, minPr
 
 func (v *OptLimiter) setDefaults() {
 	v.now = time.Now
-	v.session = regularSession
+	v.session = RegularSession
 	v.tickSize = tickSize
 	v.pollInterval = pollInterval
 }
@@ -127,6 +127,12 @@ func (v *OptLimiter) check() error {
 		return fmt.Errorf("optlimiter reprice interval must be positive")
 	}
 	return nil
+}
+
+// SetSession replaces the regular-session calendar Run trades in; for tests.
+// Call it before Run.
+func (v *OptLimiter) SetSession(session func(time.Time) (open bool, next time.Time)) {
+	v.session = session
 }
 
 func (v *OptLimiter) String() string {

@@ -64,10 +64,13 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 		return err
 	}
 
-	if err := v.recover(ctx, optEx, product); err != nil {
+	// Recovery runs to completion even if ctx is already canceled, so a
+	// canceled Run still cancels any live order it finds and confirms it.
+	bg := context.WithoutCancel(ctx)
+	if err := v.recover(bg, optEx, product); err != nil {
 		return err
 	}
-	if err := v.save(ctx, db); err != nil {
+	if err := v.save(bg, db); err != nil {
 		return err
 	}
 
@@ -77,10 +80,10 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 	// it and start again from the mid.
 	for _, id := range v.liveOrders() {
 		slog.Warn("canceling live option order found on resume", "optlimiter", v, "order-id", id)
-		if err := v.cancel(context.WithoutCancel(ctx), product, id); err != nil {
+		if err := v.cancel(bg, product, id); err != nil {
 			return err
 		}
-		if err := v.save(ctx, db); err != nil {
+		if err := v.save(bg, db); err != nil {
 			return err
 		}
 	}
@@ -88,6 +91,9 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 	slog.Info("started optlimiter", "optlimiter", v, "contract", v.contractID, "contracts", v.numContracts, "min-premium", v.minPremium, "filled", v.FilledSize())
 
 	for !v.IsDone() {
+		if ctx.Err() != nil {
+			return v.shutdown(ctx, rs)
+		}
 		now := v.now()
 		open, change := v.session(now)
 		if !open {
@@ -129,10 +135,10 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 		}
 	}
 
-	if err := v.refresh(ctx, product); err != nil {
+	if err := v.refresh(bg, product); err != nil {
 		return err
 	}
-	if err := v.save(ctx, db); err != nil {
+	if err := v.save(bg, db); err != nil {
 		return err
 	}
 	slog.Info("optlimiter is complete", "optlimiter", v, "filled", v.FilledSize(), "value", v.FilledValue())
