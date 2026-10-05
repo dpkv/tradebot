@@ -39,6 +39,7 @@ type position interface {
 	UID() string
 	Outcome() string
 	Assignment() *gobs.AssignmentFact
+	Contract() *gobs.OptionContract
 	Open(ctx, fctx context.Context, c *optpos.Constraint) error
 	Check(ctx, fctx context.Context, c *optpos.Constraint) error
 	Abandon(ctx context.Context) error
@@ -73,6 +74,12 @@ type Greeler struct {
 	loaded   bool     // children of every epoch are loaded
 	holdings []decimal.Decimal
 
+	// held is the contract the current position sells or holds, for the
+	// ladder's sibling exclusion; heldKnown is false until Run has loaded
+	// the position.
+	held      string
+	heldKnown bool
+
 	// exclude is set by the ladder; nil standalone.
 	exclude func(contractID string) bool
 
@@ -102,6 +109,7 @@ func New(uid string, cfg *gobs.GreelConfig) (*Greeler, error) {
 	}
 	v.epochs = []*epoch{v.newGridEpoch(v.now())}
 	v.loaded = true
+	v.heldKnown = true
 	return v, nil
 }
 
@@ -222,16 +230,38 @@ func (v *Greeler) SetExclude(exclude func(contractID string) bool) {
 	v.exclude = exclude
 }
 
-// DerivedStock is the greeler's stock inventory as of Run's last
-// derivation: every level's holding, summed. Zero before Run derives it.
-func (v *Greeler) DerivedStock() decimal.Decimal {
+// HeldContract is the contract ID the current position is selling or
+// holds, empty when there is none. known is false until Run has loaded the
+// position, so the answer can't be trusted yet.
+func (v *Greeler) HeldContract() (id string, known bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	var sum decimal.Decimal
+	return v.held, v.heldKnown
+}
+
+// updateHeld records pos's contract as held while pos hasn't ended.
+func (v *Greeler) updateHeld(pos position) {
+	held := ""
+	if pos != nil && pos.Outcome() == "" {
+		if c := pos.Contract(); c != nil {
+			held = c.ContractID
+		}
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.held, v.heldKnown = held, true
+}
+
+// DerivedStock is the greeler's stock inventory as of Run's last
+// derivation: every level's holding, summed. ok is false before Run first
+// derives it.
+func (v *Greeler) DerivedStock() (sum decimal.Decimal, ok bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	for _, h := range v.holdings {
 		sum = sum.Add(h)
 	}
-	return sum
+	return sum, v.holdings != nil
 }
 
 // BudgetAt is the cash every level needs to hold its buy at once.

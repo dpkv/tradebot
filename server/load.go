@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bvk/tradebot/greeler"
+	"github.com/bvk/tradebot/greelladder"
 	"github.com/bvk/tradebot/limiter"
 	"github.com/bvk/tradebot/looper"
 	"github.com/bvk/tradebot/namer"
@@ -87,6 +88,7 @@ func Load(ctx context.Context, r kv.Reader, uid, typename string) (trader.Trader
 			{waller.DefaultKeyspace, "waller"},
 			{watcher.DefaultKeyspace, "watcher"},
 			{greeler.DefaultKeyspace, "greeler"},
+			{greelladder.DefaultKeyspace, "greelladder"},
 		}
 		for _, ks := range kss {
 			key := path.Join(ks[0], uid)
@@ -108,6 +110,8 @@ func Load(ctx context.Context, r kv.Reader, uid, typename string) (trader.Trader
 		return watcher.Load(ctx, uid, r)
 	case strings.EqualFold(typename, "greeler"):
 		return greeler.Load(ctx, uid, r)
+	case strings.EqualFold(typename, "greelladder"):
+		return greelladder.Load(ctx, uid, r)
 	}
 
 	return nil, fmt.Errorf("unsupported trader type %q", typename)
