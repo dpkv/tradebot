@@ -187,7 +187,12 @@ func (v *OptLimiter) reprice(ctx context.Context, rs *runState, now time.Time) e
 
 // place advances and saves the client ID offset, then places the order. A
 // crash between the two leaves an ID that recovery looks up at the broker.
+// It places nothing while an earlier placement is unconfirmed: that order
+// may be live, and a second could sell twice the contracts.
 func (v *OptLimiter) place(ctx context.Context, rs *runState, size, price decimal.Decimal) (string, error) {
+	if id, ok := v.unconfirmed(); ok {
+		return "", fmt.Errorf("optlimiter %s: not placing while client id %s is missing at the broker: %w", v.uid, id, ErrUnconfirmed)
+	}
 	clientID := v.idgen.NextID()
 	if err := v.save(ctx, rs.db); err != nil {
 		v.idgen.RevertID()
@@ -197,10 +202,16 @@ func (v *OptLimiter) place(ctx context.Context, rs *runState, size, price decima
 	order, err := rs.product.LimitSellToOpen(ctx, clientID, size, price)
 	if err != nil {
 		// The order may or may not be at the broker; the next Run finds it by
-		// client ID. Placing another one now could make two live orders. Until
-		// the broker is known not to have it, no stop is clean.
-		v.absent[clientID] = &absence{since: v.now(), failed: true}
+		// client ID. Until the broker is known not to have it, nothing more is
+		// placed and no stop is clean, even after a restart.
+		v.mu.Lock()
+		v.absent[clientID] = &absence{since: v.now()}
+		v.mu.Unlock()
 		slog.Error("could not place sell-to-open order", "optlimiter", v, "client-order-id", clientID, "size", size, "price", price, "err", err)
+		if err := v.save(ctx, rs.db); err != nil {
+			// Unsaved, a restart takes its first miss as the start instead.
+			slog.Warn("could not save optlimiter after a failed placement (ignored)", "optlimiter", v, "err", err)
+		}
 		return "", fmt.Errorf("could not place sell-to-open order: %w", err)
 	}
 
@@ -304,11 +315,14 @@ func (v *OptLimiter) shutdown(ctx context.Context, rs *runState) error {
 	return context.Cause(ctx)
 }
 
-// unconfirmed returns a client ID whose placement failed in this process
-// and that the broker hasn't listed, but not yet for absentSettle.
+// unconfirmed returns a client ID below the offset that the broker hasn't
+// listed, but not yet for absentSettle.
 func (v *OptLimiter) unconfirmed() (uuid.UUID, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
 	for id, a := range v.absent {
-		if a.failed && !a.settled {
+		if !a.settled {
 			return id, true
 		}
 	}
@@ -390,43 +404,45 @@ func (v *OptLimiter) liveOrders() []string {
 // recover adopts orders placed with a saved client ID that never made it
 // into the order list (a crash between placing and saving, or a placement
 // that failed), then refreshes every order not yet done. An ID that a
-// lookup absentSettle after its first miss still misses is not looked up
-// again. A failed lookup stops the lookups, but the known orders are still
-// refreshed.
+// lookup absentSettle after its failed placement or first miss still
+// misses is not looked up again, even after a restart. A failed lookup
+// stops the lookups, but the known orders are still refreshed.
 func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsExchange, product exchange.OptionsProduct) error {
-	known := make(map[uuid.UUID]bool)
-	v.mu.Lock()
-	for _, order := range v.orders {
-		known[order.ClientUUID] = true
-	}
-	v.mu.Unlock()
+	known := v.knownClientIDs()
 
 	now := v.now()
 	var lookupErr error
-	gen := idgen.New(v.idgen.Seed(), 0)
-	for i, n := uint64(0), v.idgen.Offset(); i < n; i++ {
+	v.mu.Lock()
+	from := v.lookupOffset
+	v.mu.Unlock()
+	gen := idgen.New(v.idgen.Seed(), from)
+	for i, n := from, v.idgen.Offset(); i < n; i++ {
 		clientID := gen.NextID()
 		if known[clientID] {
 			continue
 		}
+		v.mu.Lock()
 		a := v.absent[clientID]
-		if a != nil && a.settled {
+		settled := a != nil && a.settled
+		v.mu.Unlock()
+		if settled {
 			continue
 		}
 		detail, err := optEx.GetOptionsOrderByClientID(ctx, clientID)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				v.mu.Lock()
 				if a == nil {
 					v.absent[clientID] = &absence{since: now}
 				} else if now.Sub(a.since) >= absentSettle {
 					a.settled = true
 				}
+				v.mu.Unlock()
 				continue
 			}
 			lookupErr = fmt.Errorf("could not look up option order by client id %s: %w", clientID, err)
 			break
 		}
-		delete(v.absent, clientID)
 		order, err := exchange.NewSimpleOrderFromOrderDetail(detail)
 		if err != nil {
 			lookupErr = err
@@ -434,10 +450,45 @@ func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsExchange
 		}
 		slog.Warn("adopted option order found by client id", "optlimiter", v, "order-id", order.ServerOrderID, "client-order-id", clientID, "done", order.Done, "filled", order.FilledSize)
 		v.mu.Lock()
+		delete(v.absent, clientID)
 		v.orders[order.ServerOrderID] = order
 		v.mu.Unlock()
 	}
+	v.advanceLookups()
 	return errors.Join(lookupErr, v.refresh(ctx, product))
+}
+
+// knownClientIDs returns the client IDs of the orders in the list.
+func (v *OptLimiter) knownClientIDs() map[uuid.UUID]bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	known := make(map[uuid.UUID]bool, len(v.orders))
+	for _, order := range v.orders {
+		known[order.ClientUUID] = true
+	}
+	return known
+}
+
+// advanceLookups moves lookupOffset past the client IDs that are in the
+// order list or settled absent, so no start looks them up again.
+func (v *OptLimiter) advanceLookups() {
+	known := v.knownClientIDs()
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	gen := idgen.New(v.idgen.Seed(), v.lookupOffset)
+	for n := v.idgen.Offset(); v.lookupOffset < n; v.lookupOffset++ {
+		clientID := gen.NextID()
+		if known[clientID] {
+			continue
+		}
+		if a := v.absent[clientID]; a == nil || !a.settled {
+			break
+		}
+		delete(v.absent, clientID)
+	}
 }
 
 // refresh re-fetches every order not yet done.

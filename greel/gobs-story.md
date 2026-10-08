@@ -385,6 +385,14 @@ type OptLimiterProgress struct {
     // Orders holds every broker order this intent placed, by server
     // order ID. At most one is ever live.
     Orders map[string]*Order
+
+    // LookupOffset and Absent keep recovery's progress across restarts:
+    // every ID below LookupOffset is in Orders or settled absent, and
+    // Absent holds the IDs above it the broker hasn't listed, with when
+    // their placement failed or was first missed (optlimiter-story
+    // scenario 4).
+    LookupOffset uint64
+    Absent       map[string]*OptAbsence
 }
 
 // OptPositionState persists one written-option position from open to its

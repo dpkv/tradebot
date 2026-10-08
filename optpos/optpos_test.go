@@ -1085,6 +1085,92 @@ func TestAbandonWaitsForUnlistedOrder(t *testing.T) {
 	}
 }
 
+// TestAbandonAfterRestartWaitsForUnlistedOrder: as above, but the greeler
+// is paused and resumed in between, so a freshly loaded position abandons.
+// The leg's record still marks the order unconfirmed.
+func TestAbandonAfterRestartWaitsForUnlistedOrder(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+
+	e.ex.failPlaceAfter = true
+	e.ex.unlisted = true
+	v := e.newPosition("p1")
+	v.legHook = func(leg *optlimiter.OptLimiter) {
+		leg.SetSession(alwaysOpen)
+		leg.SetClock(e.clock.Now)
+	}
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, v.active)
+	e.ex.mu.Lock()
+	e.ex.failPlaceAfter = false
+	e.ex.mu.Unlock()
+	cancel()
+	if err := v.Stop(context.Background()); !errors.Is(err, optlimiter.ErrUnconfirmed) {
+		t.Fatalf("Stop with the order unlisted: got %v, want ErrUnconfirmed", err)
+	}
+
+	w := e.load("p1")
+	w.leg.SetClock(e.clock.Now)
+	if err := w.Abandon(context.Background()); !errors.Is(err, optlimiter.ErrUnconfirmed) || w.Outcome() != "" {
+		t.Fatalf("Abandon after a restart with the order unlisted: got %v, outcome %q; want ErrUnconfirmed", err, w.Outcome())
+	}
+
+	e.ex.mu.Lock()
+	e.ex.unlisted = false
+	e.ex.mu.Unlock()
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := w.Abandon(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 0 || w.Outcome() != "unfilled" {
+		t.Errorf("after Abandon: orders %d live %d outcome %q", n, live, w.Outcome())
+	}
+}
+
+// TestRestartWaitsForUnlistedOrder: a placement fails after the broker
+// accepted it, and the broker doesn't list the order yet. Restarting the
+// attempt must not place a second order while the first may be live.
+func TestRestartWaitsForUnlistedOrder(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e.ex.failPlaceAfter = true
+	e.ex.unlisted = true
+	v := e.newPosition("p1")
+	v.legHook = func(leg *optlimiter.OptLimiter) {
+		leg.SetSession(alwaysOpen)
+		leg.SetClock(e.clock.Now)
+	}
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, v.active)
+	e.ex.mu.Lock()
+	e.ex.failPlaceAfter = false
+	e.ex.mu.Unlock()
+
+	for i := 0; i < 2; i++ {
+		if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.Set(e.clock.Now().Add(retryDelay))
+	}
+	a := v.active
+	if a == nil {
+		t.Fatal("Check did not restart the attempt")
+	}
+	waitAttempt(t, a)
+	if !errors.Is(a.err, optlimiter.ErrUnconfirmed) {
+		t.Errorf("restarted attempt: got %v, want ErrUnconfirmed", a.err)
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 1 {
+		t.Errorf("orders %d live %d, want only the unlisted one", n, live)
+	}
+}
+
 func TestHeldContractID(t *testing.T) {
 	e := newTestEnv(t)
 	fctx, cancel := context.WithCancel(context.Background())
