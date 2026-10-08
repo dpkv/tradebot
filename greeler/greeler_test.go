@@ -190,6 +190,18 @@ func (p *fakeStock) failCancels(n int) {
 	p.cancelErrs = n
 }
 
+// expireLive ends every live order at the exchange without an update,
+// like a DAY order expiring while nobody watches.
+func (p *fakeStock) expireLive() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, o := range p.orders {
+		if !o.Done {
+			o.Done, o.Status = true, "EXPIRED"
+		}
+	}
+}
+
 // fillLive fills every live order.
 func (p *fakeStock) fillLive() int {
 	p.mu.Lock()
@@ -1298,30 +1310,56 @@ func TestRetireEndsWhenFlat(t *testing.T) {
 
 // TestRetireWaitsForLiveBuy: a buy's cancel failed when the greeler last
 // stopped. Retired, it doesn't start new buys, but it doesn't end with
-// that order live either: it runs the buy's limiter to manage it.
+// that order live either: it runs the buy's limiter only to cancel it,
+// even if the exchange ended the order meanwhile.
 func TestRetireWaitsForLiveBuy(t *testing.T) {
-	e := newTestEnv(t)
-	v := e.newGreeler(testConfig())
-	r := e.runner(v)
-	e.stock.setPrice("100.5")
-	e.step(r, "100.5")
-	waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
-	e.stock.failCancels(1)
-	r.stopAll()
-	if n := len(e.stock.live()); n != 1 {
-		t.Fatalf("live orders = %d, want the buy", n)
-	}
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expired=%v", expired), func(t *testing.T) {
+			e := newTestEnv(t)
+			v := e.newGreeler(testConfig())
+			r := e.runner(v)
+			e.stock.setPrice("100.5")
+			e.step(r, "100.5")
+			waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
+			e.stock.failCancels(1)
+			r.stopAll()
+			if n := len(e.stock.live()); n != 1 {
+				t.Fatalf("live orders = %d, want the buy", n)
+			}
+			if expired {
+				e.stock.expireLive()
+			}
 
-	w := e.reload(v)
-	if _, err := w.SetOption("retire", "true"); err != nil {
-		t.Fatal(err)
-	}
-	r = e.runner(w)
-	if done := e.step(r, "100.5"); done {
-		t.Fatal("retired greeler ended with the buy order live")
-	}
-	if len(r.running) != 1 || r.running[0] == nil {
-		t.Fatalf("running levels = %v; want level 0's buy", r.running)
+			w := e.reload(v)
+			if _, err := w.SetOption("retire", "true"); err != nil {
+				t.Fatal(err)
+			}
+			r = e.runner(w)
+			if done := e.step(r, "100.5"); done {
+				t.Fatal("retired greeler ended before confirming the buy's order")
+			}
+			rl := r.running[0]
+			if len(r.running) != 1 || rl == nil {
+				t.Fatalf("running levels = %v; want level 0's buy", r.running)
+			}
+			select {
+			case <-rl.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for the buy's limiter to cancel its order")
+			}
+			if rl.err != nil {
+				t.Fatalf("buy's limiter: %v", rl.err)
+			}
+			if done := e.step(r, "100.5"); !done {
+				t.Fatal("retired greeler didn't end once the buy's order was done")
+			}
+			e.stock.mu.Lock()
+			n := len(e.stock.orders)
+			e.stock.mu.Unlock()
+			if live := e.stock.live(); len(live) != 0 || n != 1 {
+				t.Errorf("orders %d live %d; want only the first buy, done", n, len(live))
+			}
+		})
 	}
 }
 

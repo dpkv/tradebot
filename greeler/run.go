@@ -589,11 +589,14 @@ func (r *runner) armLevels(ctx context.Context, now time.Time, e *epoch, holding
 		ls := e.limiters[i]
 		v.mu.Unlock()
 		if n := len(ls); n > 0 && ls[n-1].PendingSize().IsPositive() {
-			// A retired greeler doesn't resume a buy that hasn't started,
-			// unless its order may still be live (say, its cancel failed at
-			// the last stop), which only the limiter can manage.
-			if last := ls[n-1]; !(v.retireOpt && last.IsBuy() && last.FilledSize().IsZero() && !last.HasLiveOrders()) {
+			last := ls[n-1]
+			if !(v.retireOpt && last.IsBuy() && last.FilledSize().IsZero()) {
 				r.start(i, last)
+			} else if last.HasLiveOrders() {
+				// A retired greeler doesn't resume a buy that hasn't filled.
+				// If its order may still be live (say, its cancel failed at
+				// the last stop), the limiter runs only to cancel it.
+				r.startCancel(i, last)
 			}
 			continue
 		}
@@ -658,6 +661,16 @@ func (r *runner) addLimiter(ctx context.Context, e *epoch, level int, pt *point.
 // start runs a level's limiter in its own goroutine until it fills or the
 // greeler stops it.
 func (r *runner) start(level int, l *limiter.Limiter) {
+	r.run(level, l, l.Run)
+}
+
+// startCancel runs a level's limiter in its own goroutine only until it
+// has canceled its live orders.
+func (r *runner) startCancel(level int, l *limiter.Limiter) {
+	r.run(level, l, l.CancelLive)
+}
+
+func (r *runner) run(level int, l *limiter.Limiter, fn func(context.Context, *trader.Runtime) error) {
 	delete(r.settled, l)
 	ctx, cancel := context.WithCancelCause(r.fctx)
 	rl := &running{limiter: l, ctx: ctx, cancel: cancel, done: make(chan struct{})}
@@ -670,7 +683,7 @@ func (r *runner) start(level int, l *limiter.Limiter) {
 			}
 		}()
 		defer close(rl.done)
-		rl.err = l.Run(ctx, rt)
+		rl.err = fn(ctx, rt)
 		return rl.err
 	}, ctx)
 	r.running[level] = rl

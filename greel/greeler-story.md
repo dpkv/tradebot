@@ -162,9 +162,10 @@ options.go`):
   today.
 - retire: like `Looper`'s `retireOpt` — no new grid cycles start and no
   new wheel entries open, but existing limiters/positions finish naturally.
-  A buy that hasn't filled isn't resumed, unless its order may still be
-  live (its cancel failed at the last stop); the greeler doesn't end while
-  any limiter knows of a live order.
+  A buy that hasn't filled isn't resumed. If its order may still be live
+  (its cancel failed at the last stop), its limiter runs only to cancel
+  that order, never to place one; the greeler doesn't end while any
+  limiter knows of a live order.
 
 None of this needs new persisted fields — `Options map[string]string` on
 `GreelerStateV1` already carries it (gobs-story.md), read the same way

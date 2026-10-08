@@ -224,6 +224,32 @@ func (v *Limiter) Refresh(ctx context.Context, rt *trader.Runtime) error {
 	return nil
 }
 
+// CancelLive refreshes the limiter's orders from the exchange and cancels
+// any still live, without placing a new one. It returns nil once every
+// order it knows of is done and saved.
+func (v *Limiter) CancelLive(ctx context.Context, rt *trader.Runtime) error {
+	v.runtimeLock.Lock()
+	defer v.runtimeLock.Unlock()
+
+	if rt.Product.ProductID() != v.productID {
+		return os.ErrInvalid
+	}
+	if _, err := v.fetchOrderMap(ctx, rt.Product); err != nil {
+		return fmt.Errorf("could not refresh limiter state: %w", err)
+	}
+	for id, order := range v.dupOrderMap() {
+		if order.Done {
+			continue
+		}
+		// As in Run, a cancel runs to completion once started.
+		if err := v.cancel(context.Background(), rt.Product, id); err != nil {
+			return fmt.Errorf("could not cancel order %v: %w", id, err)
+		}
+		slog.Info("canceled live limit order", "limiter", v, "point", v.point, "order-id", id)
+	}
+	return kv.WithReadWriter(context.WithoutCancel(ctx), rt.Database, v.Save)
+}
+
 func (v *Limiter) create(ctx context.Context, rt *trader.Runtime) (string, error) {
 	offset := v.idgen.Offset()
 	clientOrderID := v.idgen.NextID()
