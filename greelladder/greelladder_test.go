@@ -191,7 +191,8 @@ func TestSetOption(t *testing.T) {
 		t.Fatalf("retire = %q, %v", undo, err)
 	}
 
-	// Greelers that disagree roll back.
+	// Greelers that disagree roll back. Setting a greeler's freeze to the
+	// value it already has changes nothing and returns no undo.
 	w := newTestLadder(t, band(100), band(110))
 	if _, err := w.greelers[1].SetOption("freeze", "grid"); err != nil {
 		t.Fatal(err)
@@ -199,11 +200,10 @@ func TestSetOption(t *testing.T) {
 	if _, err := w.SetOption("freeze", "all"); err == nil {
 		t.Fatalf("SetOption succeeded on disagreeing greelers")
 	}
-	if _, err := w.greelers[0].SetOption("freeze", "none"); err != nil {
-		t.Fatal(err)
-	}
-	if undo, _ := w.greelers[0].SetOption("freeze", "none"); undo != "" {
-		t.Errorf("greeler 0 freeze was not rolled back")
+	for i, before := range []string{"none", "grid"} {
+		if undo, err := w.greelers[i].SetOption("freeze", before); err != nil || undo != "" {
+			t.Errorf("greeler %d freeze was not rolled back to %s: undo %q, err %v", i, before, undo, err)
+		}
 	}
 }
 
