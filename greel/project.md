@@ -318,7 +318,7 @@ developer checkpoints at every step.
    story); reuse etrade's market-hours handling for that.
 5. **Corporate actions**: dividends (early-assignment risk), earnings dates
    (optional entry skip), splits (detect and freeze at minimum).
-6. **Risk limits / kill switch** — *TODO, revisit*: ladder-level max open
+6. **Risk limits / kill switch** — *proposed* (risk-gates-story): ladder-level max open
    contracts / max assignment exposure. The earlier design (ladder calls
    `SetOption` on running greelers) violates the `trader.Trader` contract —
    options change only while a job isn't running. Per-greeler freeze
