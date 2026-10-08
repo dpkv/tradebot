@@ -366,6 +366,14 @@ func (e *testEnv) hooks(v *Position) {
 	if v.leg != nil {
 		v.leg.SetSession(alwaysOpen)
 	}
+	// Cleanups run last in, first out, so this stops the attempt before the
+	// test's database closes under it.
+	e.t.Cleanup(func() {
+		if a := v.active; a != nil {
+			a.cancel(errStopped)
+			<-a.done
+		}
+	})
 }
 
 // newPosition creates a position and saves its empty record, as the greeler
@@ -404,6 +412,16 @@ func (e *testEnv) loadLeg(uid string) *optlimiter.OptLimiter {
 	return v
 }
 
+// waitAttempt waits until the attempt returns, and so has saved its leg.
+func waitAttempt(t *testing.T, a *attempt) {
+	t.Helper()
+	select {
+	case <-a.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the attempt to return")
+	}
+}
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -430,7 +448,8 @@ func (e *testEnv) openResting(fctx context.Context, uid string) *Position {
 	return v
 }
 
-// openFilled opens a position whose first order fills.
+// openFilled opens a position whose first order fills, and waits until the
+// attempt has saved the fill and returned.
 func (e *testEnv) openFilled(fctx context.Context, uid string, c *Constraint) *Position {
 	e.t.Helper()
 	e.ex.fillAtOrBelow = d("10")
@@ -438,7 +457,10 @@ func (e *testEnv) openFilled(fctx context.Context, uid string, c *Constraint) *P
 	if err := v.Open(context.Background(), fctx, c); err != nil {
 		e.t.Fatal(err)
 	}
-	waitFor(e.t, "fill", func() bool { return v.leg.IsDone() })
+	waitAttempt(e.t, v.active)
+	if !v.leg.IsDone() {
+		e.t.Fatalf("attempt returned unfilled: %v", v.active.err)
+	}
 	return v
 }
 
@@ -675,11 +697,15 @@ func TestAbandonFilled(t *testing.T) {
 func TestResumeReattaches(t *testing.T) {
 	e := newTestEnv(t)
 
-	// The first run stops with its order canceled, as on shutdown.
+	// The first run stops with its order canceled, as on shutdown. Its
+	// attempt must return, and so finish saving, before the leg runs again.
 	fctx1, cancel1 := context.WithCancel(context.Background())
-	e.openResting(fctx1, "p1")
+	first := e.openResting(fctx1, "p1")
 	cancel1()
-	waitFor(t, "shutdown", func() bool { _, live := e.ex.counts(putA); return live == 0 })
+	waitAttempt(t, first.active)
+	if _, live := e.ex.counts(putA); live != 0 {
+		t.Fatalf("live orders after shutdown: %d", live)
+	}
 
 	fctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -722,14 +748,7 @@ func TestAbandonAfterCrashCancelsRecoveredOrder(t *testing.T) {
 	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "attempt to fail", func() bool {
-		select {
-		case <-v.active.done:
-			return true
-		default:
-			return false
-		}
-	})
+	waitAttempt(t, v.active)
 	e.ex.mu.Lock()
 	e.ex.failPlaceAfter = false
 	e.ex.mu.Unlock()
@@ -784,14 +803,7 @@ func TestCheckWaitsAfterFailedAttempt(t *testing.T) {
 	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "attempt to fail", func() bool {
-		select {
-		case <-v.active.done:
-			return true
-		default:
-			return false
-		}
-	})
+	waitAttempt(t, v.active)
 	e.ex.mu.Lock()
 	e.ex.failPlaceAfter = false
 	e.ex.mu.Unlock()
