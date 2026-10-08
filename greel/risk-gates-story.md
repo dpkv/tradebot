@@ -149,7 +149,9 @@ queue or priority between bands in v1.
 
 ---
 
-## Proposed decisions
+## Decisions made at this checkpoint
+
+All ten proposals were approved as written on 2026-10-08.
 
 1. **Gates are an admission hook the ladder hands its greelers**, asked
    before a flip to wheel mode; they never set options on a running
