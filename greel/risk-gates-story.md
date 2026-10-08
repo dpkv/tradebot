@@ -44,10 +44,10 @@ assign every band in the same week.
 The ladder hands each greeler an `Admit` hook, like `Exclude`:
 
 ```go
-// Admit reports whether the greeler may flip to wheel mode to write one
-// contract of optionType whose strike is at most maxStrike (puts) and
+// admit reports whether the greeler may flip to wheel mode to write one
+// contract of optionType with exposure (scenario 3; zero for a call), and
 // reserves the room if so. Nil when the greeler runs standalone.
-func(uid, optionType string, maxStrike decimal.Decimal) bool
+func(optionType string, exposure decimal.Decimal) bool
 ```
 
 `stepGrid` asks it once the dwell clock has run out and the levels
@@ -82,10 +82,11 @@ before its epoch is saved. A count is: siblings that report wheel mode,
 plus fresh reservations of siblings that don't yet.
 
 Each greeler reports its commitment the way it reports `HeldContract`: the
-option type and strike bound of its current wheel epoch, or none in grid
-mode, with a `known` flag that is false until `Run` has loaded its
-position. While any sibling isn't known, the ladder admits nothing, which
-is the same rule exclusion uses.
+option type and exposure of its current wheel epoch, or none in grid mode
+or once the position has ended. Like the held contract, `Load` works it
+out from saved records alone (under a put every level is flat, under a
+call every level is full), so a sibling's answer is known before any
+`Run`.
 
 ### 5. Setting the limits: ladder options
 
@@ -139,11 +140,12 @@ queue or priority between bands in v1.
 ## Code
 
 - `greeler`: `SetAdmit`; `stepGrid` asks the hook before `flipToWheel`;
-  `Commitment() (optionType string, maxStrike decimal.Decimal, known bool)`
-  kept current where `updateHeld` is.
-- `greelladder`: `max-contracts` and `max-put-exposure` in `SetOption`,
-  saved and loaded through `GreelLadderStateV1.Options`; `admitFor`/`admit`
-  with reservations under `mu`; the one-alert-per-block notifier.
+  `Commitment() (optionType string, exposure decimal.Decimal)`, read from
+  the current wheel epoch.
+- `greelladder/gates.go`: `max-contracts` and `max-put-exposure` in
+  `SetOption`, saved and loaded through `GreelLadderStateV1.Options`;
+  `admitFor`/`admit` with reservations under `mu`; one alert per block,
+  queued to `Run`, which owns the messenger.
 - `gobs`: no new fields. `GreelLadderProgress` stays empty, since nothing
   the gates track needs to survive a restart.
 
@@ -151,7 +153,9 @@ queue or priority between bands in v1.
 
 ## Decisions made at this checkpoint
 
-All ten proposals were approved as written on 2026-10-08.
+All ten proposals were approved on 2026-10-08. Decision 6 was then
+revised while implementing: `Load` already knows each greeler's
+commitment, so nothing waits on a sibling's `Run`.
 
 1. **Gates are an admission hook the ladder hands its greelers**, asked
    before a flip to wheel mode; they never set options on a running
@@ -164,8 +168,8 @@ All ten proposals were approved as written on 2026-10-08.
    carry no cash exposure (scenario 1).
 5. **Put exposure is counted at the strike bound** × 100, not the selected
    strike (scenario 3).
-6. **Admission reserves room under the ladder's lock**, and nothing is
-   admitted while a sibling's commitment isn't known (scenario 4).
+6. **Admission reserves room under the ladder's lock**; a sibling's
+   commitment is known from `Load` on (scenario 4).
 7. **Limits are ladder options, zero meaning no limit**, changed only while
    the ladder is paused; the constructor config from greelladder-story
    decision 5 is dropped (scenario 5).
