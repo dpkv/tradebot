@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +21,6 @@ import (
 	"github.com/bvk/tradebot/limiter"
 	"github.com/bvk/tradebot/optpos"
 	"github.com/bvk/tradebot/point"
-	"github.com/bvk/tradebot/timerange"
 	"github.com/bvk/tradebot/trader"
 	"github.com/bvkgo/kv"
 	"github.com/google/uuid"
@@ -41,6 +39,7 @@ type position interface {
 	Outcome() string
 	Assignment() *gobs.AssignmentFact
 	Contract() *gobs.OptionContract
+	Facts() *optpos.Facts
 	Open(ctx, fctx context.Context, c *optpos.Constraint) error
 	Check(ctx, fctx context.Context, c *optpos.Constraint) error
 	Abandon(ctx context.Context) error
@@ -53,6 +52,7 @@ type epoch struct {
 	gobs.GreelEpoch
 
 	position position             // wheel epochs; nil until loaded
+	facts    *optpos.Facts        // wheel epochs; what accounting reads, guarded by mu
 	limiters [][]*limiter.Limiter // grid epochs; index-aligned with LevelLimiterIDs
 }
 
@@ -278,98 +278,6 @@ func (v *Greeler) BudgetAt(feePct decimal.Decimal) decimal.Decimal {
 	return sum
 }
 
-// levelLimiters returns every loaded limiter per level, oldest first.
-func (v *Greeler) levelLimiters() [][]*limiter.Limiter {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	all := make([][]*limiter.Limiter, len(v.levels))
-	for _, e := range v.epochs {
-		for i, ls := range e.limiters {
-			all[i] = append(all[i], ls...)
-		}
-	}
-	return all
-}
-
-// Actions returns the stock limiters' filled orders, paired per level.
-// Option premium and assignments are left out until the accounting model
-// lands.
-func (v *Greeler) Actions() []*gobs.Action {
-	var actions []*gobs.Action
-	for i, ls := range v.levelLimiters() {
-		for _, l := range ls {
-			if as := l.Actions(); len(as) > 0 {
-				as[0].PairingKey = fmt.Sprintf("%s/level-%03d", v.uid, i)
-				actions = append(actions, as[0])
-			}
-		}
-	}
-	sort.Slice(actions, func(i, j int) bool {
-		return actions[i].Orders[0].CreateTime.Time.Before(actions[j].Orders[0].CreateTime.Time)
-	})
-	if len(actions) == 0 {
-		return nil
-	}
-	return actions
-}
-
-// GetSummary sums the stock limiters' fills. Shares bought but not yet
-// sold count as unsold at the level's buy price, and shares sold beyond
-// those bought (assigned shares) as oversold at its sell price. Option
-// premium and assignment cost are left out until the accounting model
-// lands.
-//
-// Within a time range, each sell that sold is paired with the level's
-// oldest unpaired buy, counted in full even if it filled before the range
-// (as Looper.GetSummary does), so a buy last month and its sell this month
-// don't show as shares oversold this month.
-func (v *Greeler) GetSummary(r *timerange.Range) *gobs.Summary {
-	s := &gobs.Summary{
-		Exchange:  v.cfg.ExchangeName,
-		ProductID: v.cfg.ProductID,
-		Budget:    v.BudgetAt(decimal.Zero),
-	}
-	for i, ls := range v.levelLimiters() {
-		var bought, sold decimal.Decimal
-		addBuy := func(l *limiter.Limiter, r *timerange.Range) {
-			bs := l.GetSummary(r)
-			s.Add(bs)
-			bought = bought.Add(bs.BoughtSize)
-		}
-		var unpaired []*limiter.Limiter
-		for _, l := range ls {
-			if l.IsBuy() {
-				unpaired = append(unpaired, l)
-				continue
-			}
-			ss := l.GetSummary(r)
-			s.Add(ss)
-			sold = sold.Add(ss.SoldSize)
-			if len(unpaired) > 0 {
-				buy := unpaired[0]
-				unpaired = unpaired[1:]
-				if ss.SoldSize.IsZero() {
-					addBuy(buy, r)
-				} else {
-					addBuy(buy, nil)
-				}
-			}
-		}
-		for _, l := range unpaired {
-			addBuy(l, r)
-		}
-		switch net := bought.Sub(sold); {
-		case net.IsPositive():
-			s.UnsoldSize = s.UnsoldSize.Add(net)
-			s.UnsoldValue = s.UnsoldValue.Add(net.Mul(v.levels[i].Buy.Price))
-		case net.IsNegative():
-			s.OversoldSize = s.OversoldSize.Add(net.Neg())
-			s.OversoldValue = s.OversoldValue.Add(net.Neg().Mul(v.levels[i].Sell.Price))
-		}
-	}
-	return s
-}
-
 // Save writes the greeler record only; children save themselves.
 func (v *Greeler) Save(ctx context.Context, rw kv.ReadWriter) error {
 	v.mu.Lock()
@@ -450,6 +358,13 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Greeler, error) {
 			if e.PositionID == "" {
 				return nil, fmt.Errorf("greeler wheel epoch %d has no position", i)
 			}
+			// Read here too, so a greeler that isn't running still accounts
+			// for its positions; Run keeps them current.
+			facts, err := optpos.ReadFacts(ctx, e.PositionID, r)
+			if err != nil {
+				return nil, fmt.Errorf("could not read greeler %s position %s: %w", uid, e.PositionID, err)
+			}
+			e.facts = facts
 		default:
 			return nil, fmt.Errorf("greeler epoch %d has invalid mode %q", i, e.Mode)
 		}

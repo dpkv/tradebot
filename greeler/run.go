@@ -347,6 +347,7 @@ func (v *Greeler) dwellDone(e *epoch, want string, now time.Time) bool {
 // step runs one iteration. It returns true when a retired greeler is done.
 func (r *runner) step(ctx context.Context) (bool, error) {
 	v := r.v
+	defer v.refreshFacts()
 	r.reap()
 	holdings, err := v.fold()
 	if err != nil {

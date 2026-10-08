@@ -220,8 +220,7 @@ func (v *GreelLadder) BudgetAt(feePct decimal.Decimal) decimal.Decimal {
 	return sum
 }
 
-// GetSummary sums the greelers' summaries, which leave option premium and
-// assignment cost out until the accounting model lands.
+// GetSummary sums the greelers' summaries.
 func (v *GreelLadder) GetSummary(r *timerange.Range) *gobs.Summary {
 	s := &gobs.Summary{
 		Exchange:  v.cfg.ExchangeName,
@@ -231,6 +230,17 @@ func (v *GreelLadder) GetSummary(r *timerange.Range) *gobs.Summary {
 		s.Add(g.GetSummary(r))
 	}
 	return s
+}
+
+// Summary loads the ladder at uid and its greelers from saved records and
+// returns its summary for period (nil for its whole life), folded on every
+// call.
+func Summary(ctx context.Context, r kv.Reader, uid string, period *timerange.Range) (*gobs.Summary, error) {
+	v, err := Load(ctx, uid, r)
+	if err != nil {
+		return nil, err
+	}
+	return v.GetSummary(period), nil
 }
 
 // SetOption sets retire or freeze on every greeler, as waller does on its

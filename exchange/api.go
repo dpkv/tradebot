@@ -172,5 +172,6 @@ type OptionsSettlement struct {
 	Status    string          // "open" | "assigned" | "expired"
 	Key       string          // broker transaction ID, for assigned/expired
 	Contracts decimal.Decimal // contracts assigned or expired
+	Fee       decimal.Decimal // assignment fee, if the broker charges one
 	At        time.Time
 }
