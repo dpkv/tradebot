@@ -35,7 +35,8 @@ type runState struct {
 
 // Run places and re-prices until filled or ctx is cancelled; on cancel it
 // cancels the live order and waits for confirmation. Saves itself to db
-// ahead of each placement.
+// ahead of each placement. It returns ctx's cause only once its orders are
+// confirmed done; any other error means an order may still be live.
 //
 // At most one broker order is live at any time: a re-price cancels the
 // live order and waits until the broker confirms it is done before placing
@@ -109,9 +110,10 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 			slog.Info("optlimiter waiting for the regular session", "optlimiter", v, "until", change)
 		} else if !rs.nextReprice.After(now) {
 			if err := v.reprice(ctx, rs, now); err != nil {
-				if ctx.Err() != nil {
-					return v.shutdown(ctx, rs)
-				}
+				// Not a clean stop even if ctx was canceled meanwhile: a failed
+				// placement may have left an order that isn't in the list yet,
+				// or a failed cancel a live one, so the caller must run
+				// recovery again.
 				return err
 			}
 			continue

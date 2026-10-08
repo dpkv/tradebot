@@ -121,6 +121,12 @@ advanced and saved** — one KV write, then the broker call. On resume:
 3. Then the loop continues — scenario 3's rule guarantees at most one of
    those orders is live.
 
+A placement that fails may still have reached the broker, so it is never
+reported as a clean stop: `Run` returns its owner's cancel cause only once
+every order is confirmed done, and a failed placement returns the error
+even if the owner cancelled meanwhile. The owner then runs it again, and
+recovery finds the order by its client ID and cancels it.
+
 ### 5. Units: contracts, and where `ContractSize` applies
 
 Order quantity is in **contracts**, matching `LimitSellToOpen(ctx,

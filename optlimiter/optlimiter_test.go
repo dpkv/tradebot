@@ -51,6 +51,9 @@ type fakeBroker struct {
 	getSkew time.Duration
 	// getErr makes Get fail.
 	getErr error
+	// placeHook, if set, runs as each placement starts, before the order is
+	// at the broker; a test can block in it. Set it before Run.
+	placeHook func()
 
 	updates *topic.Topic[exchange.OrderUpdate]
 }
@@ -79,6 +82,9 @@ func (f *fakeBroker) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], e
 }
 
 func (f *fakeBroker) LimitSellToOpen(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
+	if f.placeHook != nil {
+		f.placeHook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -601,6 +607,39 @@ func TestRunCancelGivesUp(t *testing.T) {
 	cancel()
 	if err := waitErr(t, errCh); err == nil || errors.Is(err, context.Canceled) {
 		t.Fatalf("Run: got %v, want an error confirming the cancel", err)
+	}
+}
+
+func TestRunStopDuringFailedPlacementIsNotClean(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.failPlaceAfter = true
+	v := newTestLimiter(t, "u1", "1", "0.50")
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	placing := make(chan struct{})
+	f.placeHook = func() {
+		close(placing)
+		<-ctx.Done()
+	}
+	errCh := runAsync(ctx, v, f, db)
+	select {
+	case <-placing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not place an order")
+	}
+
+	// The owner stops Run while the placement is in flight; the broker then
+	// accepts the order but the call fails. The order is live and not in the
+	// list, so Run must not report a clean stop.
+	cause := errors.New("stopped by the owner")
+	cancel(cause)
+	if err := waitErr(t, errCh); err == nil || errors.Is(err, cause) {
+		t.Fatalf("Run: got %v, want an error other than the stop cause", err)
+	}
+	if f.numLive() != 1 {
+		t.Fatalf("broker live orders: got %d, want 1", f.numLive())
 	}
 }
 
