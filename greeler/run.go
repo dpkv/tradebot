@@ -379,7 +379,12 @@ func (r *runner) stepGrid(ctx context.Context, now time.Time, holdings []decimal
 		slog.Warn("could not save the dwell clock (will retry)", "greeler", v, "err", err)
 	}
 	if v.dwellDone(e, want, now) && !v.freezeWheelOpt && !v.retireOpt {
-		if v.qualifies(want, holdings) {
+		switch {
+		case !v.qualifies(want, holdings):
+			slog.Debug("wheel flip is due but the levels don't qualify", "greeler", v, "flip", want, "holdings", holdings)
+		case !v.admitted(want):
+			slog.Debug("wheel flip is due but the ladder's risk gates hold it", "greeler", v, "flip", want)
+		default:
 			if err := r.flipToWheel(ctx, now, want); err != nil {
 				if errors.Is(err, errHalt) {
 					return false, err
@@ -388,7 +393,6 @@ func (r *runner) stepGrid(ctx context.Context, now time.Time, holdings []decimal
 			}
 			return false, nil
 		}
-		slog.Debug("wheel flip is due but the levels don't qualify", "greeler", v, "flip", want, "holdings", holdings)
 	}
 
 	if v.retireOpt && len(r.running) == 0 && allZero(holdings) && !v.hasLiveOrders(e) {
@@ -413,6 +417,25 @@ func (v *Greeler) hasLiveOrders(e *epoch) bool {
 		}
 	}
 	return false
+}
+
+// optionType is the option a flip writes.
+func optionType(flip string) string {
+	if flip == "wheel-call" {
+		return "CALL"
+	}
+	return "PUT"
+}
+
+// admitted asks the ladder's risk gates, if any, whether flip may go
+// ahead. A greeler held by them stays in grid mode with its dwell clock
+// set and asks again on its next step.
+func (v *Greeler) admitted(flip string) bool {
+	if v.admit == nil {
+		return true
+	}
+	t := optionType(flip)
+	return v.admit(t, v.exposure(t))
 }
 
 func allZero(holdings []decimal.Decimal) bool {
@@ -473,10 +496,7 @@ func (r *runner) flipToWheel(ctx context.Context, now time.Time, flip string) er
 		return r.setPending(ctx, e, "", now)
 	}
 
-	optionType := "PUT"
-	if flip == "wheel-call" {
-		optionType = "CALL"
-	}
+	optionType := optionType(flip)
 	v.mu.Lock()
 	uid := path.Join(v.uid, fmt.Sprintf("pos-%06d", len(v.epochs)))
 	v.mu.Unlock()
@@ -484,6 +504,7 @@ func (r *runner) flipToWheel(ctx context.Context, now time.Time, flip string) er
 	ne := &epoch{
 		GreelEpoch: gobs.GreelEpoch{Mode: "wheel", StartAt: now, PositionID: uid},
 		position:   pos,
+		optType:    optionType,
 	}
 	v.appendEpoch(ne)
 	if err := kv.WithReadWriter(ctx, r.rt.Database, func(ctx context.Context, rw kv.ReadWriter) error {

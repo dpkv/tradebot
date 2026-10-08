@@ -290,10 +290,15 @@ type fakeSibling struct {
 	uid   string
 	held  string
 	known bool
+
+	optType  string
+	exposure decimal.Decimal
 }
 
 func (s *fakeSibling) UID() string                  { return s.uid }
 func (s *fakeSibling) HeldContract() (string, bool) { return s.held, s.known }
+
+func (s *fakeSibling) Commitment() (string, decimal.Decimal) { return s.optType, s.exposure }
 
 type testClock struct {
 	mu  sync.Mutex
