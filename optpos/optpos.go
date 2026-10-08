@@ -370,7 +370,8 @@ func (v *Position) checkSelection(sel *Selection, c *Constraint) error {
 }
 
 // reselect re-runs the selector for an attempt that hasn't filled. A
-// different contract replaces the attempt unless it fills while stopping.
+// different contract replaces the attempt unless it fills while stopping,
+// or a sibling takes the contract meanwhile.
 func (v *Position) reselect(ctx context.Context, fctx context.Context, c *Constraint) error {
 	sel, err := v.selectContract(ctx, c)
 	if err != nil {
@@ -386,6 +387,11 @@ func (v *Position) reselect(ctx context.Context, fctx context.Context, c *Constr
 	if v.leg.FilledSize().IsPositive() {
 		slog.Info("opening order filled while re-selecting; keeping it", "optpos", v, "contract", v.leg.ContractID(), "filled", v.leg.FilledSize())
 		return nil
+	}
+	// The claim taken while selecting can lapse while the cancel is
+	// confirmed, so ask again; this also renews the claim before the sale.
+	if c.Exclude != nil && c.Exclude(sel.Contract.ContractID) {
+		return fmt.Errorf("optpos %s: re-selected %s was taken by a sibling while stopping the attempt", v.uid, sel.Contract.ContractID)
 	}
 	slog.Info("re-selected contract", "optpos", v, "old", v.leg.ContractID(), "new", sel.Contract.ContractID)
 	return v.newAttempt(ctx, fctx, c, sel)

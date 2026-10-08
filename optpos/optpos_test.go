@@ -659,6 +659,42 @@ func TestCheckReselectsAtNewSession(t *testing.T) {
 	}
 }
 
+func TestReselectChecksExclusionAfterStopping(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v := e.openResting(fctx, "p1")
+
+	// A sibling takes putB while the old order's cancel is confirmed: the
+	// check during selection passes, any later one fails.
+	calls := 0
+	c := putConstraint()
+	c.Exclude = func(id string) bool {
+		if id != putB {
+			return false
+		}
+		calls++
+		return calls > 1
+	}
+	e.sel.set(putB)
+	e.clock.Set(e.clock.Now().Add(24 * time.Hour))
+	if err := v.Check(context.Background(), fctx, c); err == nil {
+		t.Fatal("Check: want an error for a contract taken while stopping")
+	}
+	if n, live := e.ex.counts(putB); n != 0 || live != 0 || len(v.legIDs) != 1 || v.active != nil {
+		t.Fatalf("after a taken re-selection: putB orders %d live %d legs %v active %v", n, live, v.legIDs, v.active != nil)
+	}
+
+	// The next Check selects again and keeps the current contract.
+	if err := v.Check(context.Background(), fctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(v.legIDs) != 1 {
+		t.Errorf("next Check: exclude calls %d legs %v", calls, v.legIDs)
+	}
+}
+
 func TestReselectKeepsAttemptThatFills(t *testing.T) {
 	e := newTestEnv(t)
 	fctx, cancel := context.WithCancel(context.Background())

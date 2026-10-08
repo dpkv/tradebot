@@ -83,8 +83,11 @@ applies:
      mid (its day order died at the close; optlimiter-story scenario 2).
    - Different contract → stop the current attempt (its live order is
      cancelled and confirmed). If it filled in the meantime, the position
-     is open — done. Otherwise start a new attempt: a new leg, written
-     ahead exactly as in scenario 1.
+     is open — done. Otherwise ask the sibling exclusion again, since the
+     claim taken while selecting can lapse while the cancel is confirmed
+     (asking renews it). If a sibling took the contract, the old attempt
+     stays stopped and the next `Check` selects again; else start a new
+     attempt: a new leg, written ahead exactly as in scenario 1.
 5. Otherwise → hold.
 
 So in v1, `Legs` is a list of sell-to-open attempts: any number that ended
