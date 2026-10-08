@@ -28,6 +28,10 @@ const DefaultKeyspace = "/optpositions/"
 // stands.
 const settlementInterval = time.Hour
 
+// retryDelay is how long Check waits before selecting again after Open
+// failed, or restarting an attempt that failed.
+const retryDelay = time.Minute
+
 // ErrOpened is returned by Abandon when the opening order has filled: the
 // position is open and holds to settlement.
 var ErrOpened = errors.New("option position is open")
@@ -48,6 +52,10 @@ type Constraint struct {
 
 	MaxStrike decimal.Decimal // CSP: <= levels and <= cash/100; zero means no bound
 	MinStrike decimal.Decimal // CC: >= levels' sell prices; zero means no bound
+
+	// ContractSize is the shares per contract the levels are sized for;
+	// adjusted contracts of any other size are ruled out. Zero means any.
+	ContractSize decimal.Decimal
 
 	// Exclude reports contracts a sibling greeler already holds or is
 	// selecting, so two siblings never write the same contract series. Nil
@@ -103,6 +111,7 @@ type Position struct {
 
 	selectedFor         string    // session the contract was last selected for; in memory only
 	lastSettlementCheck time.Time // in memory only
+	retryAt             time.Time // no Open or attempt restart before this; in memory only
 
 	// Held at construction (New/Load), not re-passed to every method.
 	optEx exchange.OptionsExchange
@@ -187,10 +196,11 @@ func (v *Position) Open(ctx context.Context, fctx context.Context, c *Constraint
 		return fmt.Errorf("optpos %s is already opened: %w", v.uid, os.ErrExist)
 	}
 	sel, err := v.selectContract(ctx, c)
-	if err != nil {
-		return err
+	if err == nil {
+		err = v.newAttempt(ctx, fctx, c, sel)
 	}
-	if err := v.newAttempt(ctx, fctx, c, sel); err != nil {
+	if err != nil {
+		v.retryAt = v.now().Add(retryDelay)
 		return err
 	}
 	v.selectedFor = v.sessionKey(v.now())
@@ -205,12 +215,15 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 	if v.outcome != "" {
 		return nil
 	}
+	now := v.now()
 	if len(v.legIDs) == 0 {
+		if now.Before(v.retryAt) {
+			return nil
+		}
 		return v.Open(ctx, fctx, c)
 	}
 	v.reap()
 
-	now := v.now()
 	filled := v.leg.FilledSize().IsPositive()
 
 	if filled && now.Sub(v.lastSettlementCheck) >= settlementInterval {
@@ -244,10 +257,21 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 		}
 	}
 
-	if v.active != nil || v.leg.IsDone() || fctx.Err() != nil {
+	if v.active != nil || v.leg.IsDone() || fctx.Err() != nil || now.Before(v.retryAt) {
 		return nil
 	}
 	return v.start(ctx, fctx)
+}
+
+// Stop stops the attempt in flight, if any, and waits until its live order
+// is canceled and confirmed. The position stays open; the next Check
+// restarts the attempt. The owning greeler calls it before its Run returns,
+// so no order is left working without an owner.
+func (v *Position) Stop(ctx context.Context) error {
+	if v.active == nil {
+		return nil
+	}
+	return v.stop(ctx)
 }
 
 // Abandon ends a position whose opening order never filled, with Outcome
@@ -323,6 +347,9 @@ func (v *Position) checkSelection(sel *Selection, c *Constraint) error {
 	}
 	if c.MinStrike.IsPositive() && contract.Strike.LessThan(c.MinStrike) {
 		return fmt.Errorf("optpos %s: selected %s strike %s is below %s", v.uid, id, contract.Strike, c.MinStrike)
+	}
+	if c.ContractSize.IsPositive() && !contract.ContractSize.Equal(c.ContractSize) {
+		return fmt.Errorf("optpos %s: selected %s covers %s shares, want %s", v.uid, id, contract.ContractSize, c.ContractSize)
 	}
 	if c.Exclude != nil && c.Exclude(id) {
 		return fmt.Errorf("optpos %s: selected %s is held by a sibling", v.uid, id)
@@ -436,7 +463,8 @@ func (v *Position) reap() {
 	v.active = nil
 	a.cancel(errStopped)
 	if a.err != nil && !errors.Is(a.err, context.Cause(a.ctx)) {
-		slog.Warn("sell-to-open attempt returned an error (will restart)", "optpos", v, "leg", v.leg.UID(), "err", a.err)
+		v.retryAt = v.now().Add(retryDelay)
+		slog.Warn("sell-to-open attempt returned an error (will restart)", "optpos", v, "leg", v.leg.UID(), "err", a.err, "retry-at", v.retryAt)
 	}
 	if v.leg.IsDone() {
 		v.closeProduct()
@@ -607,4 +635,28 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
 	}
 	v.selectedFor = v.sessionKey(v.now())
 	return v, nil
+}
+
+// HeldContractID reads, from saved records alone, the contract the position
+// at uid is selling or holds: empty once it has ended or before its first
+// attempt. It needs no broker, so a greeler can answer for its position
+// before its Run has loaded it.
+func HeldContractID(ctx context.Context, uid string, r kv.Reader) (string, error) {
+	key := path.Join(DefaultKeyspace, uid)
+	gv, err := kvutil.Get[gobs.OptPositionState](ctx, r, key)
+	if err != nil {
+		return "", fmt.Errorf("could not load optpos state: %w", err)
+	}
+	if gv.V1 == nil || gv.V1.Progress == nil {
+		return "", fmt.Errorf("optpos state at %q is incomplete", key)
+	}
+	progress := gv.V1.Progress
+	if progress.Outcome != "" || len(progress.Legs) == 0 {
+		return "", nil
+	}
+	leg, err := optlimiter.Load(ctx, progress.Legs[len(progress.Legs)-1], r)
+	if err != nil {
+		return "", fmt.Errorf("could not load optpos %s attempt: %w", uid, err)
+	}
+	return leg.ContractID(), nil
 }

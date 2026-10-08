@@ -63,6 +63,14 @@ func TestKnobSelector(t *testing.T) {
 		t.Errorf("select with C220 excluded = %v, want os.ErrNotExist", err)
 	}
 
+	// An adjusted contract doesn't cover the shares the levels are sized for.
+	adjusted := contract("P190-adj", "PUT", "190", near, "1.00", "1.10", "500")
+	adjusted.ContractSize = d("150")
+	_, err = sel.Select(ctx, []*gobs.OptionContract{adjusted}, &Constraint{Underlying: "AAPL", OptionType: "PUT", ContractSize: d("100")})
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("select adjusted contract = %v, want os.ErrNotExist", err)
+	}
+
 	if _, err := NewSelector("nonesuch", knobs); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("NewSelector(nonesuch) = %v", err)
 	}
