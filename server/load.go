@@ -71,6 +71,32 @@ func LoadAll(ctx context.Context, r kv.Reader) ([]trader.Trader, error) {
 		traders = append(traders, v)
 	}
 
+	// Only top-level greelers: a ladder's greelers are keyed under the
+	// ladder's UID and counted through their ladder.
+	greelerPick := func(k string) bool {
+		_, err := uuid.Parse(strings.TrimPrefix(k, greeler.DefaultKeyspace))
+		return err == nil
+	}
+	greelers, err := greeler.LoadFunc(ctx, r, greelerPick)
+	if err != nil {
+		return nil, fmt.Errorf("could not load all existing greelers: %w", err)
+	}
+	for _, v := range greelers {
+		traders = append(traders, v)
+	}
+
+	ladderPick := func(k string) bool {
+		_, err := uuid.Parse(strings.TrimPrefix(k, greelladder.DefaultKeyspace))
+		return err == nil
+	}
+	ladders, err := greelladder.LoadFunc(ctx, r, ladderPick)
+	if err != nil {
+		return nil, fmt.Errorf("could not load all existing greel ladders: %w", err)
+	}
+	for _, v := range ladders {
+		traders = append(traders, v)
+	}
+
 	return traders, nil
 }
 
