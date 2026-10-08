@@ -98,13 +98,13 @@ func (v *KnobSelector) Select(ctx context.Context, chain []*gobs.OptionContract,
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].Contract, candidates[j].Contract
-		if !a.Strike.Equal(b.Strike) {
-			if a.OptionType == "PUT" {
-				return a.Strike.GreaterThan(b.Strike)
-			}
-			return a.Strike.LessThan(b.Strike)
+		if !a.Expiry.Equal(b.Expiry) {
+			return a.Expiry.Before(b.Expiry)
 		}
-		return a.Expiry.Before(b.Expiry)
+		if a.OptionType == "PUT" {
+			return a.Strike.GreaterThan(b.Strike)
+		}
+		return a.Strike.LessThan(b.Strike)
 	})
 	return candidates[0], nil
 }

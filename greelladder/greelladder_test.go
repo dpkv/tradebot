@@ -14,6 +14,7 @@ import (
 
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
+	"github.com/bvk/tradebot/greeler"
 	"github.com/bvk/tradebot/kvutil"
 	"github.com/bvk/tradebot/trader"
 	"github.com/bvkgo/kv"
@@ -519,5 +520,44 @@ func TestRunReportsGreelerFailures(t *testing.T) {
 	v := newTestLadder(t, band(98), band(102))
 	if err := v.Run(context.Background(), rt); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("Run = %v, want os.ErrInvalid", err)
+	}
+}
+
+func TestLoadFunc(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	v := newTestLadder(t, band(100), band(110))
+	if err := kv.WithReadWriter(ctx, db, v.Save); err != nil {
+		t.Fatal(err)
+	}
+	topLevel := func(keyspace string) func(string) bool {
+		return func(k string) bool {
+			_, err := uuid.Parse(strings.TrimPrefix(k, keyspace))
+			return err == nil
+		}
+	}
+	if err := kv.WithReader(ctx, db, func(ctx context.Context, r kv.Reader) error {
+		ladders, err := LoadFunc(ctx, r, topLevel(DefaultKeyspace))
+		if err != nil {
+			return err
+		}
+		if len(ladders) != 1 || ladders[0].UID() != v.UID() {
+			t.Errorf("ladders = %d, want this one", len(ladders))
+		}
+		all, err := greeler.LoadFunc(ctx, r, nil)
+		if err != nil {
+			return err
+		}
+		top, err := greeler.LoadFunc(ctx, r, topLevel(greeler.DefaultKeyspace))
+		if err != nil {
+			return err
+		}
+		// The ladder's greelers are keyed under it, not top level.
+		if len(all) != 2 || len(top) != 0 {
+			t.Errorf("greelers: all %d, top level %d; want 2 and 0", len(all), len(top))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

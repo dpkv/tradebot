@@ -219,8 +219,17 @@ func (v *OptLimiter) Orders() []*gobs.Order {
 	for _, order := range v.orders {
 		orders = append(orders, toGobOrder(order))
 	}
+	// An order has no create time until its first update arrives, and only
+	// the newest order can lack one, so those go last.
 	sort.Slice(orders, func(i, j int) bool {
-		return orders[i].CreateTime.Before(orders[j].CreateTime.Time)
+		a, b := orders[i].CreateTime.Time, orders[j].CreateTime.Time
+		if a.IsZero() != b.IsZero() {
+			return b.IsZero()
+		}
+		if a.Equal(b) {
+			return orders[i].ServerOrderID < orders[j].ServerOrderID
+		}
+		return a.Before(b)
 	})
 	return orders
 }

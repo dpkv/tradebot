@@ -56,7 +56,13 @@ func (v *OptLimiter) nextPrice(quote *gobs.OptionContract, k int, last decimal.D
 	price := mid.Sub(spread.Mul(v.repriceStep).Mul(decimal.NewFromInt(int64(k))))
 	price = v.ceilTick(price)
 	if last.IsPositive() {
-		if below := last.Sub(v.tickSize(last)); price.GreaterThan(below) {
+		// One tick below last uses the tick of the lower price: below $3 that
+		// is a penny even when last is $3.00.
+		below := last.Sub(v.tickSize(last))
+		if tick := v.tickSize(below); tick.LessThan(v.tickSize(last)) {
+			below = last.Sub(tick)
+		}
+		if price.GreaterThan(below) {
 			price = below
 		}
 	}
@@ -77,7 +83,8 @@ var newYork = func() *time.Location {
 // RegularSession reports whether t is inside the US options regular
 // session (9:30–16:00 New York time, Monday to Friday) and when that next
 // changes: the close if open, else the next open. Exchange holidays aren't
-// known here; on one, broker calls fail and Run returns the error.
+// known here; on one, Run keeps retrying quotes each re-price interval, and
+// returns an error if the broker rejects an order.
 func RegularSession(t time.Time) (bool, time.Time) {
 	nt := t.In(newYork)
 	y, m, d := nt.Date()

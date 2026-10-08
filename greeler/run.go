@@ -152,7 +152,8 @@ func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 	}
 }
 
-// loadChildren loads every epoch's limiters and positions, once.
+// loadChildren loads every wheel epoch's position, once. Load has already
+// loaded the grid epochs' limiters; positions need the options exchange.
 func (v *Greeler) loadChildren(ctx context.Context, db kv.Database, optEx exchange.OptionsExchange) error {
 	if v.loaded {
 		return nil
@@ -160,20 +161,6 @@ func (v *Greeler) loadChildren(ctx context.Context, db kv.Database, optEx exchan
 	return kv.WithReader(ctx, db, func(ctx context.Context, r kv.Reader) error {
 		for _, e := range v.epochs {
 			switch e.Mode {
-			case "grid":
-				limiters := make([][]*limiter.Limiter, len(e.LevelLimiterIDs))
-				for i, ids := range e.LevelLimiterIDs {
-					for _, id := range ids {
-						l, err := limiter.Load(ctx, id, r)
-						if err != nil {
-							return fmt.Errorf("could not load greeler %s limiter %s: %w", v.uid, id, err)
-						}
-						limiters[i] = append(limiters[i], l)
-					}
-				}
-				v.mu.Lock()
-				e.limiters = limiters
-				v.mu.Unlock()
 			case "wheel":
 				pos, err := v.loadPosition(ctx, e.PositionID, r, optEx, db)
 				if err != nil {
@@ -351,8 +338,10 @@ func (v *Greeler) constraint(optionType string) *optpos.Constraint {
 	return c
 }
 
-func (v *Greeler) dwellDone(e *epoch, now time.Time) bool {
-	return e.PendingFlip != "" && now.Sub(e.PendingFlipAt) >= v.cfg.DwellTime
+// dwellDone reports whether the open epoch's dwell clock has run long
+// enough for want. A clock left running for another side doesn't count.
+func (v *Greeler) dwellDone(e *epoch, want string, now time.Time) bool {
+	return want != "" && e.PendingFlip == want && now.Sub(e.PendingFlipAt) >= v.cfg.DwellTime
 }
 
 // step runs one iteration. It returns true when a retired greeler is done.
@@ -382,7 +371,7 @@ func (r *runner) stepGrid(ctx context.Context, now time.Time, holdings []decimal
 	if err := r.setPending(ctx, e, want, now); err != nil {
 		slog.Warn("could not save the dwell clock (will retry)", "greeler", v, "err", err)
 	}
-	if want != "" && v.dwellDone(e, now) && !v.freezeWheelOpt && !v.retireOpt {
+	if v.dwellDone(e, want, now) && !v.freezeWheelOpt && !v.retireOpt {
 		if v.qualifies(want, holdings) {
 			if err := r.flipToWheel(ctx, now, want); err != nil {
 				if errors.Is(err, errHalt) {
@@ -487,7 +476,7 @@ func (r *runner) stepWheel(ctx context.Context, now time.Time, holdings []decima
 			if err := r.setPending(ctx, e, want, now); err != nil {
 				slog.Warn("could not save the dwell clock (will retry)", "greeler", v, "err", err)
 			}
-			if want != "" && v.dwellDone(e, now) {
+			if v.dwellDone(e, want, now) {
 				switch err := pos.Abandon(ctx); {
 				case err == nil:
 					slog.Info("abandoned option position that never opened", "greeler", v, "position", pos.UID())
