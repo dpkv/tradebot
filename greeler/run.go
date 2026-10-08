@@ -391,11 +391,28 @@ func (r *runner) stepGrid(ctx context.Context, now time.Time, holdings []decimal
 		slog.Debug("wheel flip is due but the levels don't qualify", "greeler", v, "flip", want, "holdings", holdings)
 	}
 
-	if v.retireOpt && len(r.running) == 0 && allZero(holdings) {
+	if v.retireOpt && len(r.running) == 0 && allZero(holdings) && !v.hasLiveOrders(e) {
 		return true, nil
 	}
 	r.armLevels(ctx, now, e, holdings)
 	return false, nil
+}
+
+// hasLiveOrders reports whether any of e's limiters knows of an order that
+// isn't done.
+func (v *Greeler) hasLiveOrders(e *epoch) bool {
+	v.mu.Lock()
+	var all []*limiter.Limiter
+	for _, ls := range e.limiters {
+		all = append(all, ls...)
+	}
+	v.mu.Unlock()
+	for _, l := range all {
+		if l.HasLiveOrders() {
+			return true
+		}
+	}
+	return false
 }
 
 func allZero(holdings []decimal.Decimal) bool {
@@ -572,8 +589,10 @@ func (r *runner) armLevels(ctx context.Context, now time.Time, e *epoch, holding
 		ls := e.limiters[i]
 		v.mu.Unlock()
 		if n := len(ls); n > 0 && ls[n-1].PendingSize().IsPositive() {
-			// A retired greeler doesn't resume a buy that hasn't started.
-			if last := ls[n-1]; !(v.retireOpt && last.IsBuy() && last.FilledSize().IsZero()) {
+			// A retired greeler doesn't resume a buy that hasn't started,
+			// unless its order may still be live (say, its cancel failed at
+			// the last stop), which only the limiter can manage.
+			if last := ls[n-1]; !(v.retireOpt && last.IsBuy() && last.FilledSize().IsZero() && !last.HasLiveOrders()) {
 				r.start(i, last)
 			}
 			continue
@@ -670,19 +689,25 @@ func (r *runner) reap() {
 }
 
 // finished clears a level's limiter that has returned. One that returned
-// nil or the stop cause has confirmed its order done and is settled. Any
-// other error may leave its order live: the limiter stays unsettled and
-// runs again after retryDelay.
+// nil or the stop cause with every order it knows of done is settled. The
+// error alone can't tell: a broker call interrupted by the stop returns an
+// error wrapping the stop cause before the limiter got to cancel. Otherwise
+// its order may be live: the limiter stays unsettled, runs again after
+// retryDelay, and is saved so the live order is on record.
 func (r *runner) finished(level int, rl *running) {
 	delete(r.running, level)
 	rl.cancel(errStopped)
-	if rl.err != nil && !errors.Is(rl.err, context.Cause(rl.ctx)) {
-		slog.Warn("limiter returned an error (will retry)", "greeler", r.v, "level", level, "limiter", rl.limiter, "err", rl.err)
-		r.retryAt[level] = r.v.now().Add(retryDelay)
-		delete(r.settled, rl.limiter)
+	clean := rl.err == nil || errors.Is(rl.err, context.Cause(rl.ctx))
+	if clean && !rl.limiter.HasLiveOrders() {
+		r.settled[rl.limiter] = true
 		return
 	}
-	r.settled[rl.limiter] = true
+	slog.Warn("limiter returned without confirming its order is done (will retry)", "greeler", r.v, "level", level, "limiter", rl.limiter, "err", rl.err)
+	r.retryAt[level] = r.v.now().Add(retryDelay)
+	delete(r.settled, rl.limiter)
+	if err := kv.WithReadWriter(context.WithoutCancel(r.fctx), r.rt.Database, rl.limiter.Save); err != nil {
+		slog.Warn("could not save limiter after it failed (ignored)", "greeler", r.v, "level", level, "limiter", rl.limiter, "err", err)
+	}
 }
 
 // stopPosition stops the current position's attempt, if any, and waits

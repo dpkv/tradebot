@@ -288,6 +288,17 @@ func (v *Limiter) PendingValue() decimal.Decimal {
 	return v.PendingSize().Mul(v.point.Price)
 }
 
+// HasLiveOrders reports whether any order the limiter knows of isn't done:
+// one the exchange may still fill.
+func (v *Limiter) HasLiveOrders() bool {
+	for _, order := range v.dupOrderMap() {
+		if !order.Done {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *Limiter) compactOrderMap() {
 	v.orderMap.Range(func(id string, order *exchange.SimpleOrder) bool {
 		if order.Done && order.FilledSize.IsZero() {

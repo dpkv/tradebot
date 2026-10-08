@@ -46,8 +46,9 @@ type fakeStock struct {
 
 	mu           sync.Mutex
 	orders       []*fakeOrder
-	fillOnCancel bool // a fill races the cancel
-	cancelErrs   int  // cancels left to fail
+	fillOnCancel bool          // a fill races the cancel
+	cancelErrs   int           // cancels left to fail
+	blockGet     chan struct{} // the next Get closes it, then waits for its ctx
 }
 
 type fakeOrder struct {
@@ -142,6 +143,15 @@ func (p *fakeStock) Cancel(ctx context.Context, serverID string) error {
 
 func (p *fakeStock) Get(ctx context.Context, serverID string) (exchange.OrderDetail, error) {
 	p.mu.Lock()
+	if inflight := p.blockGet; inflight != nil {
+		// Like an HTTP call interrupted by its context: the error wraps the
+		// context's cause.
+		p.blockGet = nil
+		p.mu.Unlock()
+		close(inflight)
+		<-ctx.Done()
+		return nil, fmt.Errorf("get %s: %w", serverID, context.Cause(ctx))
+	}
 	defer p.mu.Unlock()
 	o := p.find(serverID)
 	if o == nil {
@@ -162,6 +172,15 @@ func (p *fakeStock) live() []fakeOrder {
 		}
 	}
 	return live
+}
+
+// blockNextGet makes the next Get wait until its ctx is done. The returned
+// channel is closed once that Get is in flight.
+func (p *fakeStock) blockNextGet() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.blockGet = make(chan struct{})
+	return p.blockGet
 }
 
 // failCancels makes the next n cancels fail, leaving their orders live.
@@ -942,6 +961,36 @@ func TestFlipAfterRestartWaitsForLimiters(t *testing.T) {
 			t.Errorf("orders still live after the flip: %+v", live)
 		}
 	})
+
+	// The next flip attempt stops the limiter while it is still fetching its
+	// order: it returns an error wrapping the stop cause without having
+	// canceled anything.
+	t.Run("stopped while recovering", func(t *testing.T) {
+		e := newTestEnv(t)
+		v := crashWithLiveBuy(t, e)
+		r := e.runner(v)
+
+		inflight := e.stock.blockNextGet()
+		e.step(r, "200")
+		select {
+		case <-inflight:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the limiter to fetch its order")
+		}
+		e.step(r, "200")
+		if v.Mode() != "grid" || len(e.stock.live()) != 1 {
+			t.Fatalf("mode %s with %d live orders; want grid with the buy still live", v.Mode(), len(e.stock.live()))
+		}
+
+		// After the retry delay the limiter runs again, and the flip after
+		// that cancels the buy.
+		e.clock.Add(retryDelay)
+		e.step(r, "200")
+		e.step(r, "200")
+		if v.Mode() != "wheel" || len(e.stock.live()) != 0 {
+			t.Fatalf("mode %s with %d live orders; want a put and no orders", v.Mode(), len(e.stock.live()))
+		}
+	})
 }
 
 // TestPutAssignedSellsAtLevels: an assigned put brings 100 shares, lowest
@@ -1216,6 +1265,35 @@ func TestRetireEndsWhenFlat(t *testing.T) {
 	}
 	if len(r.running) != 0 {
 		t.Errorf("retired greeler started %d limiters", len(r.running))
+	}
+}
+
+// TestRetireWaitsForLiveBuy: a buy's cancel failed when the greeler last
+// stopped. Retired, it doesn't start new buys, but it doesn't end with
+// that order live either: it runs the buy's limiter to manage it.
+func TestRetireWaitsForLiveBuy(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+	e.step(r, "100.5")
+	waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
+	e.stock.failCancels(1)
+	r.stopAll()
+	if n := len(e.stock.live()); n != 1 {
+		t.Fatalf("live orders = %d, want the buy", n)
+	}
+
+	w := e.reload(v)
+	if _, err := w.SetOption("retire", "true"); err != nil {
+		t.Fatal(err)
+	}
+	r = e.runner(w)
+	if done := e.step(r, "100.5"); done {
+		t.Fatal("retired greeler ended with the buy order live")
+	}
+	if len(r.running) != 1 || r.running[0] == nil {
+		t.Fatalf("running levels = %v; want level 0's buy", r.running)
 	}
 }
 

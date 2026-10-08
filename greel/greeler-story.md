@@ -51,11 +51,14 @@ fired:
    start the flip.
 2. Stop all levels' limiters (each `limiter.Limiter` cancels its own
    order as it stops) and wait for confirmations. A limiter confirms by
-   returning cleanly (nil or the stop cause). One that hasn't confirmed —
-   its cancel failed, it is waiting out a retry after an error, or it
-   hasn't run since a restart — may still have a live order, so it is
-   started again: it recovers its order and cancels it when the next
-   iteration's flip attempt stops it. Until every unfinished limiter has
+   returning cleanly (nil or the stop cause) with every order it knows of
+   done; the error alone isn't enough, since a broker call cut short by
+   the stop returns the stop cause before anything was canceled. One that
+   hasn't confirmed — its cancel failed, it was stopped mid-recovery, it is
+   waiting out a retry after an error, or it hasn't run since a restart —
+   may still have a live order, so it is saved with that order and started
+   again: it recovers its order and cancels it when the next iteration's
+   flip attempt stops it. Until every unfinished limiter has
    confirmed, the flip waits — an ordinary iteration-to-iteration wait,
    not a blocking call — and the dwell clock keeps running.
 3. Re-check qualification. A fill can race the cancel and leave a level
@@ -159,6 +162,9 @@ options.go`):
   today.
 - retire: like `Looper`'s `retireOpt` — no new grid cycles start and no
   new wheel entries open, but existing limiters/positions finish naturally.
+  A buy that hasn't filled isn't resumed, unless its order may still be
+  live (its cancel failed at the last stop); the greeler doesn't end while
+  any limiter knows of a live order.
 
 None of this needs new persisted fields — `Options map[string]string` on
 `GreelerStateV1` already carries it (gobs-story.md), read the same way
