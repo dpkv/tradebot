@@ -1026,6 +1026,137 @@ func TestCallAssignedEmptiesLevels(t *testing.T) {
 	}
 }
 
+// fillLevel0 steps once, which starts level 0's next limiter, and fills
+// the order it places.
+func fillLevel0(t *testing.T, e *testEnv, r *runner, side string) {
+	t.Helper()
+	e.step(r, "100.5")
+	waitFor(t, "level 0 "+side, func() bool {
+		live := e.stock.live()
+		return len(live) == 1 && live[0].Side == side
+	})
+	e.stock.fillLive()
+	select {
+	case <-r.running[0].done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("level 0 %s did not finish", side)
+	}
+}
+
+// TestStatus: status and profit reports see the greeler's stock fills.
+func TestStatus(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	if s := v.Status(nil); !s.BoughtSize.IsZero() || !s.TimePeriod.IsZero() || !s.Budget.Equal(d("10150")) {
+		t.Errorf("status before trading: bought %s period %+v budget %s", s.BoughtSize, s.TimePeriod, s.Budget)
+	}
+
+	fillLevel0(t, e, r, "BUY")
+	fillLevel0(t, e, r, "SELL")
+	first := v.Actions()[0].Orders[0].CreateTime.Time
+	for _, period := range []*timerange.Range{nil, {}} {
+		s := v.Status(period)
+		if s.UID != v.UID() || s.ProductID != "AAPL" || s.ExchangeName != "fake" {
+			t.Errorf("status names %s %s %s", s.UID, s.ProductID, s.ExchangeName)
+		}
+		if !s.BoughtSize.Equal(d("25")) || !s.SoldSize.Equal(d("25")) || s.NumBuys != 1 || s.NumSells != 1 || !s.UnsoldSize.IsZero() {
+			t.Errorf("status: bought %s sold %s buys %d sells %d unsold %s", s.BoughtSize, s.SoldSize, s.NumBuys, s.NumSells, s.UnsoldSize)
+		}
+		if !s.Profit().Equal(d("25")) {
+			t.Errorf("profit = %s, want 25", s.Profit())
+		}
+		if !s.TimePeriod.Begin.Equal(first) || !s.TimePeriod.End.IsZero() {
+			t.Errorf("period = %+v, want from the first order at %s", s.TimePeriod, first)
+		}
+	}
+
+	// A period that ended before the first order holds nothing.
+	before := &timerange.Range{Begin: first.Add(-time.Hour), End: first.Add(-time.Minute)}
+	if s := v.Status(before); !s.BoughtSize.IsZero() || !s.SoldSize.IsZero() || !s.TimePeriod.Equal(before) {
+		t.Errorf("status before the orders: bought %s sold %s period %+v", s.BoughtSize, s.SoldSize, s.TimePeriod)
+	}
+}
+
+// TestRangedSummarySkipsUnfilledBuy: a flip to a put cancels level 0's buy
+// before it fills. A sell in the range pairs with its own buy, not with the
+// empty one.
+func TestRangedSummarySkipsUnfilledBuy(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	fillLevel0(t, e, r, "BUY")
+	fillLevel0(t, e, r, "SELL")
+	e.step(r, "100.5")
+	waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
+	pos := flipToPut(t, e, v, r)
+	pos.settle("expired", nil)
+	e.step(r, "100.5")
+	if v.Mode() != "grid" {
+		t.Fatalf("mode %s after the put expired", v.Mode())
+	}
+
+	fillLevel0(t, e, r, "BUY")
+	time.Sleep(10 * time.Millisecond)
+	afterBuy := time.Now()
+	fillLevel0(t, e, r, "SELL")
+
+	s := v.GetSummary(&timerange.Range{Begin: afterBuy})
+	if !s.BoughtSize.Equal(d("25")) || !s.SoldSize.Equal(d("25")) || !s.OversoldSize.IsZero() || !s.UnsoldSize.IsZero() {
+		t.Errorf("ranged summary: bought %s sold %s oversold %s unsold %s; want 25 25 0 0", s.BoughtSize, s.SoldSize, s.OversoldSize, s.UnsoldSize)
+	}
+}
+
+// TestRangedSummarySkipsUnfilledSell: a flip to a call cancels every
+// level's sell before it fills. The sells in the range pair with the buys
+// before them, not with the empty sells.
+func TestRangedSummarySkipsUnfilledSell(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	// Fill every level's buy by walking the ticker up through the levels.
+	e.step(r, "101.5")
+	for _, p := range []string{"100.5", "101.5", "102.5", "103.5"} {
+		e.stock.setPrice(p)
+		waitFor(t, "a buy at "+p, func() bool { return len(e.stock.live()) == 1 })
+		e.stock.fillLive()
+	}
+	waitIdle(t, r)
+
+	// Every level's sell places; the flip to a call cancels them all.
+	e.step(r, "101.5")
+	waitFor(t, "every level's sell", func() bool { return len(e.stock.live()) == 4 })
+	e.step(r, "80")
+	e.clock.Add(time.Hour)
+	e.step(r, "80")
+	if v.Mode() != "wheel" || len(e.stock.live()) != 0 {
+		t.Fatalf("mode %s with %d live orders; want a call and no orders", v.Mode(), len(e.stock.live()))
+	}
+	e.positions[v.current().PositionID].settle("expired", nil)
+	e.step(r, "80")
+	if v.Mode() != "grid" {
+		t.Fatalf("mode %s after the call expired", v.Mode())
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	afterBuys := time.Now()
+	e.step(r, "101.5")
+	waitFor(t, "every level's sell", func() bool { return len(e.stock.live()) == 4 })
+	e.stock.fillLive()
+	waitIdle(t, r)
+
+	s := v.GetSummary(&timerange.Range{Begin: afterBuys})
+	if !s.BoughtSize.Equal(d("100")) || !s.SoldSize.Equal(d("100")) || !s.OversoldSize.IsZero() || !s.UnsoldSize.IsZero() {
+		t.Errorf("ranged summary: bought %s sold %s oversold %s unsold %s; want 100 100 0 0", s.BoughtSize, s.SoldSize, s.OversoldSize, s.UnsoldSize)
+	}
+}
+
 func TestAbandonUnopenedPosition(t *testing.T) {
 	e := newTestEnv(t)
 	v := e.newGreeler(testConfig())

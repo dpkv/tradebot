@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,8 @@ import (
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/greeler"
 	"github.com/bvk/tradebot/kvutil"
+	"github.com/bvk/tradebot/limiter"
+	"github.com/bvk/tradebot/point"
 	"github.com/bvk/tradebot/trader"
 	"github.com/bvkgo/kv"
 	"github.com/bvkgo/kvbadger"
@@ -201,6 +204,85 @@ func TestSetOption(t *testing.T) {
 	}
 	if undo, _ := w.greelers[0].SetOption("freeze", "none"); undo != "" {
 		t.Errorf("greeler 0 freeze was not rolled back")
+	}
+}
+
+// saveFilledCycle records a filled 25-share buy at buy and sell at sell on
+// level 0 of greeler gid's saved first epoch.
+func saveFilledCycle(t *testing.T, db kv.Database, gid string, buy, sell decimal.Decimal) {
+	t.Helper()
+	ctx := context.Background()
+	key := path.Join(greeler.DefaultKeyspace, gid)
+	gv, err := kvutil.GetDB[gobs.GreelerState](ctx, db, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := gv.V1.Progress.Epochs[0]
+	at := time.Now()
+	for i, pt := range []gobs.Point{
+		{Size: d("25"), Price: buy, Cancel: buy.Add(d("5"))},
+		{Size: d("25"), Price: sell, Cancel: sell.Sub(d("5"))},
+	} {
+		p := point.Point(pt)
+		side := p.Side()
+		id := path.Join(gid, fmt.Sprintf("epoch-000000/level-000/%s-%06d", strings.ToLower(side), i))
+		order := &gobs.Order{
+			ServerOrderID: id,
+			ClientOrderID: uuid.NewString(),
+			CreateTime:    gobs.RemoteTime{Time: at.Add(time.Duration(i) * time.Minute)},
+			Side:          side,
+			Status:        "FILLED",
+			FilledSize:    pt.Size,
+			FilledPrice:   pt.Price,
+			Done:          true,
+		}
+		ls := &gobs.LimiterState{V2: &gobs.LimiterStateV2{
+			ProductID:        "AAPL",
+			ExchangeName:     "fake",
+			TradePoint:       pt,
+			ServerIDOrderMap: map[string]*gobs.Order{order.ServerOrderID: order},
+		}}
+		if err := kvutil.SetDB(ctx, db, path.Join(limiter.DefaultKeyspace, id), ls); err != nil {
+			t.Fatal(err)
+		}
+		ep.LevelLimiterIDs[0] = append(ep.LevelLimiterIDs[0], id)
+	}
+	if err := kvutil.SetDB(ctx, db, key, gv); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStatus: the ladder's status sums its greelers' stock fills.
+func TestStatus(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	v := newTestLadder(t, band(100), band(110))
+	if err := kv.WithReadWriter(ctx, db, v.Save); err != nil {
+		t.Fatal(err)
+	}
+	saveFilledCycle(t, db, v.cfg.GreelerIDs[0], d("100"), d("101"))
+	saveFilledCycle(t, db, v.cfg.GreelerIDs[1], d("110"), d("112"))
+
+	var w *GreelLadder
+	if err := kv.WithReader(ctx, db, func(ctx context.Context, r kv.Reader) (err error) {
+		w, err = Load(ctx, v.UID(), r)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := w.Status(nil)
+	if s.UID != w.UID() || s.ProductID != "AAPL" || s.ExchangeName != "fake" {
+		t.Errorf("status names %s %s %s", s.UID, s.ProductID, s.ExchangeName)
+	}
+	if !s.BoughtSize.Equal(d("50")) || !s.SoldSize.Equal(d("50")) || s.NumBuys != 2 || s.NumSells != 2 {
+		t.Errorf("status: bought %s sold %s buys %d sells %d; want 50 50 2 2", s.BoughtSize, s.SoldSize, s.NumBuys, s.NumSells)
+	}
+	// 25 shares a dollar up in the first band, two dollars up in the second.
+	if !s.Profit().Equal(d("75")) {
+		t.Errorf("profit = %s, want 75", s.Profit())
+	}
+	if !s.Budget.Equal(d("21300")) {
+		t.Errorf("budget = %s, want 21300", s.Budget)
 	}
 }
 

@@ -28,8 +28,9 @@ both wrong.)
 per price band; `Save`/`Load` persist `GreelerIDs` in the ladder's
 `Config` (`GreelLadderStateV1`'s `Progress` is empty, gobs-story.md decision
 #18) and reload the children; `Run` drives them; aggregation
-(`Actions`/`BudgetAt`/`GetSummary`) sums across children, minimal until
-the accounting model lands (project.md open item 2).
+(`Actions`/`BudgetAt`/`GetSummary`, and `Status` as `Waller.Status` does)
+sums across children, minimal until the accounting model lands
+(project.md open item 2).
 
 Because the ladder holds the very greeler instances it runs, it can hand
 them hooks (scenario 2) and read their derived state (scenario 3) directly —

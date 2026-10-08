@@ -174,6 +174,8 @@ options exchange, comes from `rt.Exchange.(exchange.OptionsExchange)` in
 `trader.Trader` also requires `Actions`, `BudgetAt`, and `GetSummary`. The
 accounting model is deferred (project.md open item 2), so these get
 minimal implementations — stock-side limiter fills only — until it lands.
+`Status` (`trader.Statuser`) reports the same fills, so the status and
+profit reports, which skip jobs without it, include greelers.
 
 ---
 
@@ -333,8 +335,8 @@ var _ trader.Trader = (*Greeler)(nil)
 8. **`Load` rebuilds from the record alone — decided after design
    review.** Selector from its persisted name and knobs; options exchange
    from `rt.Exchange` in `Run` (scenario 5).
-9. **Minimal `Actions`/`BudgetAt`/`GetSummary` until the accounting model
-   lands** (scenario 5).
+9. **Minimal `Actions`/`BudgetAt`/`GetSummary`/`Status` until the
+   accounting model lands** (scenario 5).
 10. **An unopened position is abandoned by the normal flip-back rule —
     decided.** `Abandon` ends it `unfilled`; an `unfilled` (or `expired`)
     wheel epoch contributes nothing to the fold (scenario 2). In v1, open
