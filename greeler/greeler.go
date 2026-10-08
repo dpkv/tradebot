@@ -317,8 +317,9 @@ func checkUID(uid string) error {
 	return nil
 }
 
-// Load rebuilds a greeler from its record alone, the selector included.
-// Children load when Run starts, which has the options exchange.
+// Load rebuilds a greeler from its record alone, the selector included,
+// and loads every grid epoch's limiters. Wheel epochs' positions load when
+// Run starts, which has the options exchange.
 func Load(ctx context.Context, uid string, r kv.Reader) (*Greeler, error) {
 	if err := checkUID(uid); err != nil {
 		return nil, err
