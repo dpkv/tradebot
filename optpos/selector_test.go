@@ -63,6 +63,23 @@ func TestKnobSelector(t *testing.T) {
 		t.Errorf("select with C220 excluded = %v, want os.ErrNotExist", err)
 	}
 
+	// The nearest expiry wins over a better strike further out.
+	unbounded, err := NewSelector("", &gobs.WheelKnobs{MinDTE: 20, MinOpenInterest: d("100"), MaxSpreadPct: d("20"), MinPremiumYield: d("0.004")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbounded.(*KnobSelector).now = func() time.Time { return now }
+	got, err = unbounded.Select(ctx, []*gobs.OptionContract{
+		contract("P195-far", "PUT", "195", far, "1.50", "1.60", "500"),
+		contract("P190-near", "PUT", "190", near, "1.00", "1.10", "500"),
+	}, &Constraint{Underlying: "AAPL", OptionType: "PUT", MaxStrike: d("200")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Contract.ContractID != "P190-near" {
+		t.Errorf("put without a DTE bound = %s, want P190-near", got.Contract.ContractID)
+	}
+
 	// An adjusted contract doesn't cover the shares the levels are sized for.
 	adjusted := contract("P190-adj", "PUT", "190", near, "1.00", "1.10", "500")
 	adjusted.ContractSize = d("150")

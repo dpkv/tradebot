@@ -49,6 +49,8 @@ type fakeExchange struct {
 	fillAtOrBelow decimal.Decimal
 	// failPlaceAfter places the order but returns an error, like a timeout.
 	failPlaceAfter bool
+
+	now func() time.Time // create time of new orders
 }
 
 type fakeProduct struct {
@@ -70,6 +72,7 @@ func newFakeExchange(t *testing.T) *fakeExchange {
 		t:           t,
 		products:    make(map[string]*fakeProduct),
 		settlements: make(map[string]*exchange.OptionsSettlement),
+		now:         time.Now,
 	}
 	for _, c := range []struct{ id, typ, strike string }{{putA, "PUT", "200"}, {putB, "PUT", "190"}, {callA, "CALL", "220"}} {
 		f.chain = append(f.chain, &gobs.OptionContract{
@@ -175,7 +178,7 @@ func (p *fakeProduct) LimitSellToOpen(ctx context.Context, clientID uuid.UUID, n
 	o.ServerOrderID = fmt.Sprintf("%s-order-%d", p.id, len(p.orders))
 	o.ClientUUID = clientID
 	o.Side = "SELL"
-	o.CreateTime = gobs.RemoteTime{Time: time.Now()}
+	o.CreateTime = gobs.RemoteTime{Time: f.now()}
 	o.Status = "OPEN"
 	p.orders = append(p.orders, o)
 	if !f.fillAtOrBelow.IsZero() && limitPrice.LessThanOrEqual(f.fillAtOrBelow) {
@@ -345,13 +348,15 @@ type testEnv struct {
 }
 
 func newTestEnv(t *testing.T) *testEnv {
-	return &testEnv{
+	e := &testEnv{
 		t:     t,
 		ex:    newFakeExchange(t),
 		db:    newTestDB(t),
 		sel:   &pickSelector{pick: putA},
 		clock: &testClock{now: time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)},
 	}
+	e.ex.now = e.clock.Now
+	return e
 }
 
 func (e *testEnv) hooks(v *Position) {
@@ -361,7 +366,6 @@ func (e *testEnv) hooks(v *Position) {
 	if v.leg != nil {
 		v.leg.SetSession(alwaysOpen)
 	}
-	v.selectedFor = v.sessionKey(v.now())
 }
 
 // newPosition creates a position and saves its empty record, as the greeler
@@ -846,5 +850,40 @@ func TestHeldContractID(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: held %q, want %q", uid, got, want)
 		}
+	}
+}
+
+func TestResumeReselectsAfterItsSession(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v := e.openResting(fctx, "p1")
+	if err := v.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restarted the same session: the attempt is resumed, not re-selected.
+	e.sel.set(putB)
+	w := e.load("p1")
+	if err := w.Check(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.legIDs) != 1 {
+		t.Fatalf("legs after a same-session restart: %v", w.legIDs)
+	}
+	if err := w.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restarted a session later: the stale contract is re-selected.
+	e.clock.Set(e.clock.Now().Add(24 * time.Hour))
+	x := e.load("p1")
+	if err := x.Check(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "order for the re-selected contract", func() bool { n, _ := e.ex.counts(putB); return n == 1 })
+	if len(x.legIDs) != 2 {
+		t.Errorf("legs after a next-session restart: %v", x.legIDs)
 	}
 }

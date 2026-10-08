@@ -223,15 +223,21 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 		return v.Open(ctx, fctx, c)
 	}
 	v.reap()
+	if v.selectedFor == "" {
+		// After a restart: the session the current leg was selected for.
+		v.selectedFor = v.sessionKey(legStart(v.leg, now))
+	}
 
 	filled := v.leg.FilledSize().IsPositive()
 
 	if filled && now.Sub(v.lastSettlementCheck) >= settlementInterval {
-		v.lastSettlementCheck = now
 		settled, err := v.checkSettlement(ctx, now)
 		if err != nil {
+			// The outcome isn't recorded yet: check again on the next call,
+			// before anything can restart the attempt.
 			return err
 		}
+		v.lastSettlementCheck = now
 		if settled {
 			return nil
 		}
@@ -633,8 +639,20 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
 			v.contract = contract
 		}
 	}
-	v.selectedFor = v.sessionKey(v.now())
 	return v, nil
+}
+
+// legStart is when leg placed its first order, or now if it hasn't placed
+// one: a restart then re-selects only once the session the leg was selected
+// for has passed.
+func legStart(leg *optlimiter.OptLimiter, now time.Time) time.Time {
+	start := now
+	for _, order := range leg.Orders() {
+		if t := order.CreateTime.Time; !t.IsZero() && t.Before(start) {
+			start = t
+		}
+	}
+	return start
 }
 
 // HeldContractID reads, from saved records alone, the contract the position
