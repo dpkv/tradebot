@@ -54,6 +54,9 @@ type fakeExchange struct {
 	beforePlace func()
 	// nsubscribe counts order update subscriptions: one per leg run.
 	nsubscribe int
+	// unlisted hides orders from lookups by client ID, like a broker slow
+	// to list an order it accepted.
+	unlisted bool
 
 	now func() time.Time // create time of new orders
 }
@@ -148,6 +151,9 @@ func (f *fakeExchange) GetOptionsSettlement(ctx context.Context, contractID stri
 func (f *fakeExchange) GetOptionsOrderByClientID(ctx context.Context, clientID uuid.UUID) (exchange.OrderDetail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.unlisted {
+		return nil, os.ErrNotExist
+	}
 	for _, p := range f.products {
 		for _, o := range p.orders {
 			if o.ClientUUID == clientID {
@@ -686,12 +692,22 @@ func TestReselectChecksExclusionAfterStopping(t *testing.T) {
 		t.Fatalf("after a taken re-selection: putB orders %d live %d legs %v active %v", n, live, v.legIDs, v.active != nil)
 	}
 
-	// The next Check selects again and keeps the current contract.
+	// Within retryDelay the next Check neither selects again nor restarts
+	// the stopped attempt.
 	if err := v.Check(context.Background(), fctx, c); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 3 || len(v.legIDs) != 1 {
-		t.Errorf("next Check: exclude calls %d legs %v", calls, v.legIDs)
+	if calls != 2 || v.active != nil {
+		t.Fatalf("Check within retryDelay: exclude calls %d active %v", calls, v.active != nil)
+	}
+
+	// After it, Check selects again and keeps the current contract.
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := v.Check(context.Background(), fctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(v.legIDs) != 1 || v.active == nil {
+		t.Errorf("next Check: exclude calls %d legs %v active %v", calls, v.legIDs, v.active != nil)
 	}
 }
 
@@ -966,6 +982,9 @@ func TestAbandonDuringFailedPlacement(t *testing.T) {
 	// The placement blocks until released; then the broker accepts the order
 	// but the call fails.
 	placing, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock() // so a failure below can't leave the attempt blocked
 	e.ex.failPlaceAfter = true
 	e.ex.beforePlace = func() {
 		close(placing)
@@ -983,16 +1002,25 @@ func TestAbandonDuringFailedPlacement(t *testing.T) {
 
 	// Abandon stops the attempt while its placement is in flight.
 	a := v.active
-	errCh := make(chan error, 1)
-	go func() { errCh <- v.Abandon(context.Background()) }()
+	var err error
+	abandoned := make(chan struct{})
+	go func() {
+		defer close(abandoned)
+		err = v.Abandon(context.Background())
+	}()
+	defer func() {
+		// Abandon must return before the cleanups touch the position.
+		unblock()
+		<-abandoned
+	}()
 	select {
 	case <-a.ctx.Done():
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Abandon to stop the attempt")
 	}
-	close(release)
+	unblock()
 	select {
-	case err := <-errCh:
+	case <-abandoned:
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1004,6 +1032,56 @@ func TestAbandonDuringFailedPlacement(t *testing.T) {
 	}
 	if v.Outcome() != "unfilled" {
 		t.Errorf("outcome %q", v.Outcome())
+	}
+}
+
+// TestAbandonWaitsForUnlistedOrder: a placement fails after the broker
+// accepted it, and the broker doesn't list the order yet. Abandon can't
+// confirm it is gone, so it fails, waits retryDelay before trying again,
+// and cancels the order once the broker lists it.
+func TestAbandonWaitsForUnlistedOrder(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e.ex.failPlaceAfter = true
+	e.ex.unlisted = true
+	v := e.newPosition("p1")
+	v.legHook = func(leg *optlimiter.OptLimiter) {
+		leg.SetSession(alwaysOpen)
+		leg.SetClock(e.clock.Now)
+	}
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, v.active)
+	e.ex.mu.Lock()
+	e.ex.failPlaceAfter = false
+	e.ex.mu.Unlock()
+
+	if err := v.Abandon(context.Background()); !errors.Is(err, optlimiter.ErrUnconfirmed) {
+		t.Fatalf("Abandon with the order unlisted: got %v, want ErrUnconfirmed", err)
+	}
+	e.ex.mu.Lock()
+	runs := e.ex.nsubscribe
+	e.ex.mu.Unlock()
+	if err := v.Abandon(context.Background()); err == nil {
+		t.Fatal("Abandon within retryDelay: want an error")
+	}
+	e.ex.mu.Lock()
+	again := e.ex.nsubscribe - runs
+	e.ex.unlisted = false
+	e.ex.mu.Unlock()
+	if again != 0 || v.Outcome() != "" {
+		t.Fatalf("Abandon within retryDelay ran the leg %d times, outcome %q", again, v.Outcome())
+	}
+
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := v.Abandon(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 0 || v.Outcome() != "unfilled" {
+		t.Errorf("after Abandon: orders %d live %d outcome %q", n, live, v.Outcome())
 	}
 }
 

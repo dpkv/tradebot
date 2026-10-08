@@ -894,13 +894,50 @@ func TestRecoverStopsLookingUpLongMissingIDs(t *testing.T) {
 			t.Errorf("start %d: got %d lookups, want %d", want, got, want)
 		}
 	}
-	// Once an ID has been missing that long it isn't looked up again, so
-	// each start looks up only the one the previous start left.
-	for i := 0; i < 3; i++ {
+	// The first start absentSettle later looks each ID up once more, which
+	// settles it; after that each start looks up only the one the previous
+	// start left.
+	for i, want := range []int{3, 1, 1} {
 		now = now.Add(absentSettle)
-		if got := start(); got != 1 {
-			t.Errorf("start %d after absentSettle: got %d lookups, want 1", i, got)
+		if got := start(); got != want {
+			t.Errorf("start %d after absentSettle: got %d lookups, want %d", i, got, want)
 		}
+	}
+}
+
+func TestStopIsUnconfirmedUntilFailedPlacementSettles(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.failPlace = errors.New("timeout")
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	now := time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)
+	v.now = func() time.Time { return now }
+
+	if err := waitErr(t, runAsync(context.Background(), v, f, db)); err == nil {
+		t.Fatal("Run: want placement error")
+	}
+	f.mu.Lock()
+	f.failPlace = nil
+	f.mu.Unlock()
+
+	// The broker doesn't list the failed placement, but it may yet: a
+	// stopped Run can't call that clean.
+	cause := errors.New("stopped by the owner")
+	stopped := func() error {
+		t.Helper()
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(cause)
+		return waitErr(t, runAsync(ctx, v, f, db))
+	}
+	if err := stopped(); !errors.Is(err, ErrUnconfirmed) {
+		t.Fatalf("stop within absentSettle: got %v, want ErrUnconfirmed", err)
+	}
+	now = now.Add(absentSettle)
+	if err := stopped(); !errors.Is(err, cause) {
+		t.Fatalf("stop after absentSettle: got %v, want the stop cause", err)
+	}
+	if f.numOrders() != 0 {
+		t.Errorf("broker orders %d", f.numOrders())
 	}
 }
 

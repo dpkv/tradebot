@@ -86,8 +86,9 @@ applies:
      is open — done. Otherwise ask the sibling exclusion again, since the
      claim taken while selecting can lapse while the cancel is confirmed
      (asking renews it). If a sibling took the contract, the old attempt
-     stays stopped and the next `Check` selects again; else start a new
-     attempt: a new leg, written ahead exactly as in scenario 1.
+     stays stopped and `Check` selects again after `retryDelay`; else
+     start a new attempt: a new leg, written ahead exactly as in
+     scenario 1.
 5. Otherwise → hold.
 
 So in v1, `Legs` is a list of sell-to-open attempts: any number that ended
@@ -149,7 +150,9 @@ cancel it, unless the leg is done or its last run already confirmed its
 orders done. A run that ends with an error instead of the cancel cause
 (say, a placement that failed after the broker accepted it) is run once
 more for the same reason. `Abandon` and re-selection stop the attempt the
-same way.
+same way; when the stop fails (for instance, a failed placement the broker
+doesn't list yet, optlimiter-story scenario 4), they try again after
+`retryDelay`, since the leg they would leave behind is never run again.
 
 ### 6. Settlement check: broker truth about the contract
 

@@ -28,8 +28,9 @@ const DefaultKeyspace = "/optpositions/"
 // stands.
 const settlementInterval = time.Hour
 
-// retryDelay is how long Check waits before selecting again after Open
-// failed, or restarting an attempt that failed.
+// retryDelay is how long Check waits before selecting again after Open or
+// a re-selection failed, or restarting an attempt that failed, and how long
+// Abandon waits after a stop that failed.
 const retryDelay = time.Minute
 
 // ErrOpened is returned by Abandon when the opening order has filled: the
@@ -115,7 +116,7 @@ type Position struct {
 
 	selectedFor         string    // session the contract was last selected for; in memory only
 	lastSettlementCheck time.Time // in memory only
-	retryAt             time.Time // no Open or attempt restart before this; in memory only
+	retryAt             time.Time // no Open, re-selection, restart or Abandon retry before this; in memory only
 
 	// Held at construction (New/Load), not re-passed to every method.
 	optEx exchange.OptionsExchange
@@ -256,10 +257,11 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 		return nil
 	}
 
-	if !filled {
+	if !filled && !now.Before(v.retryAt) {
 		if open, _ := v.session(now); open {
 			if key := v.sessionKey(now); key != v.selectedFor {
 				if err := v.reselect(ctx, fctx, c); err != nil {
+					v.retryAt = now.Add(retryDelay)
 					return err
 				}
 				v.selectedFor = key
@@ -288,7 +290,8 @@ func (v *Position) Stop(ctx context.Context) error {
 
 // Abandon ends a position whose opening order never filled, with Outcome
 // "unfilled". It stops the live attempt first and fails with ErrOpened if
-// the order filled — the position is then open.
+// the order filled — the position is then open. After a stop that failed it
+// waits retryDelay before stopping again.
 func (v *Position) Abandon(ctx context.Context) error {
 	switch v.outcome {
 	case "":
@@ -297,7 +300,11 @@ func (v *Position) Abandon(ctx context.Context) error {
 	default:
 		return fmt.Errorf("optpos %s has already ended %q", v.uid, v.outcome)
 	}
+	if v.active == nil && !v.confirmed && v.now().Before(v.retryAt) {
+		return fmt.Errorf("could not abandon optpos %s yet: its attempt failed; trying again after %s", v.uid, v.retryAt.Format(time.TimeOnly))
+	}
 	if err := v.stop(ctx); err != nil {
+		v.retryAt = v.now().Add(retryDelay)
 		return err
 	}
 	if v.leg != nil && v.leg.FilledSize().IsPositive() {

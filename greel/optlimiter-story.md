@@ -116,10 +116,10 @@ advanced and saved** — one KV write, then the broker call. On resume:
    filled order missing from an open-orders listing would otherwise look
    "never placed" and get placed again). Found → adopt it. `os.ErrNotExist`
    → it was never placed. A broker can be slow to list an order it
-   accepted, so a missing ID is looked up again on each start until it has
-   been missing for 10 minutes (`absentSettle`, in memory only); after
-   that it is skipped, so a run of rejected placements doesn't grow every
-   start's lookups.
+   accepted, so a missing ID is looked up again on each start until a
+   lookup at least 10 minutes (`absentSettle`) after its first miss still
+   misses it; after that it is skipped (in memory only), so a run of
+   rejected placements doesn't grow every start's lookups.
 2. Every order not yet done is refreshed via `Get` (the
    `Limiter.fetchOrderMap` pattern). A failed lookup stops step 1 but not
    this step, and `Run` still cancels every live order it knows before
@@ -131,7 +131,10 @@ A placement that fails may still have reached the broker, so it is never
 reported as a clean stop: `Run` returns its owner's cancel cause only once
 every order is confirmed done, and a failed placement returns the error
 even if the owner cancelled meanwhile. The owner then runs it again, and
-recovery finds the order by its client ID and cancels it.
+recovery finds the order by its client ID and cancels it. Until a lookup
+`absentSettle` after the failure still misses the order, a stopped `Run`
+returns `ErrUnconfirmed` instead of the cause, so the owner doesn't take
+an order the broker hasn't listed yet for one that was never placed.
 
 ### 5. Units: contracts, and where `ContractSize` applies
 

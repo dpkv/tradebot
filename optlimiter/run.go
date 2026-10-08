@@ -197,7 +197,9 @@ func (v *OptLimiter) place(ctx context.Context, rs *runState, size, price decima
 	order, err := rs.product.LimitSellToOpen(ctx, clientID, size, price)
 	if err != nil {
 		// The order may or may not be at the broker; the next Run finds it by
-		// client ID. Placing another one now could make two live orders.
+		// client ID. Placing another one now could make two live orders. Until
+		// the broker is known not to have it, no stop is clean.
+		v.absent[clientID] = &absence{since: v.now(), failed: true}
 		slog.Error("could not place sell-to-open order", "optlimiter", v, "client-order-id", clientID, "size", size, "price", price, "err", err)
 		return "", fmt.Errorf("could not place sell-to-open order: %w", err)
 	}
@@ -296,7 +298,21 @@ func (v *OptLimiter) shutdown(ctx context.Context, rs *runState) error {
 	if err := v.save(bg, rs.db); err != nil {
 		slog.Error("could not save optlimiter before quitting (ignored)", "optlimiter", v, "err", err)
 	}
+	if id, ok := v.unconfirmed(); ok {
+		return fmt.Errorf("optlimiter %s: client id %s: %w", v.uid, id, ErrUnconfirmed)
+	}
 	return context.Cause(ctx)
+}
+
+// unconfirmed returns a client ID whose placement failed in this process
+// and that the broker hasn't listed, but not yet for absentSettle.
+func (v *OptLimiter) unconfirmed() (uuid.UUID, bool) {
+	for id, a := range v.absent {
+		if a.failed && !a.settled {
+			return id, true
+		}
+	}
+	return uuid.Nil, false
 }
 
 func (v *OptLimiter) handleUpdate(ctx context.Context, rs *runState, update exchange.OrderUpdate) {
@@ -372,10 +388,11 @@ func (v *OptLimiter) liveOrders() []string {
 }
 
 // recover adopts orders placed with a saved client ID that never made it
-// into the order list (a crash between placing and saving), then refreshes
-// every order not yet done. An ID missing at the broker for absentSettle is
-// not looked up again. A failed lookup stops the lookups, but the known
-// orders are still refreshed.
+// into the order list (a crash between placing and saving, or a placement
+// that failed), then refreshes every order not yet done. An ID that a
+// lookup absentSettle after its first miss still misses is not looked up
+// again. A failed lookup stops the lookups, but the known orders are still
+// refreshed.
 func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsExchange, product exchange.OptionsProduct) error {
 	known := make(map[uuid.UUID]bool)
 	v.mu.Lock()
@@ -392,21 +409,24 @@ func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsExchange
 		if known[clientID] {
 			continue
 		}
-		if since, ok := v.absentSince[clientID]; ok && now.Sub(since) >= absentSettle {
+		a := v.absent[clientID]
+		if a != nil && a.settled {
 			continue
 		}
 		detail, err := optEx.GetOptionsOrderByClientID(ctx, clientID)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				if _, ok := v.absentSince[clientID]; !ok {
-					v.absentSince[clientID] = now
+				if a == nil {
+					v.absent[clientID] = &absence{since: now}
+				} else if now.Sub(a.since) >= absentSettle {
+					a.settled = true
 				}
 				continue
 			}
 			lookupErr = fmt.Errorf("could not look up option order by client id %s: %w", clientID, err)
 			break
 		}
-		delete(v.absentSince, clientID)
+		delete(v.absent, clientID)
 		order, err := exchange.NewSimpleOrderFromOrderDetail(detail)
 		if err != nil {
 			lookupErr = err
