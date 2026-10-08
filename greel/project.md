@@ -304,7 +304,7 @@ developer checkpoints at every step.
 1. **Assignment detection** — *resolved* (optpos-story): each position asks
    the broker how its own contract stands; only broker truth writes
    `expired`/`assigned`, via `OptionsExchange.GetOptionsSettlement` (added).
-2. **Accounting model** — *in design* (accounting-story): `gobs.Summary` is stock-centric. Premium, assignment
+2. **Accounting model** — *resolved* (accounting-story): `gobs.Summary` is stock-centric. Premium, assignment
    cost basis, and per-greeler netting (e.g., CC sale recorded at greeler
    level against level cost bases) need an extended P&L model
    (`GetSummary`, `BudgetAt`, status/summary subcommands). Until then,

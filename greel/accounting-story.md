@@ -103,9 +103,14 @@ basis. Once the shares are sold the total profit is the same either way;
 keeping it separate lets status show grid profit and premium side by side,
 and keeps a put-assigned lot's cost equal to the strike the broker reports.
 
-`optpos.Position` gains `Premium() (value, fee decimal.Decimal)`, summing
-its legs' `FilledValue × ContractSize` and `FilledFee`. Only the last leg
-can have filled (gobs-story scenario 5a), so in practice it reads one leg.
+`optpos` gains `Facts` (outcome, assignment, and one `Premium` per filled
+sell-to-open order: contracts × per-share fill × `ContractSize`, its fee and
+fill time). `Position.Facts()` snapshots a running position; only its last
+leg can have filled (gobs-story scenario 5a). `optpos.ReadFacts` reads the
+same from saved records, every leg included, for a greeler that isn't
+running. The greeler keeps one snapshot per wheel epoch: read in `Load`,
+refreshed by `Run` after every step while the position is open. Accounting
+reads only those snapshots, never a position another goroutine drives.
 
 ### 5. Fees
 
@@ -148,48 +153,24 @@ reads the same fold and is left to that item.
 
 ---
 
-## Proposed code skeleton
+## Code
 
-```go
-// gobs/summary.go: Premium*/OpenPremium* fields; Add and Profit extended.
-
-// gobs/optpos.go
-type AssignmentFact struct {
-    Key    string
-    Shares decimal.Decimal
-    Price  decimal.Decimal
-    Fee    decimal.Decimal // new; zero on old records
-}
-
-// optpos/optpos.go
-func (v *Position) Premium() (value, fee decimal.Decimal) { panic("unimplemented") }
-
-// greeler/accounting.go
-type lot struct {
-    size, price, fee decimal.Decimal
-    at               time.Time
-}
-
-// ledger replays Epochs into per-level lots and pairs, for a time range.
-func (v *Greeler) ledger(r *timerange.Range) (*gobs.Summary, [][]*gobs.Order, error) {
-    panic("unimplemented")
-}
-
-func (v *Greeler) Actions() []*gobs.Action                    { panic("unimplemented") }
-func (v *Greeler) GetSummary(r *timerange.Range) *gobs.Summary { panic("unimplemented") }
-
-func Summary(ctx context.Context, r kv.Reader, uid string, period *timerange.Range) (*gobs.Summary, error) {
-    panic("unimplemented")
-}
-
-// greelladder/greelladder.go: Summary sums greeler.Summary over GreelerIDs.
-
-// subcmds/summary.go: greeler and greelladder cases.
-```
+- `gobs/summary.go`: `Premium*`/`OpenPremium*`; `Add`, `Profit`, `Fees`,
+  `FeePct` and `IsZero` include them.
+- `gobs/optpos.go`, `exchange/api.go`: `Fee` on `AssignmentFact` and
+  `OptionsSettlement`; `optpos` copies it at settlement.
+- `optpos/facts.go`: `Facts`, `Premium`, `Position.Facts`, `ReadFacts`.
+- `greeler/accounting.go`: the replay (`fills`), per-level lots
+  (`addLevel`), premium (`addPremiums`), `GetSummary`, `Actions`, and
+  `Summary(ctx, r, uid, period)`.
+- `greelladder.Summary`, and the greeler and greelladder cases in
+  `subcmds/summary.go`.
 
 ---
 
-## Decisions to make at this checkpoint (all proposed)
+## Decisions made at this checkpoint
+
+All eight proposals were approved as written on 2026-10-08.
 
 1. **Assignments are synthetic fills at the strike**, per level by the
    allocation rule, timed at `OutcomeAt` (scenario 3).
