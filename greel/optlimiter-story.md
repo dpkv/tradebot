@@ -115,9 +115,15 @@ advanced and saved** — one KV write, then the broker call. On resume:
    this — it covers filled and cancelled orders, not just open ones; a
    filled order missing from an open-orders listing would otherwise look
    "never placed" and get placed again). Found → adopt it. `os.ErrNotExist`
-   → it was never placed.
+   → it was never placed. A broker can be slow to list an order it
+   accepted, so a missing ID is looked up again on each start until it has
+   been missing for 10 minutes (`absentSettle`, in memory only); after
+   that it is skipped, so a run of rejected placements doesn't grow every
+   start's lookups.
 2. Every order not yet done is refreshed via `Get` (the
-   `Limiter.fetchOrderMap` pattern).
+   `Limiter.fetchOrderMap` pattern). A failed lookup stops step 1 but not
+   this step, and `Run` still cancels every live order it knows before
+   returning the error.
 3. Then the loop continues — scenario 3's rule guarantees at most one of
    those orders is live.
 

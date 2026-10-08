@@ -18,6 +18,7 @@ import (
 	"github.com/bvk/tradebot/idgen"
 	"github.com/bvk/tradebot/kvutil"
 	"github.com/bvkgo/kv"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -41,6 +42,12 @@ const pollInterval = time.Second
 // the order is done, so an outage can't hang Run.
 const cancelTimeout = 2 * time.Minute
 
+// absentSettle is how long a client ID must have been missing at the broker
+// before recovery stops looking it up. A broker can be slow to list an order
+// it accepted, so an ID is looked up again until it has been missing that
+// long.
+const absentSettle = 10 * time.Minute
+
 // OptLimiter is one sell-to-open order intent: it places a broker order
 // and re-prices it toward the market until filled. Component, not a job —
 // its owner (optpos) runs it.
@@ -63,6 +70,10 @@ type OptLimiter struct {
 
 	idgen  *idgen.Generator                 // offset saved ahead of each order
 	orders map[string]*exchange.SimpleOrder // server order ID -> order
+
+	// absentSince holds the client IDs the broker reported missing, and when
+	// that was first reported; in memory only. Only Run uses it, under runMu.
+	absentSince map[uuid.UUID]time.Time
 
 	// Overridable in tests.
 	now           func() time.Time
@@ -93,6 +104,7 @@ func New(uid, exchangeName, contractID string, contractSize, numContracts, minPr
 		repriceInterval: repriceInterval,
 		idgen:           idgen.New(uid, 0),
 		orders:          make(map[string]*exchange.SimpleOrder),
+		absentSince:     make(map[uuid.UUID]time.Time),
 	}
 	v.setDefaults()
 	if err := v.check(); err != nil {
@@ -330,8 +342,9 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*OptLimiter, error) {
 		repriceInterval: config.RepriceInterval,
 		// The saved offset is written before each order is placed, so it
 		// already covers every client ID that may be at the broker.
-		idgen:  idgen.New(seed, progress.ClientIDOffset),
-		orders: make(map[string]*exchange.SimpleOrder, len(progress.Orders)),
+		idgen:       idgen.New(seed, progress.ClientIDOffset),
+		orders:      make(map[string]*exchange.SimpleOrder, len(progress.Orders)),
+		absentSince: make(map[uuid.UUID]time.Time),
 	}
 	for id, gorder := range progress.Orders {
 		order, err := fromGobOrder(gorder)

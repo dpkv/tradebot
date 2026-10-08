@@ -69,7 +69,9 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 	// canceled Run still cancels any live order it finds and confirms it.
 	bg := context.WithoutCancel(ctx)
 	if err := v.recover(bg, optEx, product); err != nil {
-		return err
+		// An order recovery couldn't look up may be live, but the known ones
+		// can still be canceled before giving up.
+		return errors.Join(err, v.cancelLive(bg, product, db))
 	}
 	if err := v.save(bg, db); err != nil {
 		return err
@@ -77,16 +79,8 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 
 	rs := &runState{optEx: optEx, product: product, db: db}
 
-	// The price of an order found live after a restart isn't known, so cancel
-	// it and start again from the mid.
-	for _, id := range v.liveOrders() {
-		slog.Warn("canceling live option order found on resume", "optlimiter", v, "order-id", id)
-		if err := v.cancel(bg, product, id); err != nil {
-			return err
-		}
-		if err := v.save(bg, db); err != nil {
-			return err
-		}
+	if err := v.cancelLive(bg, product, db); err != nil {
+		return err
 	}
 
 	slog.Info("started optlimiter", "optlimiter", v, "contract", v.contractID, "contracts", v.numContracts, "min-premium", v.minPremium, "filled", v.FilledSize())
@@ -274,6 +268,22 @@ func (v *OptLimiter) cancel(ctx context.Context, product exchange.OptionsProduct
 	}
 }
 
+// cancelLive cancels every known order not yet done, waits for each to be
+// confirmed and saves. The price of an order found live on resume isn't
+// known, so it is canceled and pricing starts again from the mid.
+func (v *OptLimiter) cancelLive(ctx context.Context, product exchange.OptionsProduct, db kv.Database) error {
+	for _, id := range v.liveOrders() {
+		slog.Warn("canceling live option order found on resume", "optlimiter", v, "order-id", id)
+		if err := v.cancel(ctx, product, id); err != nil {
+			return err
+		}
+		if err := v.save(ctx, db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // shutdown cancels the live order, waits for confirmation and saves.
 func (v *OptLimiter) shutdown(ctx context.Context, rs *runState) error {
 	bg := context.WithoutCancel(ctx)
@@ -363,7 +373,9 @@ func (v *OptLimiter) liveOrders() []string {
 
 // recover adopts orders placed with a saved client ID that never made it
 // into the order list (a crash between placing and saving), then refreshes
-// every order not yet done.
+// every order not yet done. An ID missing at the broker for absentSettle is
+// not looked up again. A failed lookup stops the lookups, but the known
+// orders are still refreshed.
 func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsExchange, product exchange.OptionsProduct) error {
 	known := make(map[uuid.UUID]bool)
 	v.mu.Lock()
@@ -372,29 +384,40 @@ func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsExchange
 	}
 	v.mu.Unlock()
 
+	now := v.now()
+	var lookupErr error
 	gen := idgen.New(v.idgen.Seed(), 0)
 	for i, n := uint64(0), v.idgen.Offset(); i < n; i++ {
 		clientID := gen.NextID()
 		if known[clientID] {
 			continue
 		}
+		if since, ok := v.absentSince[clientID]; ok && now.Sub(since) >= absentSettle {
+			continue
+		}
 		detail, err := optEx.GetOptionsOrderByClientID(ctx, clientID)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				if _, ok := v.absentSince[clientID]; !ok {
+					v.absentSince[clientID] = now
+				}
 				continue
 			}
-			return fmt.Errorf("could not look up option order by client id %s: %w", clientID, err)
+			lookupErr = fmt.Errorf("could not look up option order by client id %s: %w", clientID, err)
+			break
 		}
+		delete(v.absentSince, clientID)
 		order, err := exchange.NewSimpleOrderFromOrderDetail(detail)
 		if err != nil {
-			return err
+			lookupErr = err
+			break
 		}
 		slog.Warn("adopted option order found by client id", "optlimiter", v, "order-id", order.ServerOrderID, "client-order-id", clientID, "done", order.Done, "filled", order.FilledSize)
 		v.mu.Lock()
 		v.orders[order.ServerOrderID] = order
 		v.mu.Unlock()
 	}
-	return v.refresh(ctx, product)
+	return errors.Join(lookupErr, v.refresh(ctx, product))
 }
 
 // refresh re-fetches every order not yet done.
