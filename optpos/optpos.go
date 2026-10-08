@@ -513,7 +513,9 @@ func (v *Position) stop(ctx context.Context) error {
 				v.closeProduct()
 				return nil
 			}
-			if err := v.start(ctx, context.Background()); err != nil {
+			// Canceled from the start, so the run only recovers and cancels
+			// its orders: it can't get as far as placing a new one.
+			if err := v.start(ctx, stoppedContext()); err != nil {
 				return err
 			}
 		}
@@ -535,6 +537,13 @@ func (v *Position) stop(ctx context.Context) error {
 		}
 		slog.Warn("sell-to-open attempt failed while stopping (running it again to cancel its orders)", "optpos", v, "leg", v.leg.UID(), "err", a.err)
 	}
+}
+
+// stoppedContext returns a context already canceled with errStopped.
+func stoppedContext() context.Context {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errStopped)
+	return ctx
 }
 
 func (v *Position) closeProduct() {
