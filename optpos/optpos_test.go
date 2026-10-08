@@ -49,6 +49,11 @@ type fakeExchange struct {
 	fillAtOrBelow decimal.Decimal
 	// failPlaceAfter places the order but returns an error, like a timeout.
 	failPlaceAfter bool
+	// beforePlace, if set, runs as each placement starts, before the order
+	// is at the broker; a test can block in it.
+	beforePlace func()
+	// nsubscribe counts order update subscriptions: one per leg run.
+	nsubscribe int
 
 	now func() time.Time // create time of new orders
 }
@@ -159,11 +164,20 @@ func (p *fakeProduct) ExchangeName() string { return "fake" }
 func (p *fakeProduct) Close() error         { return nil }
 
 func (p *fakeProduct) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], error) {
+	p.ex.mu.Lock()
+	p.ex.nsubscribe++
+	p.ex.mu.Unlock()
 	return topic.Subscribe(p.updates, 0, false)
 }
 
 func (p *fakeProduct) LimitSellToOpen(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
 	f := p.ex
+	f.mu.Lock()
+	hook := f.beforePlace
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -272,6 +286,12 @@ func (f *fakeExchange) settle(contractID string, s *exchange.OptionsSettlement) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.settlements[contractID] = s
+}
+
+func (f *fakeExchange) subscriptions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nsubscribe
 }
 
 func (f *fakeExchange) settlementCalls() int {
@@ -842,6 +862,113 @@ func TestStopCancelsAttemptAndCheckRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "second order", func() bool { n, live := e.ex.counts(putA); return n == 2 && live == 1 })
+}
+
+func TestStopCancelsOrderOfFailedAttempt(t *testing.T) {
+	for _, reaped := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reaped=%v", reaped), func(t *testing.T) {
+			e := newTestEnv(t)
+			fctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// The broker accepts the order but the call fails, so the attempt
+			// returns with its order live and not in its record.
+			e.ex.failPlaceAfter = true
+			v := e.newPosition("p1")
+			if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+				t.Fatal(err)
+			}
+			waitAttempt(t, v.active)
+			if _, live := e.ex.counts(putA); live != 1 {
+				t.Fatalf("live orders: %d", live)
+			}
+			if reaped {
+				// Check reaps the failed attempt and waits out the retry delay,
+				// so no attempt is in flight when the greeler stops.
+				if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+					t.Fatal(err)
+				}
+				if v.active != nil {
+					t.Fatal("failed attempt restarted before the retry delay")
+				}
+			}
+			if err := v.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if n, live := e.ex.counts(putA); n != 1 || live != 0 || v.active != nil {
+				t.Errorf("after Stop: orders %d live %d active %v", n, live, v.active != nil)
+			}
+		})
+	}
+}
+
+func TestStopAfterCleanStopStartsNothing(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v := e.openResting(fctx, "p1")
+	if err := v.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The stop confirmed the leg's orders done, so a second Stop has nothing
+	// to recover.
+	runs := e.ex.subscriptions()
+	if err := v.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v.active != nil || e.ex.subscriptions() != runs {
+		t.Errorf("second Stop ran the leg again: active %v runs %d", v.active != nil, e.ex.subscriptions()-runs)
+	}
+}
+
+func TestAbandonDuringFailedPlacement(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The placement blocks until released; then the broker accepts the order
+	// but the call fails.
+	placing, release := make(chan struct{}), make(chan struct{})
+	e.ex.failPlaceAfter = true
+	e.ex.beforePlace = func() {
+		close(placing)
+		<-release
+	}
+	v := e.newPosition("p1")
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-placing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the placement")
+	}
+
+	// Abandon stops the attempt while its placement is in flight.
+	a := v.active
+	errCh := make(chan error, 1)
+	go func() { errCh <- v.Abandon(context.Background()) }()
+	select {
+	case <-a.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Abandon to stop the attempt")
+	}
+	close(release)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Abandon")
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 0 {
+		t.Errorf("orders %d live %d after Abandon", n, live)
+	}
+	if v.Outcome() != "unfilled" {
+		t.Errorf("outcome %q", v.Outcome())
+	}
 }
 
 func TestHeldContractID(t *testing.T) {
