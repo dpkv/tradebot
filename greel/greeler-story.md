@@ -187,8 +187,9 @@ loads every grid epoch's limiters (decision #1). `server.Load` gains
 `trader.Trader` also requires `Actions`, `BudgetAt`, and `GetSummary`. The
 accounting model is deferred (project.md open item 2), so these get
 minimal implementations — stock-side limiter fills only — until it lands.
-`Status` (`trader.Statuser`) reports the same fills, so the status and
-profit reports, which skip jobs without it, include greelers.
+`Status` (`trader.Statuser`) reports the same summary, premium included
+(accounting-story.md scenario 8), so the status and profit reports, which
+skip jobs without it, include greelers.
 
 ---
 

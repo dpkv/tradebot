@@ -1129,6 +1129,34 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+// TestStatusCountsPremium: status carries the option premium, held out of
+// profit until its position settles.
+func TestStatusCountsPremium(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	pos := flipToPut(t, e, v, r)
+
+	filled := time.Now()
+	pos.mu.Lock()
+	pos.premiums = []*optpos.Premium{{At: filled, Value: d("150"), Fee: d("1")}}
+	pos.mu.Unlock()
+	e.step(r, "200")
+	if s := v.Status(nil); !s.PremiumValue.Equal(d("150")) || !s.OpenPremiumValue.Equal(d("150")) || !s.Profit().IsZero() {
+		t.Errorf("open put: premium %s open %s profit %s; want 150 150 0", s.PremiumValue, s.OpenPremiumValue, s.Profit())
+	}
+
+	pos.settle("expired", nil)
+	e.step(r, "200")
+	s := v.Status(nil)
+	if !s.Premium().Equal(d("150")) || !s.Profit().Equal(d("149")) || !s.Fees().Equal(d("1")) {
+		t.Errorf("expired put: premium %s profit %s fees %s; want 150 149 1", s.Premium(), s.Profit(), s.Fees())
+	}
+	if !s.TimePeriod.Begin.Equal(filled) {
+		t.Errorf("period %+v, want from the premium at %s", s.TimePeriod, filled)
+	}
+}
+
 // TestRangedSummarySkipsUnfilledBuy: a flip to a put cancels level 0's buy
 // before it fills. A sell in the range pairs with its own buy, not with the
 // empty one.

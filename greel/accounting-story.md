@@ -148,6 +148,13 @@ from KV alone; positions and optlimiters only need their records to answer
 `Premium`, `Outcome` and `Assignment`. `LifetimeSummary` stays deferred:
 computed on demand, as `-recalculate` does for wallers.
 
+`tradebot status` and the Telegram profit report keep only
+`trader.Statuser` jobs. `Greeler.Status` converts the same summary into a
+`trader.Status`, and `GreelLadder.Status` sums its greelers' as
+`Waller.Status` does. `trader.Summary` gains the same `Premium*` and
+`OpenPremium*` fields, and its `Profit`, `Fees` and `FeePct` count them the
+same way.
+
 Per-greeler status (open item 8: mode, band, open strike, collected premium)
 reads the same fold and is left to that item.
 

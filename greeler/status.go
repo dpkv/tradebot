@@ -9,10 +9,9 @@ import (
 
 var _ trader.Statuser = &Greeler{}
 
-// Status reports the stock limiters' fills within period, as GetSummary
-// counts them, so status and profit reports include the greeler. A nil or
-// zero period covers everything since the first order. Option premium and
-// assignments are left out until the accounting model lands.
+// Status reports GetSummary over period (grid round trips, assignments
+// and option premium), so status and profit reports include the greeler.
+// A nil or zero period covers everything since the first fill.
 func (v *Greeler) Status(period *timerange.Range) *trader.Status {
 	var r *timerange.Range
 	if period != nil && !period.IsZero() {
@@ -23,8 +22,8 @@ func (v *Greeler) Status(period *timerange.Range) *trader.Status {
 	var tp timerange.Range
 	if r != nil {
 		tp = *r
-	} else if actions := v.Actions(); len(actions) > 0 {
-		tp = timerange.Range{Begin: actions[0].Orders[0].CreateTime.Time}
+	} else if !gs.BeginAt.IsZero() {
+		tp = timerange.Range{Begin: gs.BeginAt}
 	}
 
 	s := &trader.Status{
@@ -53,6 +52,11 @@ func (v *Greeler) Status(period *timerange.Range) *trader.Status {
 			OversoldFees:  gs.OversoldFees,
 			OversoldSize:  gs.OversoldSize,
 			OversoldValue: gs.OversoldValue,
+
+			PremiumFees:      gs.PremiumFees,
+			PremiumValue:     gs.PremiumValue,
+			OpenPremiumFees:  gs.OpenPremiumFees,
+			OpenPremiumValue: gs.OpenPremiumValue,
 		},
 	}
 	s.Budget = v.BudgetAt(s.FeePct())

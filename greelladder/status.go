@@ -10,8 +10,6 @@ import (
 var _ trader.Statuser = &GreelLadder{}
 
 // Status sums the greelers' statuses, as Waller.Status does its loopers'.
-// Like theirs, it leaves out option premium and assignments until the
-// accounting model lands.
 func (v *GreelLadder) Status(period *timerange.Range) *trader.Status {
 	var ss []*trader.Status
 	for _, g := range v.greelers {

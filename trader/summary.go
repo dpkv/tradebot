@@ -32,6 +32,14 @@ type Summary struct {
 	OversoldFees  decimal.Decimal
 	OversoldSize  decimal.Decimal
 	OversoldValue decimal.Decimal
+
+	// Premium* hold option premium collected. OpenPremium* hold the part
+	// whose position hasn't settled; like Unsold*, it doesn't count toward
+	// profit yet (greel/accounting-story.md).
+	PremiumFees      decimal.Decimal
+	PremiumValue     decimal.Decimal
+	OpenPremiumFees  decimal.Decimal
+	OpenPremiumValue decimal.Decimal
 }
 
 func (s *Summary) String() string {
@@ -41,11 +49,11 @@ func (s *Summary) String() string {
 }
 
 func (s *Summary) FeePct() decimal.Decimal {
-	divisor := s.SoldValue.Add(s.BoughtValue)
+	divisor := s.SoldValue.Add(s.BoughtValue).Add(s.PremiumValue)
 	if divisor.IsZero() {
 		return decimal.Zero
 	}
-	totalFees := s.SoldFees.Add(s.BoughtFees)
+	totalFees := s.SoldFees.Add(s.BoughtFees).Add(s.PremiumFees)
 	d100 := decimal.NewFromInt(100)
 	return totalFees.Mul(d100).Div(divisor)
 }
@@ -58,10 +66,16 @@ func (s *Summary) Bought() decimal.Decimal {
 	return s.BoughtValue.Sub(s.UnsoldValue)
 }
 
+// Premium is the option premium whose position has settled.
+func (s *Summary) Premium() decimal.Decimal {
+	return s.PremiumValue.Sub(s.OpenPremiumValue)
+}
+
 func (s *Summary) Fees() decimal.Decimal {
 	sfees := s.SoldFees.Sub(s.OversoldFees)
 	bfees := s.BoughtFees.Sub(s.UnsoldFees)
-	return sfees.Add(bfees)
+	pfees := s.PremiumFees.Sub(s.OpenPremiumFees)
+	return sfees.Add(bfees).Add(pfees)
 }
 
 func (s *Summary) Profit() decimal.Decimal {
@@ -69,7 +83,8 @@ func (s *Summary) Profit() decimal.Decimal {
 	bvalue := s.BoughtValue.Sub(s.UnsoldValue)
 	sfees := s.SoldFees.Sub(s.OversoldFees)
 	bfees := s.BoughtFees.Sub(s.UnsoldFees)
-	profit := svalue.Sub(bvalue).Sub(bfees).Sub(sfees)
+	pfees := s.PremiumFees.Sub(s.OpenPremiumFees)
+	profit := svalue.Sub(bvalue).Add(s.Premium()).Sub(bfees).Sub(sfees).Sub(pfees)
 	return profit
 }
 
@@ -133,6 +148,11 @@ func Summarize(statuses []*Status) *Summary {
 		sum.OversoldFees = sum.OversoldFees.Add(s.OversoldFees)
 		sum.OversoldSize = sum.OversoldSize.Add(s.OversoldSize)
 		sum.OversoldValue = sum.OversoldValue.Add(s.OversoldValue)
+
+		sum.PremiumFees = sum.PremiumFees.Add(s.PremiumFees)
+		sum.PremiumValue = sum.PremiumValue.Add(s.PremiumValue)
+		sum.OpenPremiumFees = sum.OpenPremiumFees.Add(s.OpenPremiumFees)
+		sum.OpenPremiumValue = sum.OpenPremiumValue.Add(s.OpenPremiumValue)
 	}
 
 	if tr != nil {
