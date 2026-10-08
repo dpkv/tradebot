@@ -18,6 +18,7 @@ import (
 	"github.com/bvk/tradebot/idgen"
 	"github.com/bvk/tradebot/kvutil"
 	"github.com/bvkgo/kv"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -41,6 +42,25 @@ const pollInterval = time.Second
 // the order is done, so an outage can't hang Run.
 const cancelTimeout = 2 * time.Minute
 
+// absentSettle is how long a client ID must stay missing at the broker
+// before it counts as never placed. A broker can be slow to list an order it
+// accepted, so recovery looks an ID up again on each start until a lookup
+// made absentSettle after its failed placement or first miss still misses
+// it.
+const absentSettle = 10 * time.Minute
+
+// ErrUnconfirmed is what Run returns while a client ID below the offset is
+// missing at the broker but not yet for absentSettle: its order may still
+// be listed and live. Run then neither places another order nor reports a
+// stop as clean.
+var ErrUnconfirmed = errors.New("a sell-to-open placement is not yet confirmed absent")
+
+// absence is what recovery knows about a client ID the broker didn't list.
+type absence struct {
+	since   time.Time // the failed placement, or the first miss
+	settled bool      // missed again absentSettle after since; not looked up again
+}
+
 // OptLimiter is one sell-to-open order intent: it places a broker order
 // and re-prices it toward the market until filled. Component, not a job —
 // its owner (optpos) runs it.
@@ -48,7 +68,8 @@ type OptLimiter struct {
 	// runMu serializes Run.
 	runMu sync.Mutex
 
-	// mu guards orders. Run and the owner's Save may run concurrently.
+	// mu guards orders, lookupOffset and absent. Run and the owner's Save
+	// may run concurrently.
 	mu sync.Mutex
 
 	uid          string
@@ -63,6 +84,12 @@ type OptLimiter struct {
 
 	idgen  *idgen.Generator                 // offset saved ahead of each order
 	orders map[string]*exchange.SimpleOrder // server order ID -> order
+
+	// lookupOffset is where recovery starts its lookups: every lower client
+	// ID is in orders or settled absent. absent holds the IDs from there up
+	// to the offset that the broker hasn't listed. Only Run changes them.
+	lookupOffset uint64
+	absent       map[uuid.UUID]*absence
 
 	// Overridable in tests.
 	now           func() time.Time
@@ -93,6 +120,7 @@ func New(uid, exchangeName, contractID string, contractSize, numContracts, minPr
 		repriceInterval: repriceInterval,
 		idgen:           idgen.New(uid, 0),
 		orders:          make(map[string]*exchange.SimpleOrder),
+		absent:          make(map[uuid.UUID]*absence),
 	}
 	v.setDefaults()
 	if err := v.check(); err != nil {
@@ -141,6 +169,11 @@ func (v *OptLimiter) check() error {
 // Call it before Run.
 func (v *OptLimiter) SetSession(session func(time.Time) (open bool, next time.Time)) {
 	v.session = session
+}
+
+// SetClock replaces the clock Run reads; for tests. Call it before Run.
+func (v *OptLimiter) SetClock(now func() time.Time) {
+	v.now = now
 }
 
 func (v *OptLimiter) String() string {
@@ -276,18 +309,26 @@ func (v *OptLimiter) Save(ctx context.Context, rw kv.ReadWriter) error {
 			Progress: &gobs.OptLimiterProgress{
 				ClientIDOffset: v.idgen.Offset(),
 				Orders:         make(map[string]*gobs.Order, len(v.orders)),
+				LookupOffset:   v.lookupOffset,
 			},
 		},
 	}
 	for id, order := range v.orders {
 		gv.V1.Progress.Orders[id] = toGobOrder(order)
 	}
+	if len(v.absent) > 0 {
+		gv.V1.Progress.Absent = make(map[string]*gobs.OptAbsence, len(v.absent))
+		for id, a := range v.absent {
+			gv.V1.Progress.Absent[id.String()] = &gobs.OptAbsence{Since: a.since, Settled: a.settled}
+		}
+	}
 	v.mu.Unlock()
 
 	// Run and the owner may save concurrently, so a snapshot can be older
 	// than what is stored. Reading the record lets the database reject a
 	// conflicting write, and the offset never goes back: recovery looks up
-	// every client ID below it.
+	// every client ID below it. An older snapshot of the lookups only makes
+	// recovery look IDs up again.
 	key := path.Join(DefaultKeyspace, v.uid)
 	old, err := kvutil.Get[gobs.OptLimiterState](ctx, rw, key)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -332,6 +373,7 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*OptLimiter, error) {
 		// already covers every client ID that may be at the broker.
 		idgen:  idgen.New(seed, progress.ClientIDOffset),
 		orders: make(map[string]*exchange.SimpleOrder, len(progress.Orders)),
+		absent: make(map[uuid.UUID]*absence),
 	}
 	for id, gorder := range progress.Orders {
 		order, err := fromGobOrder(gorder)
@@ -339,6 +381,14 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*OptLimiter, error) {
 			return nil, fmt.Errorf("could not decode optlimiter order %q: %w", id, err)
 		}
 		v.orders[id] = order
+	}
+	v.lookupOffset = min(progress.LookupOffset, progress.ClientIDOffset)
+	for id, a := range progress.Absent {
+		clientID, err := uuid.Parse(id)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse optlimiter absent client id %q: %w", id, err)
+		}
+		v.absent[clientID] = &absence{since: a.Since, settled: a.Settled}
 	}
 	v.setDefaults()
 	if err := v.check(); err != nil {

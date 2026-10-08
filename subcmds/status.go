@@ -231,6 +231,9 @@ func (c *Status) run(ctx context.Context, args []string) error {
 		fmt.Printf("Fees: %s\n", sum.Fees().StringFixed(3))
 		fmt.Printf("Sold: %s\n", sum.Sold().StringFixed(3))
 		fmt.Printf("Bought: %s\n", sum.Bought().StringFixed(3))
+		if !sum.PremiumValue.IsZero() {
+			fmt.Printf("Option Premium: %s\n", sum.Premium().StringFixed(3))
+		}
 		fmt.Printf("Effective Fee Pct: %s%%\n", sum.FeePct().StringFixed(3))
 
 		fmt.Println()

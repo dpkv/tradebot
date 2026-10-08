@@ -58,6 +58,11 @@ type runner struct {
 	running map[int]*running
 	retryAt map[int]time.Time
 
+	// settled holds the limiters whose last Run in this Run call returned
+	// nil or the stop cause, so their orders are confirmed done. A flip to
+	// wheel waits until every unfinished limiter is settled.
+	settled map[*limiter.Limiter]bool
+
 	// doneCh wakes the loop when a limiter returns.
 	doneCh chan struct{}
 }
@@ -70,6 +75,7 @@ func (v *Greeler) newRunner(fctx context.Context, rt *trader.Runtime, optEx exch
 		fctx:    fctx,
 		running: make(map[int]*running),
 		retryAt: make(map[int]time.Time),
+		settled: make(map[*limiter.Limiter]bool),
 		doneCh:  make(chan struct{}, 1),
 	}
 }
@@ -385,11 +391,28 @@ func (r *runner) stepGrid(ctx context.Context, now time.Time, holdings []decimal
 		slog.Debug("wheel flip is due but the levels don't qualify", "greeler", v, "flip", want, "holdings", holdings)
 	}
 
-	if v.retireOpt && len(r.running) == 0 && allZero(holdings) {
+	if v.retireOpt && len(r.running) == 0 && allZero(holdings) && !v.hasLiveOrders(e) {
 		return true, nil
 	}
 	r.armLevels(ctx, now, e, holdings)
 	return false, nil
+}
+
+// hasLiveOrders reports whether any of e's limiters knows of an order that
+// isn't done.
+func (v *Greeler) hasLiveOrders(e *epoch) bool {
+	v.mu.Lock()
+	var all []*limiter.Limiter
+	for _, ls := range e.limiters {
+		all = append(all, ls...)
+	}
+	v.mu.Unlock()
+	for _, l := range all {
+		if l.HasLiveOrders() {
+			return true
+		}
+	}
+	return false
 }
 
 func allZero(holdings []decimal.Decimal) bool {
@@ -404,13 +427,42 @@ func allZero(holdings []decimal.Decimal) bool {
 // errHalt marks an error Run must stop on.
 var errHalt = errors.New("greeler halted")
 
-// flipToWheel cancels every limiter, re-checks qualification, and opens a
-// position under a new wheel epoch saved ahead of it. A fill that raced the
-// cancel blocks the flip and resets the dwell clock.
+// flipToWheel stops every limiter, waits until each unfinished one has
+// confirmed its order done, re-checks qualification, and opens a position
+// under a new wheel epoch saved ahead of it. A limiter that hasn't
+// confirmed (its cancel failed, it is waiting out a retry, or it hasn't run
+// since a restart) is started so it recovers and cancels its order, and the
+// flip waits: the dwell clock keeps running, and the next step's attempt
+// stops the limiter and checks again. A fill that raced the cancel blocks
+// the flip and resets the dwell clock.
 func (r *runner) flipToWheel(ctx context.Context, now time.Time, flip string) error {
 	v := r.v
 	e := v.current()
 	r.stopAll()
+
+	waiting := false
+	for i := range v.levels {
+		v.mu.Lock()
+		ls := e.limiters[i]
+		v.mu.Unlock()
+		if len(ls) == 0 {
+			continue
+		}
+		last := ls[len(ls)-1]
+		if !last.PendingSize().IsPositive() || r.settled[last] {
+			continue
+		}
+		waiting = true
+		if at, ok := r.retryAt[i]; ok && now.Before(at) {
+			slog.Info("wheel flip waits for a level's limiter to retry and confirm its order", "greeler", v, "level", i, "limiter", last, "retry-at", at)
+			continue
+		}
+		slog.Info("wheel flip waits for a level's limiter to confirm its order", "greeler", v, "level", i, "limiter", last)
+		r.start(i, last)
+	}
+	if waiting {
+		return nil
+	}
 
 	holdings, err := v.fold()
 	if err != nil {
@@ -537,9 +589,14 @@ func (r *runner) armLevels(ctx context.Context, now time.Time, e *epoch, holding
 		ls := e.limiters[i]
 		v.mu.Unlock()
 		if n := len(ls); n > 0 && ls[n-1].PendingSize().IsPositive() {
-			// A retired greeler doesn't resume a buy that hasn't started.
-			if last := ls[n-1]; !(v.retireOpt && last.IsBuy() && last.FilledSize().IsZero()) {
+			last := ls[n-1]
+			if !(v.retireOpt && last.IsBuy() && last.FilledSize().IsZero()) {
 				r.start(i, last)
+			} else if last.HasLiveOrders() {
+				// A retired greeler doesn't resume a buy that hasn't filled.
+				// If its order may still be live (say, its cancel failed at
+				// the last stop), the limiter runs only to cancel it.
+				r.startCancel(i, last)
 			}
 			continue
 		}
@@ -604,6 +661,17 @@ func (r *runner) addLimiter(ctx context.Context, e *epoch, level int, pt *point.
 // start runs a level's limiter in its own goroutine until it fills or the
 // greeler stops it.
 func (r *runner) start(level int, l *limiter.Limiter) {
+	r.run(level, l, l.Run)
+}
+
+// startCancel runs a level's limiter in its own goroutine only until it
+// has canceled its live orders.
+func (r *runner) startCancel(level int, l *limiter.Limiter) {
+	r.run(level, l, l.CancelLive)
+}
+
+func (r *runner) run(level int, l *limiter.Limiter, fn func(context.Context, *trader.Runtime) error) {
+	delete(r.settled, l)
 	ctx, cancel := context.WithCancelCause(r.fctx)
 	rl := &running{limiter: l, ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	rt := r.rt
@@ -615,7 +683,7 @@ func (r *runner) start(level int, l *limiter.Limiter) {
 			}
 		}()
 		defer close(rl.done)
-		rl.err = l.Run(ctx, rt)
+		rl.err = fn(ctx, rt)
 		return rl.err
 	}, ctx)
 	r.running[level] = rl
@@ -627,15 +695,31 @@ func (r *runner) reap() {
 	for i, rl := range r.running {
 		select {
 		case <-rl.done:
+			r.finished(i, rl)
 		default:
-			continue
 		}
-		delete(r.running, i)
-		rl.cancel(errStopped)
-		if rl.err != nil && !errors.Is(rl.err, context.Cause(rl.ctx)) {
-			slog.Warn("limiter returned an error (will retry)", "greeler", r.v, "level", i, "limiter", rl.limiter, "err", rl.err)
-			r.retryAt[i] = r.v.now().Add(retryDelay)
-		}
+	}
+}
+
+// finished clears a level's limiter that has returned. One that returned
+// nil or the stop cause with every order it knows of done is settled. The
+// error alone can't tell: a broker call interrupted by the stop returns an
+// error wrapping the stop cause before the limiter got to cancel. Otherwise
+// its order may be live: the limiter stays unsettled, runs again after
+// retryDelay, and is saved so the live order is on record.
+func (r *runner) finished(level int, rl *running) {
+	delete(r.running, level)
+	rl.cancel(errStopped)
+	clean := rl.err == nil || errors.Is(rl.err, context.Cause(rl.ctx))
+	if clean && !rl.limiter.HasLiveOrders() {
+		r.settled[rl.limiter] = true
+		return
+	}
+	slog.Warn("limiter returned without confirming its order is done (will retry)", "greeler", r.v, "level", level, "limiter", rl.limiter, "err", rl.err)
+	r.retryAt[level] = r.v.now().Add(retryDelay)
+	delete(r.settled, rl.limiter)
+	if err := kv.WithReadWriter(context.WithoutCancel(r.fctx), r.rt.Database, rl.limiter.Save); err != nil {
+		slog.Warn("could not save limiter after it failed (ignored)", "greeler", r.v, "level", level, "limiter", rl.limiter, "err", err)
 	}
 }
 
@@ -654,14 +738,15 @@ func (r *runner) stopPosition(ctx context.Context) error {
 	return nil
 }
 
-// stopAll stops every limiter and waits until each has canceled its order.
+// stopAll stops every limiter and waits until each has returned. Only the
+// ones that confirmed their orders done end up settled.
 func (r *runner) stopAll() {
 	for _, rl := range r.running {
 		rl.cancel(errStopped)
 	}
 	for i, rl := range r.running {
 		<-rl.done
-		delete(r.running, i)
+		r.finished(i, rl)
 	}
 }
 

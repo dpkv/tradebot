@@ -28,8 +28,9 @@ const DefaultKeyspace = "/optpositions/"
 // stands.
 const settlementInterval = time.Hour
 
-// retryDelay is how long Check waits before selecting again after Open
-// failed, or restarting an attempt that failed.
+// retryDelay is how long Check waits before selecting again after Open or
+// a re-selection failed, or restarting an attempt that failed, and how long
+// Abandon waits after a stop that failed.
 const retryDelay = time.Minute
 
 // ErrOpened is returned by Abandon when the opening order has filled: the
@@ -109,9 +110,13 @@ type Position struct {
 	product exchange.OptionsProduct // leg's product while it may run
 	active  *attempt                // the attempt in flight, nil if none
 
+	// confirmed is set when the leg's last run, stopped by stop, ended with
+	// its orders confirmed done; start clears it. In memory only.
+	confirmed bool
+
 	selectedFor         string    // session the contract was last selected for; in memory only
 	lastSettlementCheck time.Time // in memory only
-	retryAt             time.Time // no Open or attempt restart before this; in memory only
+	retryAt             time.Time // no Open, re-selection, restart or Abandon retry before this; in memory only
 
 	// Held at construction (New/Load), not re-passed to every method.
 	optEx exchange.OptionsExchange
@@ -252,10 +257,11 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 		return nil
 	}
 
-	if !filled {
+	if !filled && !now.Before(v.retryAt) {
 		if open, _ := v.session(now); open {
 			if key := v.sessionKey(now); key != v.selectedFor {
 				if err := v.reselect(ctx, fctx, c); err != nil {
+					v.retryAt = now.Add(retryDelay)
 					return err
 				}
 				v.selectedFor = key
@@ -269,12 +275,14 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 	return v.start(ctx, fctx)
 }
 
-// Stop stops the attempt in flight, if any, and waits until its live order
-// is canceled and confirmed. The position stays open; the next Check
-// restarts the attempt. The owning greeler calls it before its Run returns,
-// so no order is left working without an owner.
+// Stop stops the current attempt and waits until its live order is canceled
+// and confirmed, even when no attempt is in flight: an attempt that failed,
+// or one loaded but not started, is run just long enough to recover and
+// cancel its orders. The position stays open; the next Check restarts the
+// attempt. The owning greeler calls it before its Run returns, so no order
+// is left working without an owner.
 func (v *Position) Stop(ctx context.Context) error {
-	if v.active == nil {
+	if v.outcome != "" {
 		return nil
 	}
 	return v.stop(ctx)
@@ -282,7 +290,8 @@ func (v *Position) Stop(ctx context.Context) error {
 
 // Abandon ends a position whose opening order never filled, with Outcome
 // "unfilled". It stops the live attempt first and fails with ErrOpened if
-// the order filled — the position is then open.
+// the order filled — the position is then open. After a stop that failed it
+// waits retryDelay before stopping again.
 func (v *Position) Abandon(ctx context.Context) error {
 	switch v.outcome {
 	case "":
@@ -291,7 +300,11 @@ func (v *Position) Abandon(ctx context.Context) error {
 	default:
 		return fmt.Errorf("optpos %s has already ended %q", v.uid, v.outcome)
 	}
+	if v.active == nil && !v.confirmed && v.now().Before(v.retryAt) {
+		return fmt.Errorf("could not abandon optpos %s yet: its attempt failed; trying again after %s", v.uid, v.retryAt.Format(time.TimeOnly))
+	}
 	if err := v.stop(ctx); err != nil {
+		v.retryAt = v.now().Add(retryDelay)
 		return err
 	}
 	if v.leg != nil && v.leg.FilledSize().IsPositive() {
@@ -364,7 +377,8 @@ func (v *Position) checkSelection(sel *Selection, c *Constraint) error {
 }
 
 // reselect re-runs the selector for an attempt that hasn't filled. A
-// different contract replaces the attempt unless it fills while stopping.
+// different contract replaces the attempt unless it fills while stopping,
+// or a sibling takes the contract meanwhile.
 func (v *Position) reselect(ctx context.Context, fctx context.Context, c *Constraint) error {
 	sel, err := v.selectContract(ctx, c)
 	if err != nil {
@@ -380,6 +394,11 @@ func (v *Position) reselect(ctx context.Context, fctx context.Context, c *Constr
 	if v.leg.FilledSize().IsPositive() {
 		slog.Info("opening order filled while re-selecting; keeping it", "optpos", v, "contract", v.leg.ContractID(), "filled", v.leg.FilledSize())
 		return nil
+	}
+	// The claim taken while selecting can lapse while the cancel is
+	// confirmed, so ask again; this also renews the claim before the sale.
+	if c.Exclude != nil && c.Exclude(sel.Contract.ContractID) {
+		return fmt.Errorf("optpos %s: re-selected %s was taken by a sibling while stopping the attempt", v.uid, sel.Contract.ContractID)
 	}
 	slog.Info("re-selected contract", "optpos", v, "old", v.leg.ContractID(), "new", sel.Contract.ContractID)
 	return v.newAttempt(ctx, fctx, c, sel)
@@ -451,6 +470,7 @@ func (v *Position) start(ctx context.Context, fctx context.Context) error {
 		return a.err
 	}, runCtx)
 	v.active = a
+	v.confirmed = false
 	return nil
 }
 
@@ -478,34 +498,52 @@ func (v *Position) reap() {
 }
 
 // stop stops the current attempt and waits until its live order, if any,
-// is canceled and confirmed. An attempt not running since a restart is run
-// just long enough to recover and cancel its orders.
+// is canceled and confirmed. A leg not running (not started since a
+// restart, or reaped after it failed) is run just long enough to recover
+// and cancel its orders, unless its last run already confirmed them. An
+// attempt that fails is run once more: the new run finds by client ID any
+// order the failed one left.
 func (v *Position) stop(ctx context.Context) error {
 	if v.leg == nil {
 		return nil
 	}
-	if v.active == nil {
-		if v.leg.IsDone() {
-			v.closeProduct()
+	for pass := 0; ; pass++ {
+		if v.active == nil {
+			if v.leg.IsDone() || v.confirmed {
+				v.closeProduct()
+				return nil
+			}
+			// Canceled from the start, so the run only recovers and cancels
+			// its orders: it can't get as far as placing a new one.
+			if err := v.start(ctx, stoppedContext()); err != nil {
+				return err
+			}
+		}
+		a := v.active
+		a.cancel(errStopped)
+		if err := a.job.Wait(ctx); err != nil {
+			return fmt.Errorf("could not wait for attempt %s to stop: %w", v.leg.UID(), err)
+		}
+		v.active = nil
+		v.closeProduct()
+		// A canceled leg returns its context's cause once its order is
+		// confirmed done; anything else means the order may still be live.
+		if a.err == nil || errors.Is(a.err, context.Cause(a.ctx)) {
+			v.confirmed = true
 			return nil
 		}
-		if err := v.start(ctx, context.Background()); err != nil {
-			return err
+		if pass > 0 {
+			return fmt.Errorf("could not stop attempt %s: %w", v.leg.UID(), a.err)
 		}
+		slog.Warn("sell-to-open attempt failed while stopping (running it again to cancel its orders)", "optpos", v, "leg", v.leg.UID(), "err", a.err)
 	}
-	a := v.active
-	a.cancel(errStopped)
-	if err := a.job.Wait(ctx); err != nil {
-		return fmt.Errorf("could not wait for attempt %s to stop: %w", v.leg.UID(), err)
-	}
-	v.active = nil
-	v.closeProduct()
-	// A canceled leg returns its context's cause once its order is confirmed
-	// done; anything else means the order may still be live.
-	if a.err != nil && !errors.Is(a.err, context.Cause(a.ctx)) {
-		return fmt.Errorf("could not stop attempt %s: %w", v.leg.UID(), a.err)
-	}
-	return nil
+}
+
+// stoppedContext returns a context already canceled with errStopped.
+func stoppedContext() context.Context {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errStopped)
+	return ctx
 }
 
 func (v *Position) closeProduct() {

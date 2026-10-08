@@ -43,6 +43,8 @@ type fakeBroker struct {
 	fillOnCancel decimal.Decimal
 	// failPlaceAfter places the order but returns an error, like a timeout.
 	failPlaceAfter bool
+	// failPlace fails every placement before the order reaches the broker.
+	failPlace error
 	// rejectAll rejects every order as soon as it is placed.
 	rejectAll bool
 	// sendOnPlace sends an update for every order as it is placed.
@@ -51,6 +53,16 @@ type fakeBroker struct {
 	getSkew time.Duration
 	// getErr makes Get fail.
 	getErr error
+	// placeHook, if set, runs as each placement starts, before the order is
+	// at the broker; a test can block in it. Set it before Run.
+	placeHook func()
+	// lookupErr makes GetOptionsOrderByClientID fail.
+	lookupErr error
+	// unlisted hides orders from lookups by client ID, like a broker slow
+	// to list an order it accepted.
+	unlisted bool
+	// nlookups counts GetOptionsOrderByClientID calls.
+	nlookups int
 
 	updates *topic.Topic[exchange.OrderUpdate]
 }
@@ -79,9 +91,15 @@ func (f *fakeBroker) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], e
 }
 
 func (f *fakeBroker) LimitSellToOpen(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
+	if f.placeHook != nil {
+		f.placeHook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.failPlace != nil {
+		return nil, f.failPlace
+	}
 	for _, o := range f.orders {
 		if !o.Done {
 			f.t.Errorf("two live orders: %s is live while placing another", o.ServerOrderID)
@@ -174,6 +192,13 @@ func (f *fakeBroker) GetOptionsOrderByClientID(ctx context.Context, clientID uui
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.nlookups++
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
+	if f.unlisted {
+		return nil, os.ErrNotExist
+	}
 	for _, o := range f.orders {
 		if o.ClientUUID == clientID {
 			dup := o.SimpleOrder
@@ -210,6 +235,12 @@ func (f *fakeBroker) numOrders() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.orders)
+}
+
+func (f *fakeBroker) lookups() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nlookups
 }
 
 func (f *fakeBroker) numLive() int {
@@ -404,7 +435,9 @@ func TestSaveLoad(t *testing.T) {
 	db := newTestDB(t)
 
 	v := newTestLimiter(t, "pos/leg-000001", "2", "0.75")
-	v.idgen.NextID()
+	missing := v.idgen.NextID()
+	since := time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)
+	v.absent[missing] = &absence{since: since}
 	o, err := exchange.NewSimpleOrder("order-0", v.idgen.NextID(), "SELL")
 	if err != nil {
 		t.Fatal(err)
@@ -434,6 +467,9 @@ func TestSaveLoad(t *testing.T) {
 	}
 	if got := w.orders["order-0"]; got == nil || got.DoneReason != "EXECUTED" || got.ClientUUID != o.ClientUUID {
 		t.Errorf("loaded order: %+v", got)
+	}
+	if a := w.absent[missing]; a == nil || !a.since.Equal(since) || a.settled || len(w.absent) != 1 || w.lookupOffset != 0 {
+		t.Errorf("loaded lookups: offset %d absent %v", w.lookupOffset, w.absent)
 	}
 }
 
@@ -601,6 +637,39 @@ func TestRunCancelGivesUp(t *testing.T) {
 	cancel()
 	if err := waitErr(t, errCh); err == nil || errors.Is(err, context.Canceled) {
 		t.Fatalf("Run: got %v, want an error confirming the cancel", err)
+	}
+}
+
+func TestRunStopDuringFailedPlacementIsNotClean(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.failPlaceAfter = true
+	v := newTestLimiter(t, "u1", "1", "0.50")
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	placing := make(chan struct{})
+	f.placeHook = func() {
+		close(placing)
+		<-ctx.Done()
+	}
+	errCh := runAsync(ctx, v, f, db)
+	select {
+	case <-placing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not place an order")
+	}
+
+	// The owner stops Run while the placement is in flight; the broker then
+	// accepts the order but the call fails. The order is live and not in the
+	// list, so Run must not report a clean stop.
+	cause := errors.New("stopped by the owner")
+	cancel(cause)
+	if err := waitErr(t, errCh); err == nil || errors.Is(err, cause) {
+		t.Fatalf("Run: got %v, want an error other than the stop cause", err)
+	}
+	if f.numLive() != 1 {
+		t.Fatalf("broker live orders: got %d, want 1", f.numLive())
 	}
 }
 
@@ -809,6 +878,162 @@ func TestRunCanceledBeforeStartCancelsRecoveredOrder(t *testing.T) {
 	}
 	if _, ok := w.orders["order-0"]; !ok {
 		t.Error("order placed before the crash was not adopted")
+	}
+}
+
+func TestRecoverStopsLookingUpSettledIDs(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.failPlace = errors.New("insufficient buying power")
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	now := time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	v.now = clock
+
+	// start runs v once; every placement fails before reaching the broker.
+	start := func() (lookups int, err error) {
+		t.Helper()
+		before := f.lookups()
+		err = waitErr(t, runAsync(context.Background(), v, f, db))
+		if err == nil {
+			t.Fatal("Run: want an error")
+		}
+		return f.lookups() - before, err
+	}
+	if n, _ := start(); n != 0 || v.idgen.Offset() != 1 {
+		t.Fatalf("first start: %d lookups, offset %d", n, v.idgen.Offset())
+	}
+	// Within absentSettle the failed ID is looked up again, and nothing new
+	// is placed while it is missing.
+	for i := 0; i < 2; i++ {
+		if n, err := start(); n != 1 || !errors.Is(err, ErrUnconfirmed) || v.idgen.Offset() != 1 {
+			t.Fatalf("start %d within absentSettle: %d lookups, offset %d, err %v", i, n, v.idgen.Offset(), err)
+		}
+	}
+	// A lookup absentSettle later settles it, and the next placement fails
+	// in turn.
+	now = now.Add(absentSettle)
+	if n, err := start(); n != 1 || errors.Is(err, ErrUnconfirmed) || v.idgen.Offset() != 2 {
+		t.Fatalf("start after absentSettle: %d lookups, offset %d, err %v", n, v.idgen.Offset(), err)
+	}
+	// A restart looks up only the new ID: the settled one is behind the
+	// saved lookup offset.
+	v = loadLimiter(t, db, "u1")
+	v.now = clock
+	if n, err := start(); n != 1 || !errors.Is(err, ErrUnconfirmed) || v.lookupOffset != 1 {
+		t.Fatalf("start after a restart: %d lookups, lookup offset %d, err %v", n, v.lookupOffset, err)
+	}
+	if f.numOrders() != 0 {
+		t.Errorf("broker orders %d", f.numOrders())
+	}
+}
+
+func TestStopIsUnconfirmedUntilFailedPlacementSettles(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.failPlace = errors.New("timeout")
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	now := time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)
+	v.now = func() time.Time { return now }
+
+	if err := waitErr(t, runAsync(context.Background(), v, f, db)); err == nil {
+		t.Fatal("Run: want placement error")
+	}
+	f.mu.Lock()
+	f.failPlace = nil
+	f.mu.Unlock()
+
+	// The broker doesn't list the failed placement, but it may yet: a
+	// stopped Run can't call that clean, even after a restart.
+	cause := errors.New("stopped by the owner")
+	stopped := func(v *OptLimiter) error {
+		t.Helper()
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(cause)
+		return waitErr(t, runAsync(ctx, v, f, db))
+	}
+	if err := stopped(v); !errors.Is(err, ErrUnconfirmed) {
+		t.Fatalf("stop within absentSettle: got %v, want ErrUnconfirmed", err)
+	}
+	w := loadLimiter(t, db, "u1")
+	w.now = v.now
+	now = now.Add(absentSettle / 2)
+	if err := stopped(w); !errors.Is(err, ErrUnconfirmed) {
+		t.Fatalf("stop after a restart within absentSettle: got %v, want ErrUnconfirmed", err)
+	}
+	now = now.Add(absentSettle / 2)
+	if err := stopped(w); !errors.Is(err, cause) {
+		t.Fatalf("stop after absentSettle: got %v, want the stop cause", err)
+	}
+	if f.numOrders() != 0 {
+		t.Errorf("broker orders %d", f.numOrders())
+	}
+}
+
+// TestRunWaitsForUnlistedOrder: a placement times out after the broker
+// accepted the order, and the broker is slow to list it. A new Run must
+// not place a second order while the first may be live.
+func TestRunWaitsForUnlistedOrder(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.failPlaceAfter = true
+	f.unlisted = true
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	now := time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)
+	v.now = func() time.Time { return now }
+
+	if err := waitErr(t, runAsync(context.Background(), v, f, db)); err == nil {
+		t.Fatal("Run: want placement error")
+	}
+	f.mu.Lock()
+	f.failPlaceAfter = false
+	f.mu.Unlock()
+
+	if err := waitErr(t, runAsync(context.Background(), v, f, db)); !errors.Is(err, ErrUnconfirmed) {
+		t.Fatalf("Run with the order unlisted: got %v, want ErrUnconfirmed", err)
+	}
+	if f.numOrders() != 1 || f.numLive() != 1 {
+		t.Fatalf("broker orders %d live %d, want the one unlisted order", f.numOrders(), f.numLive())
+	}
+
+	// Once listed, the order is adopted and managed like any other.
+	f.mu.Lock()
+	f.unlisted = false
+	f.fillAtOrBelow = d("2")
+	f.mu.Unlock()
+	if err := waitErr(t, runAsync(context.Background(), v, f, db)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := v.orders["order-0"]; !ok || !v.IsDone() || f.numLive() != 0 {
+		t.Errorf("after listing: adopted %v done %v live %d", ok, v.IsDone(), f.numLive())
+	}
+}
+
+func TestRunCancelsKnownOrderWhenLookupFails(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	v := newTestLimiter(t, "u1", "1", "0.50")
+
+	// A live order in the record, then an ID whose placement was never
+	// saved, which recovery must look up.
+	clientID := v.idgen.NextID()
+	order, err := f.LimitSellToOpen(context.Background(), clientID, d("1"), d("1.20"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sorder, err := exchange.NewSimpleOrder(order.ServerID(), clientID, "SELL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.orders[sorder.ServerOrderID] = sorder
+	v.idgen.NextID()
+	f.lookupErr = errors.New("broker is down")
+
+	if err := waitErr(t, runAsync(context.Background(), v, f, db)); err == nil {
+		t.Fatal("Run: want the lookup error")
+	}
+	if f.numLive() != 0 || len(v.liveOrders()) != 0 {
+		t.Errorf("live orders after a failed lookup: broker %d optlimiter %d", f.numLive(), len(v.liveOrders()))
 	}
 }
 

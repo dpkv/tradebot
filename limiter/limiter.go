@@ -288,6 +288,17 @@ func (v *Limiter) PendingValue() decimal.Decimal {
 	return v.PendingSize().Mul(v.point.Price)
 }
 
+// HasLiveOrders reports whether any order the limiter knows of isn't done:
+// one the exchange may still fill.
+func (v *Limiter) HasLiveOrders() bool {
+	for _, order := range v.dupOrderMap() {
+		if !order.Done {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *Limiter) compactOrderMap() {
 	v.orderMap.Range(func(id string, order *exchange.SimpleOrder) bool {
 		if order.Done && order.FilledSize.IsZero() {
@@ -297,14 +308,21 @@ func (v *Limiter) compactOrderMap() {
 	})
 }
 
+// updateOrderMap applies the update to a copy of the known order and stores
+// the copy. Orders in the map are never changed in place, so readers in
+// other goroutines (FilledSize, GetSummary, Save) only ever see whole
+// orders.
 func (v *Limiter) updateOrderMap(update exchange.OrderUpdate) (*exchange.SimpleOrder, error) {
-	if current, ok := v.orderMap.Load(update.ServerID()); ok {
-		if _, err := current.AddUpdate(update); err != nil {
-			return nil, err
-		}
-		return current, nil
+	current, ok := v.orderMap.Load(update.ServerID())
+	if !ok {
+		return nil, os.ErrNotExist
 	}
-	return nil, os.ErrNotExist
+	order := *current
+	if _, err := order.AddUpdate(update); err != nil {
+		return nil, err
+	}
+	v.orderMap.Store(update.ServerID(), &order)
+	return &order, nil
 }
 
 func (v *Limiter) Save(ctx context.Context, rw kv.ReadWriter) error {

@@ -49,6 +49,14 @@ type fakeExchange struct {
 	fillAtOrBelow decimal.Decimal
 	// failPlaceAfter places the order but returns an error, like a timeout.
 	failPlaceAfter bool
+	// beforePlace, if set, runs as each placement starts, before the order
+	// is at the broker; a test can block in it.
+	beforePlace func()
+	// nsubscribe counts order update subscriptions: one per leg run.
+	nsubscribe int
+	// unlisted hides orders from lookups by client ID, like a broker slow
+	// to list an order it accepted.
+	unlisted bool
 
 	now func() time.Time // create time of new orders
 }
@@ -143,6 +151,9 @@ func (f *fakeExchange) GetOptionsSettlement(ctx context.Context, contractID stri
 func (f *fakeExchange) GetOptionsOrderByClientID(ctx context.Context, clientID uuid.UUID) (exchange.OrderDetail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.unlisted {
+		return nil, os.ErrNotExist
+	}
 	for _, p := range f.products {
 		for _, o := range p.orders {
 			if o.ClientUUID == clientID {
@@ -159,11 +170,20 @@ func (p *fakeProduct) ExchangeName() string { return "fake" }
 func (p *fakeProduct) Close() error         { return nil }
 
 func (p *fakeProduct) GetOrderUpdates() (*topic.Receiver[exchange.OrderUpdate], error) {
+	p.ex.mu.Lock()
+	p.ex.nsubscribe++
+	p.ex.mu.Unlock()
 	return topic.Subscribe(p.updates, 0, false)
 }
 
 func (p *fakeProduct) LimitSellToOpen(ctx context.Context, clientID uuid.UUID, numContracts, limitPrice decimal.Decimal) (exchange.Order, error) {
 	f := p.ex
+	f.mu.Lock()
+	hook := f.beforePlace
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -274,6 +294,12 @@ func (f *fakeExchange) settle(contractID string, s *exchange.OptionsSettlement) 
 	f.settlements[contractID] = s
 }
 
+func (f *fakeExchange) subscriptions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nsubscribe
+}
+
 func (f *fakeExchange) settlementCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -366,6 +392,14 @@ func (e *testEnv) hooks(v *Position) {
 	if v.leg != nil {
 		v.leg.SetSession(alwaysOpen)
 	}
+	// Cleanups run last in, first out, so this stops the attempt before the
+	// test's database closes under it.
+	e.t.Cleanup(func() {
+		if a := v.active; a != nil {
+			a.cancel(errStopped)
+			<-a.done
+		}
+	})
 }
 
 // newPosition creates a position and saves its empty record, as the greeler
@@ -404,6 +438,16 @@ func (e *testEnv) loadLeg(uid string) *optlimiter.OptLimiter {
 	return v
 }
 
+// waitAttempt waits until the attempt returns, and so has saved its leg.
+func waitAttempt(t *testing.T, a *attempt) {
+	t.Helper()
+	select {
+	case <-a.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the attempt to return")
+	}
+}
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -430,7 +474,8 @@ func (e *testEnv) openResting(fctx context.Context, uid string) *Position {
 	return v
 }
 
-// openFilled opens a position whose first order fills.
+// openFilled opens a position whose first order fills, and waits until the
+// attempt has saved the fill and returned.
 func (e *testEnv) openFilled(fctx context.Context, uid string, c *Constraint) *Position {
 	e.t.Helper()
 	e.ex.fillAtOrBelow = d("10")
@@ -438,7 +483,10 @@ func (e *testEnv) openFilled(fctx context.Context, uid string, c *Constraint) *P
 	if err := v.Open(context.Background(), fctx, c); err != nil {
 		e.t.Fatal(err)
 	}
-	waitFor(e.t, "fill", func() bool { return v.leg.IsDone() })
+	waitAttempt(e.t, v.active)
+	if !v.leg.IsDone() {
+		e.t.Fatalf("attempt returned unfilled: %v", v.active.err)
+	}
 	return v
 }
 
@@ -617,6 +665,52 @@ func TestCheckReselectsAtNewSession(t *testing.T) {
 	}
 }
 
+func TestReselectChecksExclusionAfterStopping(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v := e.openResting(fctx, "p1")
+
+	// A sibling takes putB while the old order's cancel is confirmed: the
+	// check during selection passes, any later one fails.
+	calls := 0
+	c := putConstraint()
+	c.Exclude = func(id string) bool {
+		if id != putB {
+			return false
+		}
+		calls++
+		return calls > 1
+	}
+	e.sel.set(putB)
+	e.clock.Set(e.clock.Now().Add(24 * time.Hour))
+	if err := v.Check(context.Background(), fctx, c); err == nil {
+		t.Fatal("Check: want an error for a contract taken while stopping")
+	}
+	if n, live := e.ex.counts(putB); n != 0 || live != 0 || len(v.legIDs) != 1 || v.active != nil {
+		t.Fatalf("after a taken re-selection: putB orders %d live %d legs %v active %v", n, live, v.legIDs, v.active != nil)
+	}
+
+	// Within retryDelay the next Check neither selects again nor restarts
+	// the stopped attempt.
+	if err := v.Check(context.Background(), fctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || v.active != nil {
+		t.Fatalf("Check within retryDelay: exclude calls %d active %v", calls, v.active != nil)
+	}
+
+	// After it, Check selects again and keeps the current contract.
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := v.Check(context.Background(), fctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(v.legIDs) != 1 || v.active == nil {
+		t.Errorf("next Check: exclude calls %d legs %v active %v", calls, v.legIDs, v.active != nil)
+	}
+}
+
 func TestReselectKeepsAttemptThatFills(t *testing.T) {
 	e := newTestEnv(t)
 	fctx, cancel := context.WithCancel(context.Background())
@@ -675,11 +769,15 @@ func TestAbandonFilled(t *testing.T) {
 func TestResumeReattaches(t *testing.T) {
 	e := newTestEnv(t)
 
-	// The first run stops with its order canceled, as on shutdown.
+	// The first run stops with its order canceled, as on shutdown. Its
+	// attempt must return, and so finish saving, before the leg runs again.
 	fctx1, cancel1 := context.WithCancel(context.Background())
-	e.openResting(fctx1, "p1")
+	first := e.openResting(fctx1, "p1")
 	cancel1()
-	waitFor(t, "shutdown", func() bool { _, live := e.ex.counts(putA); return live == 0 })
+	waitAttempt(t, first.active)
+	if _, live := e.ex.counts(putA); live != 0 {
+		t.Fatalf("live orders after shutdown: %d", live)
+	}
 
 	fctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -722,14 +820,7 @@ func TestAbandonAfterCrashCancelsRecoveredOrder(t *testing.T) {
 	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "attempt to fail", func() bool {
-		select {
-		case <-v.active.done:
-			return true
-		default:
-			return false
-		}
-	})
+	waitAttempt(t, v.active)
 	e.ex.mu.Lock()
 	e.ex.failPlaceAfter = false
 	e.ex.mu.Unlock()
@@ -784,14 +875,7 @@ func TestCheckWaitsAfterFailedAttempt(t *testing.T) {
 	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "attempt to fail", func() bool {
-		select {
-		case <-v.active.done:
-			return true
-		default:
-			return false
-		}
-	})
+	waitAttempt(t, v.active)
 	e.ex.mu.Lock()
 	e.ex.failPlaceAfter = false
 	e.ex.mu.Unlock()
@@ -830,6 +914,261 @@ func TestStopCancelsAttemptAndCheckRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "second order", func() bool { n, live := e.ex.counts(putA); return n == 2 && live == 1 })
+}
+
+func TestStopCancelsOrderOfFailedAttempt(t *testing.T) {
+	for _, reaped := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reaped=%v", reaped), func(t *testing.T) {
+			e := newTestEnv(t)
+			fctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// The broker accepts the order but the call fails, so the attempt
+			// returns with its order live and not in its record.
+			e.ex.failPlaceAfter = true
+			v := e.newPosition("p1")
+			if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+				t.Fatal(err)
+			}
+			waitAttempt(t, v.active)
+			if _, live := e.ex.counts(putA); live != 1 {
+				t.Fatalf("live orders: %d", live)
+			}
+			if reaped {
+				// Check reaps the failed attempt and waits out the retry delay,
+				// so no attempt is in flight when the greeler stops.
+				if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+					t.Fatal(err)
+				}
+				if v.active != nil {
+					t.Fatal("failed attempt restarted before the retry delay")
+				}
+			}
+			if err := v.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if n, live := e.ex.counts(putA); n != 1 || live != 0 || v.active != nil {
+				t.Errorf("after Stop: orders %d live %d active %v", n, live, v.active != nil)
+			}
+		})
+	}
+}
+
+func TestStopAfterCleanStopStartsNothing(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v := e.openResting(fctx, "p1")
+	if err := v.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The stop confirmed the leg's orders done, so a second Stop has nothing
+	// to recover.
+	runs := e.ex.subscriptions()
+	if err := v.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v.active != nil || e.ex.subscriptions() != runs {
+		t.Errorf("second Stop ran the leg again: active %v runs %d", v.active != nil, e.ex.subscriptions()-runs)
+	}
+}
+
+func TestAbandonDuringFailedPlacement(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The placement blocks until released; then the broker accepts the order
+	// but the call fails.
+	placing, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock() // so a failure below can't leave the attempt blocked
+	e.ex.failPlaceAfter = true
+	e.ex.beforePlace = func() {
+		close(placing)
+		<-release
+	}
+	v := e.newPosition("p1")
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-placing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the placement")
+	}
+
+	// Abandon stops the attempt while its placement is in flight.
+	a := v.active
+	var err error
+	abandoned := make(chan struct{})
+	go func() {
+		defer close(abandoned)
+		err = v.Abandon(context.Background())
+	}()
+	defer func() {
+		// Abandon must return before the cleanups touch the position.
+		unblock()
+		<-abandoned
+	}()
+	select {
+	case <-a.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Abandon to stop the attempt")
+	}
+	unblock()
+	select {
+	case <-abandoned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Abandon")
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 0 {
+		t.Errorf("orders %d live %d after Abandon", n, live)
+	}
+	if v.Outcome() != "unfilled" {
+		t.Errorf("outcome %q", v.Outcome())
+	}
+}
+
+// TestAbandonWaitsForUnlistedOrder: a placement fails after the broker
+// accepted it, and the broker doesn't list the order yet. Abandon can't
+// confirm it is gone, so it fails, waits retryDelay before trying again,
+// and cancels the order once the broker lists it.
+func TestAbandonWaitsForUnlistedOrder(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e.ex.failPlaceAfter = true
+	e.ex.unlisted = true
+	v := e.newPosition("p1")
+	v.legHook = func(leg *optlimiter.OptLimiter) {
+		leg.SetSession(alwaysOpen)
+		leg.SetClock(e.clock.Now)
+	}
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, v.active)
+	e.ex.mu.Lock()
+	e.ex.failPlaceAfter = false
+	e.ex.mu.Unlock()
+
+	if err := v.Abandon(context.Background()); !errors.Is(err, optlimiter.ErrUnconfirmed) {
+		t.Fatalf("Abandon with the order unlisted: got %v, want ErrUnconfirmed", err)
+	}
+	e.ex.mu.Lock()
+	runs := e.ex.nsubscribe
+	e.ex.mu.Unlock()
+	if err := v.Abandon(context.Background()); err == nil {
+		t.Fatal("Abandon within retryDelay: want an error")
+	}
+	e.ex.mu.Lock()
+	again := e.ex.nsubscribe - runs
+	e.ex.unlisted = false
+	e.ex.mu.Unlock()
+	if again != 0 || v.Outcome() != "" {
+		t.Fatalf("Abandon within retryDelay ran the leg %d times, outcome %q", again, v.Outcome())
+	}
+
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := v.Abandon(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 0 || v.Outcome() != "unfilled" {
+		t.Errorf("after Abandon: orders %d live %d outcome %q", n, live, v.Outcome())
+	}
+}
+
+// TestAbandonAfterRestartWaitsForUnlistedOrder: as above, but the greeler
+// is paused and resumed in between, so a freshly loaded position abandons.
+// The leg's record still marks the order unconfirmed.
+func TestAbandonAfterRestartWaitsForUnlistedOrder(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+
+	e.ex.failPlaceAfter = true
+	e.ex.unlisted = true
+	v := e.newPosition("p1")
+	v.legHook = func(leg *optlimiter.OptLimiter) {
+		leg.SetSession(alwaysOpen)
+		leg.SetClock(e.clock.Now)
+	}
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, v.active)
+	e.ex.mu.Lock()
+	e.ex.failPlaceAfter = false
+	e.ex.mu.Unlock()
+	cancel()
+	if err := v.Stop(context.Background()); !errors.Is(err, optlimiter.ErrUnconfirmed) {
+		t.Fatalf("Stop with the order unlisted: got %v, want ErrUnconfirmed", err)
+	}
+
+	w := e.load("p1")
+	w.leg.SetClock(e.clock.Now)
+	if err := w.Abandon(context.Background()); !errors.Is(err, optlimiter.ErrUnconfirmed) || w.Outcome() != "" {
+		t.Fatalf("Abandon after a restart with the order unlisted: got %v, outcome %q; want ErrUnconfirmed", err, w.Outcome())
+	}
+
+	e.ex.mu.Lock()
+	e.ex.unlisted = false
+	e.ex.mu.Unlock()
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := w.Abandon(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 0 || w.Outcome() != "unfilled" {
+		t.Errorf("after Abandon: orders %d live %d outcome %q", n, live, w.Outcome())
+	}
+}
+
+// TestRestartWaitsForUnlistedOrder: a placement fails after the broker
+// accepted it, and the broker doesn't list the order yet. Restarting the
+// attempt must not place a second order while the first may be live.
+func TestRestartWaitsForUnlistedOrder(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e.ex.failPlaceAfter = true
+	e.ex.unlisted = true
+	v := e.newPosition("p1")
+	v.legHook = func(leg *optlimiter.OptLimiter) {
+		leg.SetSession(alwaysOpen)
+		leg.SetClock(e.clock.Now)
+	}
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, v.active)
+	e.ex.mu.Lock()
+	e.ex.failPlaceAfter = false
+	e.ex.mu.Unlock()
+
+	for i := 0; i < 2; i++ {
+		if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.Set(e.clock.Now().Add(retryDelay))
+	}
+	a := v.active
+	if a == nil {
+		t.Fatal("Check did not restart the attempt")
+	}
+	waitAttempt(t, a)
+	if !errors.Is(a.err, optlimiter.ErrUnconfirmed) {
+		t.Errorf("restarted attempt: got %v, want ErrUnconfirmed", a.err)
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 1 {
+		t.Errorf("orders %d live %d, want only the unlisted one", n, live)
+	}
 }
 
 func TestHeldContractID(t *testing.T) {

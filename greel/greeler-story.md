@@ -49,9 +49,18 @@ fired:
 1. Check qualification from scenario 1's fold: all-cash (CSP) or
    all-shares (CC) — the all-or-nothing rule. If it doesn't hold, don't
    start the flip.
-2. Cancel all levels' live limiters (each `limiter.Limiter`'s own
-   idempotent cancel) and wait for confirmations — an ordinary
-   iteration-to-iteration wait, not a blocking call.
+2. Stop all levels' limiters (each `limiter.Limiter` cancels its own
+   order as it stops) and wait for confirmations. A limiter confirms by
+   returning cleanly (nil or the stop cause) with every order it knows of
+   done; the error alone isn't enough, since a broker call cut short by
+   the stop returns the stop cause before anything was canceled. One that
+   hasn't confirmed — its cancel failed, it was stopped mid-recovery, it is
+   waiting out a retry after an error, or it hasn't run since a restart —
+   may still have a live order, so it is saved with that order and started
+   again: it recovers its order and cancels it when the next iteration's
+   flip attempt stops it. Until every unfinished limiter has
+   confirmed, the flip waits — an ordinary iteration-to-iteration wait,
+   not a blocking call — and the dwell clock keeps running.
 3. Re-check qualification. A fill can race the cancel and leave a level
    mixed; then **the flip is blocked**: the greeler stays in grid mode,
    its levels re-arm through ordinary grid derivation, and the dwell clock
@@ -153,6 +162,10 @@ options.go`):
   today.
 - retire: like `Looper`'s `retireOpt` — no new grid cycles start and no
   new wheel entries open, but existing limiters/positions finish naturally.
+  A buy that hasn't filled isn't resumed. If its order may still be live
+  (its cancel failed at the last stop), its limiter runs only to cancel
+  that order, never to place one; the greeler doesn't end while any
+  limiter knows of a live order.
 
 None of this needs new persisted fields — `Options map[string]string` on
 `GreelerStateV1` already carries it (gobs-story.md), read the same way
@@ -168,12 +181,16 @@ r)` must rebuild everything from `GreelerStateV1.Config`: `GridLevels`, zone
 parameters, and the `ContractSelector` looked up by its persisted name and
 built from the persisted `WheelKnobs` (gobs-story.md decision #11). The one runtime dependency the record can't hold, the
 options exchange, comes from `rt.Exchange.(exchange.OptionsExchange)` in
-`Run`; positions load lazily there (decision #1). `server.Load` gains
+`Run`, so every wheel epoch's position loads there, once; `Load` itself
+loads every grid epoch's limiters (decision #1). `server.Load` gains
 `greeler`/`greelladder` cases.
 
 `trader.Trader` also requires `Actions`, `BudgetAt`, and `GetSummary`. The
 accounting model is deferred (project.md open item 2), so these get
 minimal implementations — stock-side limiter fills only — until it lands.
+`Status` (`trader.Statuser`) reports the same summary, premium included
+(accounting-story.md scenario 8), so the status and profit reports, which
+skip jobs without it, include greelers.
 
 ---
 
@@ -235,10 +252,10 @@ type Epoch struct {
     PendingFlipAt time.Time
 
     PositionID string
-    Position   *optpos.Position // loaded lazily, nil until needed
+    Position   *optpos.Position // every wheel epoch's, loaded when Run starts
 
     LevelLimiterIDs [][]string
-    LevelLimiters   [][]*limiter.Limiter // loaded lazily per level
+    LevelLimiters   [][]*limiter.Limiter // every grid epoch's, loaded by Load
 }
 
 func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) error {
@@ -295,13 +312,17 @@ var _ trader.Trader = (*Greeler)(nil)
 
 ## Decisions made at this checkpoint
 
-1. **`Epoch.Position`/`LevelLimiters` load lazily, on demand — decided.**
-   Not eagerly on `Load`: a greeler can accumulate many historical epochs
-   over its life, and eagerly loading every past position and every past
-   limiter on every restart would scale with that whole history just to
-   start running. Matches the "fold when needed, not eagerly" spirit
-   already established elsewhere (e.g. gobs-story.md never materializes a
-   level's full lifetime history unless something actually asks for it).
+1. **Every epoch's limiters and positions load up front — revised after
+   code review.** The first draft had them load lazily, on demand, so a
+   restart wouldn't scale with a long history. The code has always loaded
+   them up front, and lazy loading was dropped because the fold needs the
+   whole history: scenario 1 replays every epoch, every grid epoch's
+   limiter fills and every assigned wheel epoch's position, on every
+   iteration, and `GetSummary` reads every limiter, also while the
+   greeler isn't running. So `Load` loads every
+   grid epoch's limiters, and `Run` loads every wheel epoch's position
+   once when it starts (positions need the options exchange, scenario 5).
+   The cost is reading every child's record at each restart.
 2. **Qualification check reuses scenario 1's per-level fold directly, no
    separate derivation function — decided.** Confirming all-cash/all-shares
    before opening a position is the same fold scenario 1 already computes
@@ -333,8 +354,8 @@ var _ trader.Trader = (*Greeler)(nil)
 8. **`Load` rebuilds from the record alone — decided after design
    review.** Selector from its persisted name and knobs; options exchange
    from `rt.Exchange` in `Run` (scenario 5).
-9. **Minimal `Actions`/`BudgetAt`/`GetSummary` until the accounting model
-   lands** (scenario 5).
+9. **Minimal `Actions`/`BudgetAt`/`GetSummary`/`Status` until the
+   accounting model lands** (scenario 5).
 10. **An unopened position is abandoned by the normal flip-back rule —
     decided.** `Abandon` ends it `unfilled`; an `unfilled` (or `expired`)
     wheel epoch contributes nothing to the fold (scenario 2). In v1, open

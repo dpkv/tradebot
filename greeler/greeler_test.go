@@ -46,7 +46,9 @@ type fakeStock struct {
 
 	mu           sync.Mutex
 	orders       []*fakeOrder
-	fillOnCancel bool // a fill races the cancel
+	fillOnCancel bool          // a fill races the cancel
+	cancelErrs   int           // cancels left to fail
+	blockGet     chan struct{} // the next Get closes it, then waits for its ctx
 }
 
 type fakeOrder struct {
@@ -127,6 +129,10 @@ func (p *fakeStock) Cancel(ctx context.Context, serverID string) error {
 	if o.Done {
 		return errors.New("order is already done")
 	}
+	if p.cancelErrs > 0 {
+		p.cancelErrs--
+		return errors.New("cancel failed")
+	}
 	if p.fillOnCancel {
 		p.fillLocked(o)
 		return nil
@@ -137,6 +143,15 @@ func (p *fakeStock) Cancel(ctx context.Context, serverID string) error {
 
 func (p *fakeStock) Get(ctx context.Context, serverID string) (exchange.OrderDetail, error) {
 	p.mu.Lock()
+	if inflight := p.blockGet; inflight != nil {
+		// Like an HTTP call interrupted by its context: the error wraps the
+		// context's cause.
+		p.blockGet = nil
+		p.mu.Unlock()
+		close(inflight)
+		<-ctx.Done()
+		return nil, fmt.Errorf("get %s: %w", serverID, context.Cause(ctx))
+	}
 	defer p.mu.Unlock()
 	o := p.find(serverID)
 	if o == nil {
@@ -157,6 +172,34 @@ func (p *fakeStock) live() []fakeOrder {
 		}
 	}
 	return live
+}
+
+// blockNextGet makes the next Get wait until its ctx is done. The returned
+// channel is closed once that Get is in flight.
+func (p *fakeStock) blockNextGet() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.blockGet = make(chan struct{})
+	return p.blockGet
+}
+
+// failCancels makes the next n cancels fail, leaving their orders live.
+func (p *fakeStock) failCancels(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cancelErrs = n
+}
+
+// expireLive ends every live order at the exchange without an update,
+// like a DAY order expiring while nobody watches.
+func (p *fakeStock) expireLive() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, o := range p.orders {
+		if !o.Done {
+			o.Done, o.Status = true, "EXPIRED"
+		}
+	}
 }
 
 // fillLive fills every live order.
@@ -809,6 +852,159 @@ func TestFlipBlockedByRacingFill(t *testing.T) {
 	}
 }
 
+// TestFlipWaitsForFailedCancel: a buy's cancel fails during the flip, so its
+// order is still live. The flip waits until the limiter has run again and
+// canceled it.
+func TestFlipWaitsForFailedCancel(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	e.step(r, "100.5")
+	waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
+	e.step(r, "200")
+	e.clock.Add(time.Hour)
+
+	e.stock.failCancels(1)
+	e.step(r, "200")
+	if v.Mode() != "grid" || len(e.stock.live()) != 1 {
+		t.Fatalf("mode %s with %d live orders after a failed cancel; want grid with the buy live", v.Mode(), len(e.stock.live()))
+	}
+	if p := v.current().PendingFlip; p != "wheel-put" {
+		t.Errorf("pending flip = %q, want the dwell clock kept", p)
+	}
+
+	// The level waits out its retry, then its limiter runs again.
+	e.step(r, "200")
+	if v.Mode() != "grid" || r.running[0] != nil {
+		t.Fatalf("mode %s, level 0 running %v during the retry wait", v.Mode(), r.running[0] != nil)
+	}
+	e.clock.Add(retryDelay)
+	e.step(r, "200")
+	if v.Mode() != "grid" || r.running[0] == nil {
+		t.Fatalf("mode %s, level 0 running %v after the retry wait; want its limiter running", v.Mode(), r.running[0] != nil)
+	}
+
+	// The next attempt stops it, which cancels the buy, and flips.
+	e.step(r, "200")
+	if v.Mode() != "wheel" {
+		t.Fatalf("did not flip once the cancel succeeded")
+	}
+	if live := e.stock.live(); len(live) != 0 {
+		t.Errorf("orders still live after the flip: %+v", live)
+	}
+	if got := fmt.Sprint(holdingsOf(t, v)); got != "[0 0 0 0]" {
+		t.Errorf("holdings = %s", got)
+	}
+}
+
+// crashWithLiveBuy leaves a greeler as a crash would: level 0's buy is live
+// at the exchange and saved, and the put's dwell clock is saved and due. It
+// returns the greeler as loaded on restart.
+func crashWithLiveBuy(t *testing.T, e *testEnv) *Greeler {
+	t.Helper()
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	e.step(r, "100.5")
+	waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
+	e.step(r, "200") // starts and saves the dwell clock
+
+	// The limiters stop without canceling the buy, which stays saved.
+	l := r.running[0].limiter
+	e.stock.failCancels(1)
+	r.stopAll()
+	if err := kv.WithReadWriter(context.Background(), e.db, l.Save); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(e.stock.live()); n != 1 {
+		t.Fatalf("live orders = %d, want the buy", n)
+	}
+	e.clock.Add(time.Hour)
+	return e.reload(v)
+}
+
+// TestFlipAfterRestartWaitsForLimiters: after a restart the dwell clock is
+// already due, but no limiter has run yet to settle its order.
+func TestFlipAfterRestartWaitsForLimiters(t *testing.T) {
+	t.Run("filled while down", func(t *testing.T) {
+		e := newTestEnv(t)
+		v := crashWithLiveBuy(t, e)
+		e.stock.fillLive()
+		r := e.runner(v)
+
+		e.step(r, "200")
+		if v.Mode() != "grid" || r.running[0] == nil {
+			t.Fatalf("mode %s, level 0 running %v on the first step; want grid with the buy recovering", v.Mode(), r.running[0] != nil)
+		}
+		waitFor(t, "level 0 buy to finish", func() bool {
+			select {
+			case <-r.running[0].done:
+				return true
+			default:
+				return false
+			}
+		})
+		e.step(r, "200")
+		if v.Mode() != "grid" {
+			t.Fatalf("flipped with level 0 holding the buy's shares")
+		}
+		if got := fmt.Sprint(holdingsOf(t, v)); got != "[25 0 0 0]" {
+			t.Errorf("holdings = %s", got)
+		}
+	})
+
+	t.Run("still live", func(t *testing.T) {
+		e := newTestEnv(t)
+		v := crashWithLiveBuy(t, e)
+		r := e.runner(v)
+
+		e.step(r, "200")
+		if v.Mode() != "grid" {
+			t.Fatalf("flipped before the buy was canceled")
+		}
+		e.step(r, "200")
+		if v.Mode() != "wheel" {
+			t.Fatalf("did not flip once the buy was canceled")
+		}
+		if live := e.stock.live(); len(live) != 0 {
+			t.Errorf("orders still live after the flip: %+v", live)
+		}
+	})
+
+	// The next flip attempt stops the limiter while it is still fetching its
+	// order: it returns an error wrapping the stop cause without having
+	// canceled anything.
+	t.Run("stopped while recovering", func(t *testing.T) {
+		e := newTestEnv(t)
+		v := crashWithLiveBuy(t, e)
+		r := e.runner(v)
+
+		inflight := e.stock.blockNextGet()
+		e.step(r, "200")
+		select {
+		case <-inflight:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the limiter to fetch its order")
+		}
+		e.step(r, "200")
+		if v.Mode() != "grid" || len(e.stock.live()) != 1 {
+			t.Fatalf("mode %s with %d live orders; want grid with the buy still live", v.Mode(), len(e.stock.live()))
+		}
+
+		// After the retry delay the limiter runs again, and the flip after
+		// that cancels the buy.
+		e.clock.Add(retryDelay)
+		e.step(r, "200")
+		e.step(r, "200")
+		if v.Mode() != "wheel" || len(e.stock.live()) != 0 {
+			t.Fatalf("mode %s with %d live orders; want a put and no orders", v.Mode(), len(e.stock.live()))
+		}
+	})
+}
+
 // TestPutAssignedSellsAtLevels: an assigned put brings 100 shares, lowest
 // level first, and each level then sells what it holds.
 func TestPutAssignedSellsAtLevels(t *testing.T) {
@@ -891,6 +1087,165 @@ func TestCallAssignedEmptiesLevels(t *testing.T) {
 	}
 }
 
+// fillLevel0 steps once, which starts level 0's next limiter, and fills
+// the order it places.
+func fillLevel0(t *testing.T, e *testEnv, r *runner, side string) {
+	t.Helper()
+	e.step(r, "100.5")
+	waitFor(t, "level 0 "+side, func() bool {
+		live := e.stock.live()
+		return len(live) == 1 && live[0].Side == side
+	})
+	e.stock.fillLive()
+	select {
+	case <-r.running[0].done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("level 0 %s did not finish", side)
+	}
+}
+
+// TestStatus: status and profit reports see the greeler's stock fills.
+func TestStatus(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	if s := v.Status(nil); !s.BoughtSize.IsZero() || !s.TimePeriod.IsZero() || !s.Budget.Equal(d("10150")) {
+		t.Errorf("status before trading: bought %s period %+v budget %s", s.BoughtSize, s.TimePeriod, s.Budget)
+	}
+
+	fillLevel0(t, e, r, "BUY")
+	fillLevel0(t, e, r, "SELL")
+	first := v.Actions()[0].Orders[0].CreateTime.Time
+	for _, period := range []*timerange.Range{nil, {}} {
+		s := v.Status(period)
+		if s.UID != v.UID() || s.ProductID != "AAPL" || s.ExchangeName != "fake" {
+			t.Errorf("status names %s %s %s", s.UID, s.ProductID, s.ExchangeName)
+		}
+		if !s.BoughtSize.Equal(d("25")) || !s.SoldSize.Equal(d("25")) || s.NumBuys != 1 || s.NumSells != 1 || !s.UnsoldSize.IsZero() {
+			t.Errorf("status: bought %s sold %s buys %d sells %d unsold %s", s.BoughtSize, s.SoldSize, s.NumBuys, s.NumSells, s.UnsoldSize)
+		}
+		if !s.Profit().Equal(d("25")) {
+			t.Errorf("profit = %s, want 25", s.Profit())
+		}
+		if !s.TimePeriod.Begin.Equal(first) || !s.TimePeriod.End.IsZero() {
+			t.Errorf("period = %+v, want from the first order at %s", s.TimePeriod, first)
+		}
+	}
+
+	// A period that ended before the first order holds nothing.
+	before := &timerange.Range{Begin: first.Add(-time.Hour), End: first.Add(-time.Minute)}
+	if s := v.Status(before); !s.BoughtSize.IsZero() || !s.SoldSize.IsZero() || !s.TimePeriod.Equal(before) {
+		t.Errorf("status before the orders: bought %s sold %s period %+v", s.BoughtSize, s.SoldSize, s.TimePeriod)
+	}
+}
+
+// TestStatusCountsPremium: status carries the option premium, held out of
+// profit until its position settles.
+func TestStatusCountsPremium(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	pos := flipToPut(t, e, v, r)
+
+	filled := time.Now()
+	pos.mu.Lock()
+	pos.premiums = []*optpos.Premium{{At: filled, Value: d("150"), Fee: d("1")}}
+	pos.mu.Unlock()
+	e.step(r, "200")
+	if s := v.Status(nil); !s.PremiumValue.Equal(d("150")) || !s.OpenPremiumValue.Equal(d("150")) || !s.Profit().IsZero() {
+		t.Errorf("open put: premium %s open %s profit %s; want 150 150 0", s.PremiumValue, s.OpenPremiumValue, s.Profit())
+	}
+
+	pos.settle("expired", nil)
+	e.step(r, "200")
+	s := v.Status(nil)
+	if !s.Premium().Equal(d("150")) || !s.Profit().Equal(d("149")) || !s.Fees().Equal(d("1")) {
+		t.Errorf("expired put: premium %s profit %s fees %s; want 150 149 1", s.Premium(), s.Profit(), s.Fees())
+	}
+	if !s.TimePeriod.Begin.Equal(filled) {
+		t.Errorf("period %+v, want from the premium at %s", s.TimePeriod, filled)
+	}
+}
+
+// TestRangedSummarySkipsUnfilledBuy: a flip to a put cancels level 0's buy
+// before it fills. A sell in the range pairs with its own buy, not with the
+// empty one.
+func TestRangedSummarySkipsUnfilledBuy(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	fillLevel0(t, e, r, "BUY")
+	fillLevel0(t, e, r, "SELL")
+	e.step(r, "100.5")
+	waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
+	pos := flipToPut(t, e, v, r)
+	pos.settle("expired", nil)
+	e.step(r, "100.5")
+	if v.Mode() != "grid" {
+		t.Fatalf("mode %s after the put expired", v.Mode())
+	}
+
+	fillLevel0(t, e, r, "BUY")
+	time.Sleep(10 * time.Millisecond)
+	afterBuy := time.Now()
+	fillLevel0(t, e, r, "SELL")
+
+	s := v.GetSummary(&timerange.Range{Begin: afterBuy})
+	if !s.BoughtSize.Equal(d("25")) || !s.SoldSize.Equal(d("25")) || !s.OversoldSize.IsZero() || !s.UnsoldSize.IsZero() {
+		t.Errorf("ranged summary: bought %s sold %s oversold %s unsold %s; want 25 25 0 0", s.BoughtSize, s.SoldSize, s.OversoldSize, s.UnsoldSize)
+	}
+}
+
+// TestRangedSummarySkipsUnfilledSell: a flip to a call cancels every
+// level's sell before it fills. The sells in the range pair with the buys
+// before them, not with the empty sells.
+func TestRangedSummarySkipsUnfilledSell(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	e.stock.setPrice("100.5")
+
+	// Fill every level's buy by walking the ticker up through the levels.
+	e.step(r, "101.5")
+	for _, p := range []string{"100.5", "101.5", "102.5", "103.5"} {
+		e.stock.setPrice(p)
+		waitFor(t, "a buy at "+p, func() bool { return len(e.stock.live()) == 1 })
+		e.stock.fillLive()
+	}
+	waitIdle(t, r)
+
+	// Every level's sell places; the flip to a call cancels them all.
+	e.step(r, "101.5")
+	waitFor(t, "every level's sell", func() bool { return len(e.stock.live()) == 4 })
+	e.step(r, "80")
+	e.clock.Add(time.Hour)
+	e.step(r, "80")
+	if v.Mode() != "wheel" || len(e.stock.live()) != 0 {
+		t.Fatalf("mode %s with %d live orders; want a call and no orders", v.Mode(), len(e.stock.live()))
+	}
+	e.positions[v.current().PositionID].settle("expired", nil)
+	e.step(r, "80")
+	if v.Mode() != "grid" {
+		t.Fatalf("mode %s after the call expired", v.Mode())
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	afterBuys := time.Now()
+	e.step(r, "101.5")
+	waitFor(t, "every level's sell", func() bool { return len(e.stock.live()) == 4 })
+	e.stock.fillLive()
+	waitIdle(t, r)
+
+	s := v.GetSummary(&timerange.Range{Begin: afterBuys})
+	if !s.BoughtSize.Equal(d("100")) || !s.SoldSize.Equal(d("100")) || !s.OversoldSize.IsZero() || !s.UnsoldSize.IsZero() {
+		t.Errorf("ranged summary: bought %s sold %s oversold %s unsold %s; want 100 100 0 0", s.BoughtSize, s.SoldSize, s.OversoldSize, s.UnsoldSize)
+	}
+}
+
 func TestAbandonUnopenedPosition(t *testing.T) {
 	e := newTestEnv(t)
 	v := e.newGreeler(testConfig())
@@ -950,6 +1305,61 @@ func TestRetireEndsWhenFlat(t *testing.T) {
 	}
 	if len(r.running) != 0 {
 		t.Errorf("retired greeler started %d limiters", len(r.running))
+	}
+}
+
+// TestRetireWaitsForLiveBuy: a buy's cancel failed when the greeler last
+// stopped. Retired, it doesn't start new buys, but it doesn't end with
+// that order live either: it runs the buy's limiter only to cancel it,
+// even if the exchange ended the order meanwhile.
+func TestRetireWaitsForLiveBuy(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expired=%v", expired), func(t *testing.T) {
+			e := newTestEnv(t)
+			v := e.newGreeler(testConfig())
+			r := e.runner(v)
+			e.stock.setPrice("100.5")
+			e.step(r, "100.5")
+			waitFor(t, "level 0 buy order", func() bool { return len(e.stock.live()) == 1 })
+			e.stock.failCancels(1)
+			r.stopAll()
+			if n := len(e.stock.live()); n != 1 {
+				t.Fatalf("live orders = %d, want the buy", n)
+			}
+			if expired {
+				e.stock.expireLive()
+			}
+
+			w := e.reload(v)
+			if _, err := w.SetOption("retire", "true"); err != nil {
+				t.Fatal(err)
+			}
+			r = e.runner(w)
+			if done := e.step(r, "100.5"); done {
+				t.Fatal("retired greeler ended before confirming the buy's order")
+			}
+			rl := r.running[0]
+			if len(r.running) != 1 || rl == nil {
+				t.Fatalf("running levels = %v; want level 0's buy", r.running)
+			}
+			select {
+			case <-rl.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for the buy's limiter to cancel its order")
+			}
+			if rl.err != nil {
+				t.Fatalf("buy's limiter: %v", rl.err)
+			}
+			if done := e.step(r, "100.5"); !done {
+				t.Fatal("retired greeler didn't end once the buy's order was done")
+			}
+			e.stock.mu.Lock()
+			n := len(e.stock.orders)
+			e.stock.mu.Unlock()
+			if live := e.stock.live(); len(live) != 0 || n != 1 {
+				t.Errorf("orders %d live %d; want only the first buy, done", n, len(live))
+			}
+		})
 	}
 }
 
