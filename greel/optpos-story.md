@@ -138,6 +138,9 @@ Restart loads `OptPositionState`. If `Outcome` is still empty:
   (optlimiter-story scenario 4). `Contract` is refreshed from that leg,
   since it's only a cache.
 
+Nothing here is new state — the same "re-derive, re-issue idempotent calls,
+converge" pattern the whole design relies on.
+
 Before the greeler's `Run` returns it calls `Stop`, which waits until the
 attempt's live order is cancelled and confirmed. A leg that isn't running —
 not started since a restart, or reaped after it failed — may still have an
@@ -147,9 +150,6 @@ orders done. A run that ends with an error instead of the cancel cause
 (say, a placement that failed after the broker accepted it) is run once
 more for the same reason. `Abandon` and re-selection stop the attempt the
 same way.
-
-Nothing here is new state — the same "re-derive, re-issue idempotent calls,
-converge" pattern the whole design relies on.
 
 ### 6. Settlement check: broker truth about the contract
 
