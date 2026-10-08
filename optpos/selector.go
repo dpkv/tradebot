@@ -128,9 +128,6 @@ func (v *KnobSelector) candidate(now time.Time, contract *gobs.OptionContract, c
 	if c.ContractSize.IsPositive() && !contract.ContractSize.Equal(c.ContractSize) {
 		return nil
 	}
-	if c.Exclude != nil && c.Exclude(contract.ContractID) {
-		return nil
-	}
 
 	dte := int(contract.Expiry.Sub(now).Hours() / 24)
 	if dte < v.knobs.MinDTE || (v.knobs.MaxDTE > 0 && dte > v.knobs.MaxDTE) || !contract.Expiry.After(now) {
@@ -151,6 +148,11 @@ func (v *KnobSelector) candidate(now time.Time, contract *gobs.OptionContract, c
 	}
 	minPremium := decimal.Max(v.knobs.MinPremiumYield.Mul(contract.Strike), minTick)
 	if mid.LessThan(minPremium) {
+		return nil
+	}
+	// Exclude claims every contract it doesn't exclude, so it is asked last,
+	// only about a contract this selector would pick.
+	if c.Exclude != nil && c.Exclude(contract.ContractID) {
 		return nil
 	}
 	return &Selection{Contract: contract, MinPremium: minPremium}

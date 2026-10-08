@@ -63,6 +63,26 @@ func TestKnobSelector(t *testing.T) {
 		t.Errorf("select with C220 excluded = %v, want os.ErrNotExist", err)
 	}
 
+	// Exclude claims every contract it doesn't exclude, so it is only asked
+	// about contracts that pass every knob.
+	var asked []string
+	record := func(id string) bool {
+		asked = append(asked, id)
+		return false
+	}
+	if _, err := sel.Select(ctx, chain, &Constraint{Underlying: "AAPL", OptionType: "PUT", MaxStrike: d("195"), Exclude: record}); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 1 || asked[0] != "P190-near" {
+		t.Errorf("exclude asked about %v, want only P190-near", asked)
+	}
+	// P185-thin meets the constraint but not the open interest knob.
+	asked = nil
+	_, err = sel.Select(ctx, chain, &Constraint{Underlying: "AAPL", OptionType: "PUT", MaxStrike: d("185"), Exclude: record})
+	if !errors.Is(err, os.ErrNotExist) || len(asked) != 0 {
+		t.Errorf("select failing on knobs = %v and asked exclude about %v, want os.ErrNotExist and none", err, asked)
+	}
+
 	// The nearest expiry wins over a better strike further out.
 	unbounded, err := NewSelector("", &gobs.WheelKnobs{MinDTE: 20, MinOpenInterest: d("100"), MaxSpreadPct: d("20"), MinPremiumYield: d("0.004")})
 	if err != nil {
