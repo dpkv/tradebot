@@ -125,6 +125,9 @@ func (v *KnobSelector) candidate(now time.Time, contract *gobs.OptionContract, c
 	if c.MinStrike.IsPositive() && contract.Strike.LessThan(c.MinStrike) {
 		return nil
 	}
+	if c.ContractSize.IsPositive() && !contract.ContractSize.Equal(c.ContractSize) {
+		return nil
+	}
 	if c.Exclude != nil && c.Exclude(contract.ContractID) {
 		return nil
 	}

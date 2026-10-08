@@ -127,8 +127,15 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 			timer.Stop()
 			return v.shutdown(ctx, rs)
 
-		case update := <-updatesCh:
+		case update, ok := <-updatesCh:
 			timer.Stop()
+			if !ok {
+				err := fmt.Errorf("optlimiter %s: order updates have stopped", v.uid)
+				if cerr := v.cancelActive(bg, rs); cerr != nil {
+					return errors.Join(err, cerr)
+				}
+				return err
+			}
 			v.handleUpdate(ctx, rs, update)
 
 		case <-timer.C:
@@ -231,8 +238,14 @@ func (v *OptLimiter) cancelActive(ctx context.Context, rs *runState) error {
 	return nil
 }
 
-// cancel cancels an order and polls until the broker reports it done.
+// cancel cancels an order and polls until the broker reports it done, for
+// at most cancelTimeout. The broker's final detail replaces what the
+// updates recorded, so the fill is right even if an update couldn't be
+// merged.
 func (v *OptLimiter) cancel(ctx context.Context, product exchange.OptionsProduct, id string) error {
+	ctx, stop := context.WithTimeout(ctx, v.cancelTimeout)
+	defer stop()
+
 	cancelErr := product.Cancel(ctx, id)
 	if cancelErr != nil {
 		// The order may have finished already; Get below decides.
@@ -241,8 +254,7 @@ func (v *OptLimiter) cancel(ctx context.Context, product exchange.OptionsProduct
 	for {
 		detail, err := product.Get(ctx, id)
 		if err == nil && detail.IsDone() {
-			v.applyUpdate(detail)
-			return nil
+			return v.setOrder(id, detail)
 		}
 		if errors.Is(err, os.ErrNotExist) {
 			v.markNotFound(id)
@@ -255,7 +267,7 @@ func (v *OptLimiter) cancel(ctx context.Context, product exchange.OptionsProduct
 			slog.Warn("could not fetch canceled option order (will retry)", "optlimiter", v, "order-id", id, "err", err)
 		}
 		if err := sleep(ctx, v.pollInterval); err != nil {
-			return err
+			return fmt.Errorf("could not confirm option order %s is done: %w", id, err)
 		}
 	}
 }
@@ -282,8 +294,13 @@ func (v *OptLimiter) handleUpdate(ctx context.Context, rs *runState, update exch
 	}
 	if order.Done && order.ServerOrderID == rs.active {
 		slog.Info("option order is done", "optlimiter", v, "order-id", rs.active, "status", order.Status, "filled", order.FilledSize)
-		// Place the rest right away if a partial fill ended early.
-		rs.active, rs.activePrice, rs.nextReprice = "", decimal.Zero, time.Time{}
+		rs.active, rs.activePrice = "", decimal.Zero
+		// Place the rest right away if a partial fill ended early. An order
+		// that ended unfilled (rejected, expired) waits for the next re-price,
+		// so repeated rejections can't place a burst of orders.
+		if order.FilledSize.IsPositive() {
+			rs.nextReprice = time.Time{}
+		}
 	}
 	if err := v.save(ctx, rs.db); err != nil {
 		slog.Warn("could not save optlimiter after an order update (will retry)", "optlimiter", v, "err", err)
@@ -304,6 +321,18 @@ func (v *OptLimiter) applyUpdate(update exchange.OrderUpdate) *exchange.SimpleOr
 		slog.Warn("could not apply option order update (ignored)", "optlimiter", v, "order-id", update.ServerID(), "err", err)
 	}
 	return order
+}
+
+// setOrder replaces a known order with the broker's detail of it.
+func (v *OptLimiter) setOrder(id string, detail exchange.OrderDetail) error {
+	order, err := exchange.NewSimpleOrderFromOrderDetail(detail)
+	if err != nil {
+		return err
+	}
+	v.mu.Lock()
+	v.orders[id] = order
+	v.mu.Unlock()
+	return nil
 }
 
 func (v *OptLimiter) markNotFound(id string) {
@@ -377,13 +406,9 @@ func (v *OptLimiter) refresh(ctx context.Context, product exchange.OptionsProduc
 			}
 			return fmt.Errorf("could not fetch option order %s: %w", id, err)
 		}
-		order, err := exchange.NewSimpleOrderFromOrderDetail(detail)
-		if err != nil {
+		if err := v.setOrder(id, detail); err != nil {
 			return err
 		}
-		v.mu.Lock()
-		v.orders[id] = order
-		v.mu.Unlock()
 	}
 	return nil
 }

@@ -4,8 +4,10 @@ package optlimiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path"
 	"sort"
 	"sync"
@@ -35,6 +37,10 @@ var (
 // confirms it is done.
 const pollInterval = time.Second
 
+// cancelTimeout bounds how long a cancel waits for the broker to confirm
+// the order is done, so an outage can't hang Run.
+const cancelTimeout = 2 * time.Minute
+
 // OptLimiter is one sell-to-open order intent: it places a broker order
 // and re-prices it toward the market until filled. Component, not a job —
 // its owner (optpos) runs it.
@@ -59,10 +65,11 @@ type OptLimiter struct {
 	orders map[string]*exchange.SimpleOrder // server order ID -> order
 
 	// Overridable in tests.
-	now          func() time.Time
-	session      func(time.Time) (open bool, next time.Time)
-	tickSize     func(price decimal.Decimal) decimal.Decimal
-	pollInterval time.Duration
+	now           func() time.Time
+	session       func(time.Time) (open bool, next time.Time)
+	tickSize      func(price decimal.Decimal) decimal.Decimal
+	pollInterval  time.Duration
+	cancelTimeout time.Duration
 }
 
 // New creates a sell-to-open order for numContracts of contractID at a
@@ -99,6 +106,7 @@ func (v *OptLimiter) setDefaults() {
 	v.session = RegularSession
 	v.tickSize = tickSize
 	v.pollInterval = pollInterval
+	v.cancelTimeout = cancelTimeout
 }
 
 func (v *OptLimiter) check() error {
@@ -267,7 +275,18 @@ func (v *OptLimiter) Save(ctx context.Context, rw kv.ReadWriter) error {
 	}
 	v.mu.Unlock()
 
+	// Run and the owner may save concurrently, so a snapshot can be older
+	// than what is stored. Reading the record lets the database reject a
+	// conflicting write, and the offset never goes back: recovery looks up
+	// every client ID below it.
 	key := path.Join(DefaultKeyspace, v.uid)
+	old, err := kvutil.Get[gobs.OptLimiterState](ctx, rw, key)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("could not read optlimiter state: %w", err)
+	}
+	if old != nil && old.V1 != nil && old.V1.Progress != nil && old.V1.Progress.ClientIDOffset > gv.V1.Progress.ClientIDOffset {
+		gv.V1.Progress.ClientIDOffset = old.V1.Progress.ClientIDOffset
+	}
 	if err := kvutil.Set(ctx, rw, key, gv); err != nil {
 		return fmt.Errorf("could not save optlimiter state: %w", err)
 	}

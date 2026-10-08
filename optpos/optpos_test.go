@@ -471,6 +471,7 @@ func TestOpenRejectsBadSelection(t *testing.T) {
 		{callA, putConstraint()},
 		{putA, &Constraint{OptionType: "PUT", MaxStrike: d("195")}},
 		{putA, &Constraint{OptionType: "PUT", Exclude: func(id string) bool { return id == putA }}},
+		{putA, &Constraint{OptionType: "PUT", ContractSize: d("150")}},
 		{"missing", putConstraint()},
 	}
 	for i, tc := range tests {
@@ -741,5 +742,109 @@ func TestAbandonAfterCrashCancelsRecoveredOrder(t *testing.T) {
 	}
 	if w.Outcome() != "unfilled" {
 		t.Errorf("outcome %q", w.Outcome())
+	}
+}
+
+func TestCheckWaitsAfterFailedOpen(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v := e.newPosition("p1")
+	e.sel.set("missing")
+	if err := v.Check(context.Background(), fctx, putConstraint()); err == nil {
+		t.Fatal("Check: want a selection error")
+	}
+	// The contract becomes available, but Check waits out the retry delay.
+	e.sel.set(putA)
+	if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.legIDs) != 0 {
+		t.Fatalf("legs before the retry delay: %v", v.legIDs)
+	}
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "first order", func() bool { n, _ := e.ex.counts(putA); return n == 1 })
+}
+
+func TestCheckWaitsAfterFailedAttempt(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e.ex.failPlaceAfter = true
+	v := e.newPosition("p1")
+	if err := v.Open(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "attempt to fail", func() bool {
+		select {
+		case <-v.active.done:
+			return true
+		default:
+			return false
+		}
+	})
+	e.ex.mu.Lock()
+	e.ex.failPlaceAfter = false
+	e.ex.mu.Unlock()
+
+	if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	if v.active != nil {
+		t.Fatal("failed attempt restarted before the retry delay")
+	}
+	e.clock.Set(e.clock.Now().Add(retryDelay))
+	if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	if v.active == nil {
+		t.Fatal("failed attempt not restarted after the retry delay")
+	}
+}
+
+func TestStopCancelsAttemptAndCheckRestarts(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v := e.openResting(fctx, "p1")
+	if err := v.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n, live := e.ex.counts(putA); n != 1 || live != 0 || v.active != nil {
+		t.Fatalf("after Stop: orders %d live %d active %v", n, live, v.active != nil)
+	}
+	if v.Outcome() != "" {
+		t.Errorf("outcome after Stop: %q", v.Outcome())
+	}
+	if err := v.Check(context.Background(), fctx, putConstraint()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "second order", func() bool { n, live := e.ex.counts(putA); return n == 2 && live == 1 })
+}
+
+func TestHeldContractID(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e.openResting(fctx, "p1")
+	e.newPosition("p2")
+	for uid, want := range map[string]string{"p1": putA, "p2": ""} {
+		var got string
+		if err := kv.WithReader(context.Background(), e.db, func(ctx context.Context, r kv.Reader) (err error) {
+			got, err = HeldContractID(ctx, uid, r)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s: held %q, want %q", uid, got, want)
+		}
 	}
 }

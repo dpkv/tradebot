@@ -43,6 +43,14 @@ type fakeBroker struct {
 	fillOnCancel decimal.Decimal
 	// failPlaceAfter places the order but returns an error, like a timeout.
 	failPlaceAfter bool
+	// rejectAll rejects every order as soon as it is placed.
+	rejectAll bool
+	// sendOnPlace sends an update for every order as it is placed.
+	sendOnPlace bool
+	// getSkew shifts the create time Get reports, which updates can't merge.
+	getSkew time.Duration
+	// getErr makes Get fail.
+	getErr error
 
 	updates *topic.Topic[exchange.OrderUpdate]
 }
@@ -89,6 +97,13 @@ func (f *fakeBroker) LimitSellToOpen(ctx context.Context, clientID uuid.UUID, nu
 	o.CreateTime = gobs.RemoteTime{Time: time.Now()}
 	o.Status = "OPEN"
 	f.orders = append(f.orders, o)
+	if f.rejectAll {
+		o.Done, o.Status = true, "REJECTED"
+	}
+	if f.rejectAll || f.sendOnPlace {
+		dup := o.SimpleOrder
+		f.updates.Send(&dup)
+	}
 	if !f.fillAtOrBelow.IsZero() && limitPrice.LessThanOrEqual(f.fillAtOrBelow) {
 		f.fillLocked(o, numContracts)
 	}
@@ -143,11 +158,15 @@ func (f *fakeBroker) Get(ctx context.Context, serverID string) (exchange.OrderDe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	o := f.find(serverID)
 	if o == nil {
 		return nil, os.ErrNotExist
 	}
 	dup := o.SimpleOrder
+	dup.CreateTime.Time = dup.CreateTime.Time.Add(f.getSkew)
 	return &dup, nil
 }
 
@@ -478,6 +497,112 @@ func TestRunPartialFillPlacesRemainder(t *testing.T) {
 	}
 	if !v.FilledSize().Equal(d("2")) {
 		t.Errorf("filled %s, want 2", v.FilledSize())
+	}
+}
+
+func TestRunCancelUsesBrokerDetail(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.sendOnPlace = true
+	f.fillOnCancel = d("1")
+	f.getSkew = time.Hour
+	v := newTestLimiter(t, "u1", "2", "0.50")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := runAsync(ctx, v, f, db)
+	waitFor(t, "second order", func() bool { return f.numOrders() >= 2 })
+
+	// The canceled order's final detail can't be merged as an update, but
+	// its fill still counts: only the remainder is placed.
+	f.mu.Lock()
+	f.fillOnCancel = decimal.Zero
+	size := f.orders[1].size
+	f.mu.Unlock()
+	if !size.Equal(d("1")) {
+		t.Errorf("second order size: got %s, want 1", size)
+	}
+	f.fillLive()
+	if err := waitErr(t, errCh); err != nil {
+		t.Fatal(err)
+	}
+	if !v.FilledSize().Equal(d("2")) {
+		t.Errorf("filled %s, want 2", v.FilledSize())
+	}
+}
+
+func TestRunRejectedOrderWaitsToReprice(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	f.rejectAll = true
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	v.repriceInterval = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := runAsync(ctx, v, f, db)
+	waitFor(t, "first order", func() bool { return f.numOrders() == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if n := f.numOrders(); n != 1 {
+		t.Errorf("orders after a rejection: got %d, want 1", n)
+	}
+	cancel()
+	if err := waitErr(t, errCh); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run: got %v, want context.Canceled", err)
+	}
+}
+
+func TestRunStopsWhenUpdatesStop(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	v.repriceInterval = time.Hour
+
+	errCh := runAsync(context.Background(), v, f, db)
+	waitFor(t, "first order", func() bool { return f.numOrders() == 1 })
+	f.updates.Close()
+	if err := waitErr(t, errCh); err == nil {
+		t.Fatal("Run: want an error once order updates stop")
+	}
+	if f.numLive() != 0 {
+		t.Errorf("live orders after updates stopped: %d", f.numLive())
+	}
+}
+
+func TestRunCancelGivesUp(t *testing.T) {
+	db := newTestDB(t)
+	f := newFakeBroker(t, "1.00", "1.40")
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	v.repriceInterval = time.Hour
+	v.cancelTimeout = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := runAsync(ctx, v, f, db)
+	waitFor(t, "first order", func() bool { return f.numOrders() == 1 })
+	f.mu.Lock()
+	f.getErr = errors.New("broker is down")
+	f.mu.Unlock()
+	cancel()
+	if err := waitErr(t, errCh); err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("Run: got %v, want an error confirming the cancel", err)
+	}
+}
+
+func TestSaveKeepsHigherOffset(t *testing.T) {
+	db := newTestDB(t)
+	v := newTestLimiter(t, "u1", "1", "0.50")
+	v.idgen.NextID()
+	v.idgen.NextID()
+	if err := kv.WithReadWriter(context.Background(), db, v.Save); err != nil {
+		t.Fatal(err)
+	}
+	// An older copy saving later must not move the offset back.
+	stale := newTestLimiter(t, "u1", "1", "0.50")
+	if err := kv.WithReadWriter(context.Background(), db, stale.Save); err != nil {
+		t.Fatal(err)
+	}
+	w := loadLimiter(t, db, "u1")
+	if got := w.idgen.Offset(); got != 2 {
+		t.Errorf("offset after a stale save: got %d, want 2", got)
 	}
 }
 

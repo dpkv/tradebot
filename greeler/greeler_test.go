@@ -184,6 +184,7 @@ type fakePosition struct {
 	opens      []*optpos.Constraint
 	checks     int
 	abandons   int
+	stops      int
 }
 
 func (p *fakePosition) UID() string { return p.uid }
@@ -229,6 +230,13 @@ func (p *fakePosition) Abandon(ctx context.Context) error {
 		return optpos.ErrOpened
 	}
 	p.outcome = "unfilled"
+	return nil
+}
+
+func (p *fakePosition) Stop(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stops++
 	return nil
 }
 
@@ -672,7 +680,7 @@ func TestFlipToWheelPut(t *testing.T) {
 	r := e.runner(v)
 
 	pos := flipToPut(t, e, v, r)
-	if len(pos.opens) != 1 || pos.opens[0].OptionType != "PUT" || !pos.opens[0].MaxStrike.Equal(d("100")) {
+	if len(pos.opens) != 1 || pos.opens[0].OptionType != "PUT" || !pos.opens[0].MaxStrike.Equal(d("100")) || !pos.opens[0].ContractSize.Equal(d("100")) {
 		t.Fatalf("opens = %+v", pos.opens)
 	}
 	if path.Base(pos.uid) != "pos-000001" {
@@ -944,6 +952,42 @@ func TestRun(t *testing.T) {
 	}
 	if live := e.stock.live(); len(live) != 0 {
 		t.Errorf("orders still live after Run returned: %+v", live)
+	}
+}
+
+func TestRunStopsPositionBeforeReturning(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	v.interval = 10 * time.Millisecond
+	pos := flipToPut(t, e, v, e.runner(v))
+	e.stock.setPrice("200")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- v.Run(ctx, e.rt) }()
+	waitFor(t, "position check", func() bool {
+		pos.mu.Lock()
+		defer pos.mu.Unlock()
+		return pos.checks > 0
+	})
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v", err)
+	}
+	pos.mu.Lock()
+	defer pos.mu.Unlock()
+	if pos.stops != 1 {
+		t.Errorf("position stops = %d, want 1", pos.stops)
+	}
+}
+
+func TestLoadKnowsHeldContract(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	flipToPut(t, e, v, e.runner(v))
+	w := e.reload(v)
+	if _, known := w.HeldContract(); !known {
+		t.Error("HeldContract unknown after Load")
 	}
 }
 

@@ -43,6 +43,7 @@ type position interface {
 	Open(ctx, fctx context.Context, c *optpos.Constraint) error
 	Check(ctx, fctx context.Context, c *optpos.Constraint) error
 	Abandon(ctx context.Context) error
+	Stop(ctx context.Context) error
 	Save(ctx context.Context, rw kv.ReadWriter) error
 }
 
@@ -75,8 +76,8 @@ type Greeler struct {
 	holdings []decimal.Decimal
 
 	// held is the contract the current position sells or holds, for the
-	// ladder's sibling exclusion; heldKnown is false until Run has loaded
-	// the position.
+	// ladder's sibling exclusion; heldKnown is set once New or Load has
+	// worked it out.
 	held      string
 	heldKnown bool
 
@@ -231,8 +232,8 @@ func (v *Greeler) SetExclude(exclude func(contractID string) bool) {
 }
 
 // HeldContract is the contract ID the current position is selling or
-// holds, empty when there is none. known is false until Run has loaded the
-// position, so the answer can't be trusted yet.
+// holds, empty when there is none. known is false until New or Load has
+// worked it out, so the answer can't be trusted yet.
 func (v *Greeler) HeldContract() (id string, known bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -417,5 +418,15 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Greeler, error) {
 			return nil, fmt.Errorf("could not set greeler option (%s=%q): %w", opt, val, err)
 		}
 	}
+	// Siblings ask for the held contract before Run has loaded the position
+	// (and even if Run fails first), so read it from the saved records.
+	if last := v.epochs[len(v.epochs)-1]; last.Mode == "wheel" {
+		held, err := optpos.HeldContractID(ctx, last.PositionID, r)
+		if err != nil {
+			return nil, fmt.Errorf("could not read greeler %s position %s: %w", uid, last.PositionID, err)
+		}
+		v.held = held
+	}
+	v.heldKnown = true
 	return v, nil
 }

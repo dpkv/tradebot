@@ -77,7 +77,7 @@ func (v *Greeler) newRunner(fctx context.Context, rt *trader.Runtime, optEx exch
 // Run trades the greel until ctx is canceled. It needs an options exchange
 // in rt.Exchange and the underlying's stock product in rt.Product. It
 // returns nil once a retired greeler has nothing left to do.
-func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) error {
+func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 	v.runtimeLock.Lock()
 	defer v.runtimeLock.Unlock()
 
@@ -101,6 +101,11 @@ func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) error {
 
 	r := v.newRunner(fctx, rt, optEx)
 	defer r.stopAll()
+	defer func() {
+		if err := r.stopPosition(ctx); err != nil {
+			status = errors.Join(status, err)
+		}
+	}()
 
 	prices, err := rt.Product.GetPriceUpdates()
 	if err != nil {
@@ -335,6 +340,8 @@ func (v *Greeler) constraint(optionType string) *optpos.Constraint {
 		Underlying: v.cfg.ProductID,
 		OptionType: optionType,
 		Exclude:    v.exclude,
+
+		ContractSize: contractShares,
 	}
 	if optionType == "PUT" {
 		c.MaxStrike = v.bottom()
@@ -640,6 +647,21 @@ func (r *runner) reap() {
 			r.retryAt[i] = r.v.now().Add(retryDelay)
 		}
 	}
+}
+
+// stopPosition stops the current position's attempt, if any, and waits
+// until its order is canceled and confirmed, so Run never returns with an
+// order working at the broker.
+func (r *runner) stopPosition(ctx context.Context) error {
+	e := r.v.current()
+	if e.Mode != "wheel" || e.position == nil {
+		return nil
+	}
+	if err := e.position.Stop(context.WithoutCancel(ctx)); err != nil {
+		slog.Error("could not stop option position before quitting", "greeler", r.v, "position", e.position.UID(), "err", err)
+		return fmt.Errorf("could not stop greeler %s position %s: %w", r.v.uid, e.position.UID(), err)
+	}
+	return nil
 }
 
 // stopAll stops every limiter and waits until each has canceled its order.

@@ -151,10 +151,10 @@ func TestSaveLoad(t *testing.T) {
 			t.Errorf("greeler %d = %s, want %s", i, g.UID(), v.cfg.GreelerIDs[i])
 		}
 	}
-	// Loaded greelers haven't loaded their positions, so the hooks exclude
-	// everything until they do.
-	if !w.exclude(w.cfg.GreelerIDs[0], "C1") {
-		t.Errorf("a sibling with an unknown position didn't exclude")
+	// Loaded greelers know what they hold from their saved records, before
+	// any Run: here nothing, so a sibling can take any contract.
+	if w.exclude(w.cfg.GreelerIDs[0], "C1") {
+		t.Errorf("a loaded sibling that holds nothing excluded C1")
 	}
 
 	if err := kv.WithReader(ctx, db, func(ctx context.Context, r kv.Reader) error {
