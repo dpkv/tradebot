@@ -330,6 +330,7 @@ func TestNextPrice(t *testing.T) {
 		{"at least one tick below last", "1.00", "1.04", "0.50", 1, "1.02", "1.01"},
 		{"tick rule never below bid", "1.00", "1.04", "0.50", 2, "1.00", "1"},
 		{"market moved above last", "2.00", "2.40", "0.50", 2, "1.20", "2"},
+		{"penny below $3.00", "2.98", "3.02", "0.50", 1, "3.00", "2.99"},
 		{"nickel tick at $3+", "4.00", "4.50", "0.50", 0, "0", "4.25"},
 		{"nickel tick rounds up", "4.00", "4.52", "0.50", 0, "0", "4.3"},
 		{"no bid", "0", "0.20", "0.05", 0, "0", "0.1"},
@@ -350,6 +351,22 @@ func TestNextPrice(t *testing.T) {
 		if _, err := v.nextPrice(quote(q[0], q[1]), 0, decimal.Zero); err == nil {
 			t.Errorf("quote %v: want error", q)
 		}
+	}
+}
+
+func TestOrdersOldestFirst(t *testing.T) {
+	v := newTestLimiter(t, "u1", "2", "0.50")
+	for i, at := range []time.Time{{}, time.Now().Add(-time.Minute)} {
+		o, err := exchange.NewSimpleOrder(fmt.Sprintf("order-%d", i), uuid.New(), "SELL")
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.CreateTime.Time = at
+		v.orders[o.ServerOrderID] = o
+	}
+	// The order without a create time yet is the newest one.
+	if orders := v.Orders(); orders[0].ServerOrderID != "order-1" || orders[1].ServerOrderID != "order-0" {
+		t.Errorf("orders = %s, %s; want order-1, order-0", orders[0].ServerOrderID, orders[1].ServerOrderID)
 	}
 }
 
