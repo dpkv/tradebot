@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -117,7 +118,10 @@ func New(uid string, cfg *gobs.GreelConfig) (*Greeler, error) {
 func newGreeler(uid string, cfg *gobs.GreelConfig) (*Greeler, error) {
 	dup := *cfg
 	dup.GridLevels = nil
-	for _, p := range cfg.GridLevels {
+	for i, p := range cfg.GridLevels {
+		if p == nil {
+			return nil, fmt.Errorf("greeler grid level %d is nil: %w", i, os.ErrInvalid)
+		}
 		pp := *p
 		dup.GridLevels = append(dup.GridLevels, &pp)
 	}
@@ -314,6 +318,11 @@ func (v *Greeler) Actions() []*gobs.Action {
 // those bought (assigned shares) as oversold at its sell price. Option
 // premium and assignment cost are left out until the accounting model
 // lands.
+//
+// Within a time range, each sell that sold is paired with the level's
+// oldest unpaired buy, counted in full even if it filled before the range
+// (as Looper.GetSummary does), so a buy last month and its sell this month
+// don't show as shares oversold this month.
 func (v *Greeler) GetSummary(r *timerange.Range) *gobs.Summary {
 	s := &gobs.Summary{
 		Exchange:  v.cfg.ExchangeName,
@@ -322,11 +331,32 @@ func (v *Greeler) GetSummary(r *timerange.Range) *gobs.Summary {
 	}
 	for i, ls := range v.levelLimiters() {
 		var bought, sold decimal.Decimal
+		addBuy := func(l *limiter.Limiter, r *timerange.Range) {
+			bs := l.GetSummary(r)
+			s.Add(bs)
+			bought = bought.Add(bs.BoughtSize)
+		}
+		var unpaired []*limiter.Limiter
 		for _, l := range ls {
-			ls := l.GetSummary(r)
-			s.Add(ls)
-			bought = bought.Add(ls.BoughtSize)
-			sold = sold.Add(ls.SoldSize)
+			if l.IsBuy() {
+				unpaired = append(unpaired, l)
+				continue
+			}
+			ss := l.GetSummary(r)
+			s.Add(ss)
+			sold = sold.Add(ss.SoldSize)
+			if len(unpaired) > 0 {
+				buy := unpaired[0]
+				unpaired = unpaired[1:]
+				if ss.SoldSize.IsZero() {
+					addBuy(buy, r)
+				} else {
+					addBuy(buy, nil)
+				}
+			}
+		}
+		for _, l := range unpaired {
+			addBuy(l, r)
 		}
 		switch net := bought.Sub(sold); {
 		case net.IsPositive():
@@ -403,6 +433,18 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Greeler, error) {
 		case "grid":
 			if len(e.LevelLimiterIDs) != len(v.levels) {
 				return nil, fmt.Errorf("greeler epoch %d has %d levels, want %d", i, len(e.LevelLimiterIDs), len(v.levels))
+			}
+			// Loaded here, not in Run, so a greeler that isn't running still
+			// reports its fills.
+			e.limiters = make([][]*limiter.Limiter, len(e.LevelLimiterIDs))
+			for li, ids := range e.LevelLimiterIDs {
+				for _, id := range ids {
+					l, err := limiter.Load(ctx, id, r)
+					if err != nil {
+						return nil, fmt.Errorf("could not load greeler %s limiter %s: %w", uid, id, err)
+					}
+					e.limiters[li] = append(e.limiters[li], l)
+				}
 			}
 		case "wheel":
 			if e.PositionID == "" {

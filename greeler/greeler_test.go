@@ -16,6 +16,7 @@ import (
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/kvutil"
 	"github.com/bvk/tradebot/optpos"
+	"github.com/bvk/tradebot/timerange"
 	"github.com/bvk/tradebot/trader"
 	"github.com/bvkgo/kv"
 	"github.com/bvkgo/kvbadger"
@@ -441,6 +442,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		"hysteresis wide": func(c *gobs.GreelConfig) { c.HysteresisPct = d("10") },
 		"no product":      func(c *gobs.GreelConfig) { c.ProductID = "" },
 		"no selector":     func(c *gobs.GreelConfig) { c.ContractSelector = "nonesuch" },
+		"nil level":       func(c *gobs.GreelConfig) { c.GridLevels[2] = nil },
 	} {
 		c := testConfig()
 		edit(c)
@@ -597,6 +599,8 @@ func TestGridCycle(t *testing.T) {
 		}
 	})
 
+	time.Sleep(10 * time.Millisecond)
+	afterBuy := time.Now()
 	e.step(r, "100.5")
 	if got := fmt.Sprint(holdingsOf(t, v)); got != "[25 0 0 0]" {
 		t.Fatalf("holdings = %s", got)
@@ -638,6 +642,17 @@ func TestGridCycle(t *testing.T) {
 	}
 	if got, ok := v.DerivedStock(); !ok || !got.IsZero() {
 		t.Errorf("DerivedStock = %s, want 0", got)
+	}
+
+	// A loaded greeler that isn't running reports its fills.
+	w = e.reload(v)
+	if s := w.GetSummary(nil); !s.BoughtSize.Equal(d("25")) || !s.SoldSize.Equal(d("25")) || !s.UnsoldSize.IsZero() {
+		t.Errorf("loaded summary: bought %s sold %s unsold %s", s.BoughtSize, s.SoldSize, s.UnsoldSize)
+	}
+	// A range holding only the sell pairs it with its buy, not oversold.
+	s := w.GetSummary(&timerange.Range{Begin: afterBuy})
+	if !s.SoldSize.Equal(d("25")) || !s.BoughtSize.Equal(d("25")) || !s.OversoldSize.IsZero() {
+		t.Errorf("ranged summary: bought %s sold %s oversold %s", s.BoughtSize, s.SoldSize, s.OversoldSize)
 	}
 }
 
@@ -702,6 +717,20 @@ func TestFlipToWheelPut(t *testing.T) {
 	e.step(r, "200")
 	if pos.checks != 1 {
 		t.Errorf("checks = %d, want 1", pos.checks)
+	}
+}
+
+func TestDwellDoneNeedsTheSameSide(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	now := e.clock.Now()
+	ep := v.current()
+	ep.PendingFlip, ep.PendingFlipAt = "wheel-call", now.Add(-2*time.Hour)
+	if v.dwellDone(ep, "wheel-put", now) {
+		t.Error("a call's dwell clock let a put flip")
+	}
+	if !v.dwellDone(ep, "wheel-call", now) {
+		t.Error("the call's own dwell clock didn't count")
 	}
 }
 
