@@ -553,7 +553,7 @@ func (v *Position) checkSettlement(ctx context.Context, now time.Time) (bool, er
 		if key == "" {
 			key = contractID + "@" + v.contract.Expiry.Format(time.DateOnly)
 		}
-		fact = &gobs.AssignmentFact{Key: key, Shares: shares, Price: v.contract.Strike}
+		fact = &gobs.AssignmentFact{Key: key, Shares: shares, Price: v.contract.Strike, Fee: s.Fee}
 	}
 	if err := v.finish(ctx, s.Status, at, fact); err != nil {
 		return false, err

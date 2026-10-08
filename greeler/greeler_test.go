@@ -179,7 +179,9 @@ type fakePosition struct {
 
 	mu         sync.Mutex
 	outcome    string
+	outcomeAt  time.Time
 	assignment *gobs.AssignmentFact
+	premiums   []*optpos.Premium
 	contract   *gobs.OptionContract // set by Open
 	filled     bool                 // the opening order filled; Abandon fails
 	opens      []*optpos.Constraint
@@ -206,6 +208,12 @@ func (p *fakePosition) Contract() *gobs.OptionContract {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.contract
+}
+
+func (p *fakePosition) Facts() *optpos.Facts {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return &optpos.Facts{Outcome: p.outcome, OutcomeAt: p.outcomeAt, Assignment: p.assignment, Premiums: p.premiums}
 }
 
 func (p *fakePosition) Open(ctx, fctx context.Context, c *optpos.Constraint) error {
@@ -252,7 +260,7 @@ func (p *fakePosition) Save(ctx context.Context, rw kv.ReadWriter) error {
 	defer p.mu.Unlock()
 	gv := &gobs.OptPositionState{V1: &gobs.OptPositionStateV1{
 		Config:   &gobs.OptPositionConfig{ExchangeName: "fake", Underlying: "AAPL"},
-		Progress: &gobs.OptPositionProgress{Outcome: p.outcome, Assignment: p.assignment},
+		Progress: &gobs.OptPositionProgress{Outcome: p.outcome, OutcomeAt: p.outcomeAt, Assignment: p.assignment},
 	}}
 	return kvutil.Set(ctx, rw, path.Join(optpos.DefaultKeyspace, p.uid), gv)
 }

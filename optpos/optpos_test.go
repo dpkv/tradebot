@@ -887,3 +887,47 @@ func TestResumeReselectsAfterItsSession(t *testing.T) {
 		t.Errorf("legs after a next-session restart: %v", x.legIDs)
 	}
 }
+
+func TestFacts(t *testing.T) {
+	e := newTestEnv(t)
+	fctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := putConstraint()
+	v := e.openFilled(fctx, "p1", c)
+	want := v.leg.FilledValue().Mul(v.leg.ContractSize())
+	if !want.IsPositive() {
+		t.Fatalf("leg filled value %s", v.leg.FilledValue())
+	}
+
+	read := func() *Facts {
+		t.Helper()
+		var f *Facts
+		if err := kv.WithReader(context.Background(), e.db, func(ctx context.Context, r kv.Reader) (err error) {
+			f, err = ReadFacts(ctx, "p1", r)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	// The leg saves its fill after it is done.
+	waitFor(t, "saved fill", func() bool { return len(read().Premiums) == 1 })
+	for name, f := range map[string]*Facts{"Facts": v.Facts(), "ReadFacts": read()} {
+		if f.Outcome != "" || len(f.Premiums) != 1 || !f.Premiums[0].Value.Equal(want) || f.Premiums[0].At.IsZero() {
+			t.Errorf("%s while open: %+v", name, f)
+		}
+	}
+
+	at := time.Date(2026, 12, 19, 12, 0, 0, 0, time.UTC)
+	e.ex.settle(putA, &exchange.OptionsSettlement{Status: "assigned", Key: "tx1", Contracts: d("1"), Fee: d("1.25"), At: at})
+	e.clock.Set(e.clock.Now().Add(settlementInterval))
+	if err := v.Check(context.Background(), fctx, c); err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]*Facts{"Facts": v.Facts(), "ReadFacts": read()} {
+		if f.Outcome != "assigned" || !f.OutcomeAt.Equal(at) || f.Assignment == nil || !f.Assignment.Fee.Equal(d("1.25")) || len(f.Premiums) != 1 {
+			t.Errorf("%s after assignment: %+v", name, f)
+		}
+	}
+}

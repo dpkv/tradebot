@@ -43,4 +43,5 @@ type AssignmentFact struct {
 	Key    string          // broker transaction ID
 	Shares decimal.Decimal // positive for a put, negative for a call
 	Price  decimal.Decimal // strike
+	Fee    decimal.Decimal // broker's assignment fee; zero on old records
 }

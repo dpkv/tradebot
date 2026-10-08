@@ -42,10 +42,19 @@ type Summary struct {
 	OversoldFees  decimal.Decimal
 	OversoldSize  decimal.Decimal
 	OversoldValue decimal.Decimal
+
+	// Premium* hold option premium collected, in dollars, by fill time.
+	PremiumFees  decimal.Decimal
+	PremiumValue decimal.Decimal
+
+	// OpenPremium* hold the part of Premium* whose position hasn't settled;
+	// like Unsold*, it doesn't count toward profit yet.
+	OpenPremiumFees  decimal.Decimal
+	OpenPremiumValue decimal.Decimal
 }
 
 func (s *Summary) IsZero() bool {
-	return s.BoughtValue.IsZero() && s.SoldValue.IsZero()
+	return s.BoughtValue.IsZero() && s.SoldValue.IsZero() && s.PremiumValue.IsZero()
 }
 
 func (s *Summary) Add(v *Summary) {
@@ -81,6 +90,12 @@ func (s *Summary) Add(v *Summary) {
 	s.OversoldFees = s.OversoldFees.Add(v.OversoldFees)
 	s.OversoldSize = s.OversoldSize.Add(v.OversoldSize)
 	s.OversoldValue = s.OversoldValue.Add(v.OversoldValue)
+
+	s.PremiumFees = s.PremiumFees.Add(v.PremiumFees)
+	s.PremiumValue = s.PremiumValue.Add(v.PremiumValue)
+
+	s.OpenPremiumFees = s.OpenPremiumFees.Add(v.OpenPremiumFees)
+	s.OpenPremiumValue = s.OpenPremiumValue.Add(v.OpenPremiumValue)
 }
 
 var d1 = decimal.NewFromInt(1)
@@ -88,7 +103,7 @@ var d100 = decimal.NewFromInt(100)
 var d365 = decimal.NewFromInt(365)
 
 func (s *Summary) FeePct() decimal.Decimal {
-	value := s.SoldValue.Add(s.BoughtValue)
+	value := s.SoldValue.Add(s.BoughtValue).Add(s.PremiumValue)
 	if value.IsZero() {
 		return decimal.Zero
 	}
@@ -96,13 +111,14 @@ func (s *Summary) FeePct() decimal.Decimal {
 }
 
 func (s *Summary) Fees() decimal.Decimal {
-	return s.SoldFees.Add(s.BoughtFees)
+	return s.SoldFees.Add(s.BoughtFees).Add(s.PremiumFees)
 }
 
 func (s *Summary) Profit() decimal.Decimal {
 	svol, sfee := s.SoldValue.Sub(s.OversoldValue), s.SoldFees.Sub(s.OversoldFees)
 	bvol, bfee := s.BoughtValue.Sub(s.UnsoldValue), s.BoughtFees.Sub(s.UnsoldFees)
-	return svol.Sub(bvol).Sub(sfee.Add(bfee))
+	pvol, pfee := s.PremiumValue.Sub(s.OpenPremiumValue), s.PremiumFees.Sub(s.OpenPremiumFees)
+	return svol.Sub(bvol).Add(pvol).Sub(sfee.Add(bfee).Add(pfee))
 }
 
 func (s *Summary) Duration() time.Duration {

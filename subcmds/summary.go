@@ -19,6 +19,8 @@ import (
 	"github.com/bvk/tradebot/coinbase"
 	"github.com/bvk/tradebot/coinex"
 	"github.com/bvk/tradebot/gobs"
+	"github.com/bvk/tradebot/greeler"
+	"github.com/bvk/tradebot/greelladder"
 	"github.com/bvk/tradebot/job"
 	"github.com/bvk/tradebot/looper"
 	"github.com/bvk/tradebot/namer"
@@ -136,6 +138,17 @@ func (c *Summary) run(ctx context.Context, args []string) error {
 			}
 		case strings.EqualFold(jd.Typename, "looper"):
 			sum, err = looper.Summary(ctx, r, jd.ID, period, c.recal)
+			if err != nil {
+				return err
+			}
+		case strings.EqualFold(jd.Typename, "greeler"):
+			// Greelers keep no lifetime summary; it is folded every time.
+			sum, err = greeler.Summary(ctx, r, jd.ID, period)
+			if err != nil {
+				return err
+			}
+		case strings.EqualFold(jd.Typename, "greelladder"):
+			sum, err = greelladder.Summary(ctx, r, jd.ID, period)
 			if err != nil {
 				return err
 			}
