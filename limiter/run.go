@@ -309,9 +309,12 @@ func (v *Limiter) fetchOrderMap(ctx context.Context, product exchange.Product) (
 				return nupdated, err
 			}
 			// Exchanges may not keep the cancelled orders with no executed
-			// value. So, assign canceled status to non-existing orders.
-			order.Done = true
-			order.DoneReason = "NOTFOUND/CANCELED"
+			// value. So, assign canceled status to non-existing orders. The
+			// order is copied, not changed in place (see updateOrderMap).
+			done := *order
+			done.Done = true
+			done.DoneReason = "NOTFOUND/CANCELED"
+			v.orderMap.Store(id, &done)
 			continue
 		}
 

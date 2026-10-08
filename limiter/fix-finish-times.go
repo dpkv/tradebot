@@ -115,14 +115,21 @@ func updateActiveLimiter(ctx context.Context, ex exchange.Exchange, v *Limiter) 
 		if !order.FinishTime.Time.IsZero() {
 			return true
 		}
-		v, err := ex.GetOrder(ctx, v.productID, id)
+		detail, err := ex.GetOrder(ctx, v.productID, id)
 		if err != nil {
 			log.Printf("could not fetch order for finish-time (will retry): %v", err)
 			status = err
 			return false
 		}
-		order.FinishTime = v.FinishedAt()
-		log.Printf("fixed non-existent finish time for just finished order %s to %s", id, v.FinishedAt())
+		// The order is copied, not changed in place (see updateOrderMap). If
+		// Run replaced it meanwhile, the next pass fixes the newer copy.
+		fixed := *order
+		fixed.FinishTime = detail.FinishedAt()
+		if !v.orderMap.CompareAndSwap(id, order, &fixed) {
+			status = fmt.Errorf("order %s changed while fixing its finish time", id)
+			return false
+		}
+		log.Printf("fixed non-existent finish time for just finished order %s to %s", id, detail.FinishedAt())
 		return true
 	})
 	return status
