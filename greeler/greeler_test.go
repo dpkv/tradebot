@@ -1080,10 +1080,21 @@ func TestCallAssignedEmptiesLevels(t *testing.T) {
 		t.Fatalf("opens = %+v", pos.opens)
 	}
 
+	if typ, exp := v.Commitment(); typ != "CALL" || !exp.IsZero() {
+		t.Errorf("Commitment = %s, %s; want a call with no exposure", typ, exp)
+	}
+	// Load works the call out from the saved fills alone.
+	if typ, _ := e.reload(v).Commitment(); typ != "CALL" {
+		t.Errorf("Commitment after Load = %q, want CALL", typ)
+	}
+
 	pos.settle("assigned", &gobs.AssignmentFact{Key: "tx2", Shares: d("-100"), Price: d("105")})
 	e.step(r, "106")
 	if got := fmt.Sprint(holdingsOf(t, v)); got != "[0 0 0 0]" {
 		t.Fatalf("holdings after call assignment = %s", got)
+	}
+	if typ, _ := v.Commitment(); typ != "" {
+		t.Errorf("Commitment = %q after assignment, want none", typ)
 	}
 }
 
@@ -1425,6 +1436,49 @@ func TestRunStopsPositionBeforeReturning(t *testing.T) {
 	defer pos.mu.Unlock()
 	if pos.stops != 1 {
 		t.Errorf("position stops = %d, want 1", pos.stops)
+	}
+}
+
+// TestRiskGatesHoldFlip: a flip the ladder's gates refuse leaves the
+// greeler in grid mode with its dwell clock set, asking every step.
+func TestRiskGatesHoldFlip(t *testing.T) {
+	e := newTestEnv(t)
+	v := e.newGreeler(testConfig())
+	allow := false
+	var asks []string
+	v.SetAdmit(func(optionType string, exposure decimal.Decimal) bool {
+		asks = append(asks, optionType+" "+exposure.String())
+		return allow
+	})
+	if typ, _ := v.Commitment(); typ != "" {
+		t.Fatalf("a new greeler commits to %q", typ)
+	}
+	r := e.runner(v)
+	e.step(r, "200")
+	if len(asks) != 0 {
+		t.Fatalf("asked before the dwell time: %q", asks)
+	}
+	e.clock.Add(time.Hour)
+	e.step(r, "200")
+	e.step(r, "200")
+	if v.Mode() != "grid" || v.current().PendingFlip != "wheel-put" {
+		t.Fatalf("mode %s pending %q, want grid with the clock set", v.Mode(), v.current().PendingFlip)
+	}
+	// The strike bound is the lowest buy price, 100, for 100 shares.
+	if fmt.Sprint(asks) != "[PUT 10000 PUT 10000]" {
+		t.Fatalf("asks = %q", asks)
+	}
+
+	allow = true
+	e.step(r, "200")
+	if v.Mode() != "wheel" {
+		t.Fatalf("did not flip once admitted")
+	}
+	if typ, exp := v.Commitment(); typ != "PUT" || !exp.Equal(d("10000")) {
+		t.Errorf("Commitment = %s, %s; want PUT 10000", typ, exp)
+	}
+	if typ, exp := e.reload(v).Commitment(); typ != "PUT" || !exp.Equal(d("10000")) {
+		t.Errorf("Commitment after Load = %s, %s; want PUT 10000", typ, exp)
 	}
 }
 

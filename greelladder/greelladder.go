@@ -33,10 +33,11 @@ const DefaultKeyspace = "/greelladders/"
 // exchange call.
 const claimTTL = time.Minute
 
-// sibling is what exclusion needs from a greeler.
+// sibling is what exclusion and the risk gates need from a greeler.
 type sibling interface {
 	UID() string
 	HeldContract() (id string, known bool)
+	Commitment() (optionType string, exposure decimal.Decimal)
 }
 
 // claim is a greeler's latest selection, which may still be in flight.
@@ -55,10 +56,20 @@ type GreelLadder struct {
 
 	greelers []*greeler.Greeler
 
-	// mu guards claims, so two siblings can't claim one contract at once.
-	mu       sync.Mutex
-	siblings []sibling
-	claims   map[string]*claim // greeler UID -> its latest selection
+	// mu guards claims and the risk gates' state, so two siblings can't
+	// claim one contract, or the last room under a limit, at once.
+	mu           sync.Mutex
+	siblings     []sibling
+	claims       map[string]*claim       // greeler UID -> its latest selection
+	reservations map[string]*reservation // greeler UID -> room admitted to it
+	blocked      map[string]bool         // greeler UIDs alerted as held by a gate
+
+	// Risk gate limits, the ladder's own options; zero means no limit.
+	maxContracts   int
+	maxPutExposure decimal.Decimal
+
+	// alertCh carries risk gate alerts to Run, which owns the messenger.
+	alertCh chan string
 
 	// Overridable in tests.
 	now               func() time.Time
@@ -110,6 +121,9 @@ func newLadder(uid string, cfg *gobs.GreelLadderConfig, greelers []*greeler.Gree
 		cfg:               cfg,
 		greelers:          greelers,
 		claims:            make(map[string]*claim),
+		reservations:      make(map[string]*reservation),
+		blocked:           make(map[string]bool),
+		alertCh:           make(chan string, 16),
 		now:               time.Now,
 		reconcileInterval: time.Hour,
 	}
@@ -119,6 +133,7 @@ func newLadder(uid string, cfg *gobs.GreelLadderConfig, greelers []*greeler.Gree
 	for _, g := range greelers {
 		v.siblings = append(v.siblings, g)
 		g.SetExclude(v.excludeFor(g.UID()))
+		g.SetAdmit(v.admitFor(g.UID()))
 	}
 	return v, nil
 }
@@ -243,11 +258,14 @@ func Summary(ctx context.Context, r kv.Reader, uid string, period *timerange.Ran
 	return v.GetSummary(period), nil
 }
 
-// SetOption sets retire or freeze on every greeler, as waller does on its
-// loopers, rolling back on failure. The greelers keep the options in their
-// own records.
+// SetOption sets the risk gate limits max-contracts and max-put-exposure
+// (zero means no limit), which the ladder keeps, or retire or freeze on
+// every greeler, as waller does on its loopers, rolling back on failure.
+// The greelers keep those in their own records.
 func (v *GreelLadder) SetOption(opt, val string) (_ string, status error) {
 	switch key := strings.ToLower(opt); key {
+	case maxContractsOpt, maxPutExposureOpt:
+		return v.setLimitOption(key, val)
 	case "retire", "freeze":
 	default:
 		return "", fmt.Errorf("invalid/unsupported greel ladder option %q", key)
@@ -288,6 +306,7 @@ func (v *GreelLadder) Save(ctx context.Context, rw kv.ReadWriter) error {
 	cfg.GreelerIDs = append([]string(nil), v.cfg.GreelerIDs...)
 	gv := &gobs.GreelLadderState{
 		V1: &gobs.GreelLadderStateV1{
+			Options:  v.options(),
 			Config:   &cfg,
 			Progress: &gobs.GreelLadderProgress{},
 		},
@@ -329,5 +348,14 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*GreelLadder, error) {
 		}
 		greelers = append(greelers, g)
 	}
-	return newLadder(uid, gv.V1.Config, greelers)
+	v, err := newLadder(uid, gv.V1.Config, greelers)
+	if err != nil {
+		return nil, err
+	}
+	for opt, val := range gv.V1.Options {
+		if _, err := v.setLimitOption(opt, val); err != nil {
+			return nil, fmt.Errorf("could not set greel ladder option (%s=%q): %w", opt, val, err)
+		}
+	}
+	return v, nil
 }

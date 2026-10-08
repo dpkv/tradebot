@@ -22,5 +22,6 @@ type GreelLadderConfig struct {
 }
 
 // GreelLadderProgress is everything trading writes, which is nothing yet;
-// it keeps the Config/Progress shape and is where risk-gate state would go.
+// it keeps the Config/Progress shape. The risk gates keep their limits in
+// Options and need nothing else across a restart.
 type GreelLadderProgress struct{}

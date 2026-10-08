@@ -53,6 +53,7 @@ type epoch struct {
 
 	position position             // wheel epochs; nil until loaded
 	facts    *optpos.Facts        // wheel epochs; what accounting reads, guarded by mu
+	optType  string               // current wheel epoch: "PUT" or "CALL", in memory only
 	limiters [][]*limiter.Limiter // grid epochs; index-aligned with LevelLimiterIDs
 }
 
@@ -82,8 +83,9 @@ type Greeler struct {
 	held      string
 	heldKnown bool
 
-	// exclude is set by the ladder; nil standalone.
+	// exclude and admit are set by the ladder; nil standalone.
 	exclude func(contractID string) bool
+	admit   func(optionType string, exposure decimal.Decimal) bool
 
 	freezeGridOpt, freezeWheelOpt, retireOpt bool
 
@@ -235,6 +237,36 @@ func (v *Greeler) SetExclude(exclude func(contractID string) bool) {
 	v.exclude = exclude
 }
 
+// SetAdmit installs the ladder's risk gates: admit reports whether the
+// greeler may flip to wheel mode to write one contract of optionType with
+// exposure (put collateral at the strike bound; zero for a call), and
+// reserves the room if so. Call it only while the greeler isn't running.
+func (v *Greeler) SetAdmit(admit func(optionType string, exposure decimal.Decimal) bool) {
+	v.admit = admit
+}
+
+// Commitment is the option the current wheel epoch writes, "PUT" or
+// "CALL", and its exposure, or "" in grid mode or once the position has
+// ended. Like HeldContract, it is known from New or Load on.
+func (v *Greeler) Commitment() (optionType string, exposure decimal.Decimal) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	e := v.epochs[len(v.epochs)-1]
+	if e.Mode != "wheel" || (e.facts != nil && e.facts.Outcome != "") {
+		return "", decimal.Zero
+	}
+	return e.optType, v.exposure(e.optType)
+}
+
+// exposure is the cash a contract of optionType could take if assigned: a
+// put's strike bound times the contract's shares; a call is covered.
+func (v *Greeler) exposure(optionType string) decimal.Decimal {
+	if optionType != "PUT" {
+		return decimal.Zero
+	}
+	return v.bottom().Mul(contractShares)
+}
+
 // HeldContract is the contract ID the current position is selling or
 // holds, empty when there is none. known is false until New or Load has
 // worked it out, so the answer can't be trusted yet.
@@ -376,15 +408,45 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Greeler, error) {
 			return nil, fmt.Errorf("could not set greeler option (%s=%q): %w", opt, val, err)
 		}
 	}
-	// Siblings ask for the held contract before Run has loaded the position
-	// (and even if Run fails first), so read it from the saved records.
+	// Siblings ask for the held contract and the commitment before Run has
+	// loaded the position (and even if Run fails first), so read them from
+	// the saved records.
 	if last := v.epochs[len(v.epochs)-1]; last.Mode == "wheel" {
 		held, err := optpos.HeldContractID(ctx, last.PositionID, r)
 		if err != nil {
 			return nil, fmt.Errorf("could not read greeler %s position %s: %w", uid, last.PositionID, err)
 		}
 		v.held = held
+		optType, err := v.wheelType()
+		if err != nil {
+			return nil, err
+		}
+		last.optType = optType
 	}
 	v.heldKnown = true
 	return v, nil
+}
+
+// wheelType works out the option the current wheel epoch writes from saved
+// records alone: under a put every level is flat, under a call every level
+// is full.
+func (v *Greeler) wheelType() (string, error) {
+	levels, _, err := v.fills(nil)
+	if err != nil {
+		return "", err
+	}
+	for _, fs := range levels {
+		var h decimal.Decimal
+		for _, f := range fs {
+			if f.buy {
+				h = h.Add(f.sum.BoughtSize)
+			} else {
+				h = h.Sub(f.sum.SoldSize)
+			}
+		}
+		if !h.IsZero() {
+			return "CALL", nil
+		}
+	}
+	return "PUT", nil
 }

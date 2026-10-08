@@ -79,6 +79,8 @@ func (v *GreelLadder) Run(ctx context.Context, rt *trader.Runtime) error {
 			if holdings != nil && ctx.Err() == nil {
 				v.reconcile(ctx, rt, holdings, &rec)
 			}
+		case msg := <-v.alertCh:
+			v.notify(ctx, rt, "%s", msg)
 		}
 	}
 
