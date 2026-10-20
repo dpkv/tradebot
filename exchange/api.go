@@ -105,6 +105,7 @@ type OptionsProduct interface {
 	Expiry() time.Time
 	ContractSize() decimal.Decimal // shares per contract, typically 100
 
+	AccountName() string
 	ExchangeName() string
 
 	GetPriceUpdates() (*topic.Receiver[PriceUpdate], error)

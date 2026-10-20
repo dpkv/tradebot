@@ -407,6 +407,7 @@ type fakeExchange struct {
 	shares decimal.Decimal
 }
 
+func (f *fakeExchange) AccountName() string        { return "fake" }
 func (f *fakeExchange) ExchangeName() string       { return "fake" }
 func (f *fakeExchange) CanDedupOnClientUUID() bool { return false }
 
@@ -436,6 +437,7 @@ type fakeStock struct {
 }
 
 func (p *fakeStock) ProductID() string            { return "AAPL" }
+func (p *fakeStock) AccountName() string          { return "fake" }
 func (p *fakeStock) ExchangeName() string         { return "fake" }
 func (p *fakeStock) BaseMinSize() decimal.Decimal { return d("1") }
 func (p *fakeStock) Close() error                 { return nil }
@@ -542,7 +544,7 @@ func TestRun(t *testing.T) {
 	ex := &fakeExchange{shares: d("40")}
 	stock := &fakeStock{prices: topic.New[exchange.PriceUpdate]()}
 	msgr := &fakeMessenger{}
-	rt := &trader.Runtime{Exchange: ex, Database: db, Product: stock, Messenger: msgr}
+	rt := &trader.Runtime{Account: ex, Database: db, Product: stock, Messenger: msgr}
 
 	// Spot 102.5 with a 5% grid: every level of both bands is in the grid
 	// band, and a buy rests while spot is between its price and its cancel
@@ -588,7 +590,7 @@ func TestRun(t *testing.T) {
 func TestRunReturnsWhenRetired(t *testing.T) {
 	db := newTestDB(t)
 	stock := &fakeStock{prices: topic.New[exchange.PriceUpdate]()}
-	rt := &trader.Runtime{Exchange: &fakeExchange{}, Database: db, Product: stock}
+	rt := &trader.Runtime{Account: &fakeExchange{}, Database: db, Product: stock}
 	v := newTestLadder(t, band(98), band(102))
 	if _, err := v.SetOption("retire", "true"); err != nil {
 		t.Fatal(err)
@@ -603,7 +605,7 @@ func TestRunReturnsWhenRetired(t *testing.T) {
 // have returned.
 func TestRunReportsGreelerFailures(t *testing.T) {
 	db := newTestDB(t)
-	rt := &trader.Runtime{Exchange: struct{ exchange.Exchange }{}, Database: db}
+	rt := &trader.Runtime{Account: struct{ exchange.Account }{}, Database: db}
 	v := newTestLadder(t, band(98), band(102))
 	if err := v.Run(context.Background(), rt); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("Run = %v, want os.ErrInvalid", err)

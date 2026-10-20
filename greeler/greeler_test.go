@@ -33,6 +33,7 @@ type fakeExchange struct {
 	exchange.OptionsExchange // unused methods panic
 }
 
+func (f *fakeExchange) AccountName() string        { return "fake" }
 func (f *fakeExchange) ExchangeName() string       { return "fake" }
 func (f *fakeExchange) CanDedupOnClientUUID() bool { return false }
 
@@ -64,6 +65,7 @@ func newFakeStock() *fakeStock {
 }
 
 func (p *fakeStock) ProductID() string            { return "AAPL" }
+func (p *fakeStock) AccountName() string          { return "fake" }
 func (p *fakeStock) ExchangeName() string         { return "fake" }
 func (p *fakeStock) BaseMinSize() decimal.Decimal { return d("1") }
 func (p *fakeStock) Close() error                 { return nil }
@@ -378,7 +380,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		clock:     &testClock{now: time.Date(2026, 10, 5, 15, 0, 0, 0, time.UTC)},
 		positions: make(map[string]*fakePosition),
 	}
-	e.rt = &trader.Runtime{Exchange: e.ex, Database: e.db, Product: e.stock}
+	e.rt = &trader.Runtime{Account: e.ex, Database: e.db, Product: e.stock}
 	return e
 }
 
@@ -1496,7 +1498,7 @@ func TestRunNeedsOptionsExchange(t *testing.T) {
 	e := newTestEnv(t)
 	v := e.newGreeler(testConfig())
 	rt := *e.rt
-	rt.Exchange = struct{ exchange.Exchange }{}
+	rt.Account = struct{ exchange.Account }{}
 	if err := v.Run(context.Background(), &rt); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("Run = %v, want os.ErrInvalid", err)
 	}

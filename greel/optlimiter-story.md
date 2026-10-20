@@ -220,6 +220,7 @@ type OptLimiter struct {
     mu sync.Mutex
 
     uid          string
+    accountName  string
     exchangeName string
     contractID   string
     contractSize decimal.Decimal
@@ -233,7 +234,7 @@ type OptLimiter struct {
     orders map[string]*exchange.SimpleOrder // server order ID -> order
 }
 
-func New(uid, exchangeName, contractID string, contractSize, numContracts, minPremium, repriceStep decimal.Decimal, repriceInterval time.Duration) (*OptLimiter, error) {
+func New(uid, accountName, contractID string, contractSize, numContracts, minPremium, repriceStep decimal.Decimal, repriceInterval time.Duration) (*OptLimiter, error) {
     panic("unimplemented")
 }
 

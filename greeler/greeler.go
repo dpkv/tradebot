@@ -119,6 +119,11 @@ func New(uid string, cfg *gobs.GreelConfig) (*Greeler, error) {
 
 func newGreeler(uid string, cfg *gobs.GreelConfig) (*Greeler, error) {
 	dup := *cfg
+	// Configs from before accounts name only the exchange.
+	if dup.AccountName == "" {
+		dup.AccountName = dup.ExchangeName
+	}
+	dup.ExchangeName = exchange.FromAccountName(dup.AccountName)
 	dup.GridLevels = nil
 	for i, p := range cfg.GridLevels {
 		if p == nil {
@@ -151,7 +156,7 @@ func (v *Greeler) setDefaults() {
 	v.now = time.Now
 	v.interval = 10 * time.Second
 	v.newPosition = func(uid string, optEx exchange.OptionsExchange, db kv.Database) position {
-		return optpos.New(uid, v.cfg.ExchangeName, v.cfg.ProductID, v.selector, v.cfg.WheelKnobs, optEx, db)
+		return optpos.New(uid, v.cfg.AccountName, v.cfg.ProductID, v.selector, v.cfg.WheelKnobs, optEx, db)
 	}
 	v.loadPosition = func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsExchange, db kv.Database) (position, error) {
 		return optpos.Load(ctx, uid, r, v.selector, v.cfg.WheelKnobs, optEx, db)
@@ -162,8 +167,8 @@ func (v *Greeler) check() error {
 	if err := checkUID(v.uid); err != nil {
 		return err
 	}
-	if v.cfg.ProductID == "" || v.cfg.ExchangeName == "" {
-		return fmt.Errorf("greeler product or exchange name is empty")
+	if v.cfg.ProductID == "" || v.cfg.AccountName == "" {
+		return fmt.Errorf("greeler product or account name is empty")
 	}
 	if len(v.levels) == 0 {
 		return fmt.Errorf("greeler has no grid levels")
@@ -221,6 +226,8 @@ func (v *Greeler) LogValue() slog.Value {
 func (v *Greeler) UID() string { return v.uid }
 
 func (v *Greeler) ProductID() string { return v.cfg.ProductID }
+
+func (v *Greeler) AccountName() string { return v.cfg.AccountName }
 
 func (v *Greeler) ExchangeName() string { return v.cfg.ExchangeName }
 

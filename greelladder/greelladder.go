@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/greeler"
 	"github.com/bvk/tradebot/kvutil"
@@ -79,19 +80,23 @@ type GreelLadder struct {
 var _ trader.Trader = &GreelLadder{}
 
 // New creates a ladder with one greeler per band, in band order. Each
-// band's product and exchange must be empty or match the ladder's; bands
+// band's product and account must be empty or match the ladder's; bands
 // are copied.
-func New(uid, exchangeName, productID string, bands []*gobs.GreelConfig) (*GreelLadder, error) {
+func New(uid, accountName, productID string, bands []*gobs.GreelConfig) (*GreelLadder, error) {
 	if err := checkUID(uid); err != nil {
 		return nil, err
 	}
-	if exchangeName == "" || productID == "" {
-		return nil, fmt.Errorf("greel ladder product or exchange name is empty")
+	if accountName == "" || productID == "" {
+		return nil, fmt.Errorf("greel ladder product or account name is empty")
 	}
 	if len(bands) == 0 {
 		return nil, fmt.Errorf("greel ladder has no bands")
 	}
-	cfg := &gobs.GreelLadderConfig{ProductID: productID, ExchangeName: exchangeName}
+	cfg := &gobs.GreelLadderConfig{
+		ProductID:    productID,
+		AccountName:  accountName,
+		ExchangeName: exchange.FromAccountName(accountName),
+	}
 	var greelers []*greeler.Greeler
 	for i, band := range bands {
 		if band == nil {
@@ -101,8 +106,11 @@ func New(uid, exchangeName, productID string, bands []*gobs.GreelConfig) (*Greel
 		if b.ProductID == "" {
 			b.ProductID = productID
 		}
-		if b.ExchangeName == "" {
-			b.ExchangeName = exchangeName
+		if b.AccountName == "" {
+			b.AccountName = b.ExchangeName
+		}
+		if b.AccountName == "" {
+			b.AccountName = accountName
 		}
 		gid := path.Join(uid, fmt.Sprintf("greeler-%06d", i))
 		g, err := greeler.New(gid, &b)
@@ -151,8 +159,8 @@ func (v *GreelLadder) check() error {
 			return fmt.Errorf("greel ladder names greeler %s twice", g.UID())
 		}
 		seen[g.UID()] = true
-		if g.ProductID() != v.cfg.ProductID || g.ExchangeName() != v.cfg.ExchangeName {
-			return fmt.Errorf("greeler %s trades %s on %s, want %s on %s", g.UID(), g.ProductID(), g.ExchangeName(), v.cfg.ProductID, v.cfg.ExchangeName)
+		if g.ProductID() != v.cfg.ProductID || g.AccountName() != v.cfg.AccountName {
+			return fmt.Errorf("greeler %s trades %s on %s, want %s on %s", g.UID(), g.ProductID(), g.AccountName(), v.cfg.ProductID, v.cfg.AccountName)
 		}
 	}
 	return nil
@@ -204,6 +212,8 @@ func (v *GreelLadder) UID() string { return v.uid }
 
 func (v *GreelLadder) ProductID() string { return v.cfg.ProductID }
 
+func (v *GreelLadder) AccountName() string { return v.cfg.AccountName }
+
 func (v *GreelLadder) ExchangeName() string { return v.cfg.ExchangeName }
 
 // Greelers returns the ladder's greelers in band order.
@@ -239,6 +249,7 @@ func (v *GreelLadder) BudgetAt(feePct decimal.Decimal) decimal.Decimal {
 func (v *GreelLadder) GetSummary(r *timerange.Range) *gobs.Summary {
 	s := &gobs.Summary{
 		Exchange:  v.cfg.ExchangeName,
+		Account:   v.cfg.AccountName,
 		ProductID: v.cfg.ProductID,
 	}
 	for _, g := range v.greelers {
@@ -348,7 +359,12 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*GreelLadder, error) {
 		}
 		greelers = append(greelers, g)
 	}
-	v, err := newLadder(uid, gv.V1.Config, greelers)
+	cfg := gv.V1.Config
+	// Configs from before accounts name only the exchange.
+	if cfg.AccountName == "" {
+		cfg.AccountName = cfg.ExchangeName
+	}
+	v, err := newLadder(uid, cfg, greelers)
 	if err != nil {
 		return nil, err
 	}

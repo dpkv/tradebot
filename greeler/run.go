@@ -80,16 +80,16 @@ func (v *Greeler) newRunner(fctx context.Context, rt *trader.Runtime, optEx exch
 	}
 }
 
-// Run trades the greel until ctx is canceled. It needs an options exchange
-// in rt.Exchange and the underlying's stock product in rt.Product. It
+// Run trades the greel until ctx is canceled. It needs an options account
+// in rt.Account and the underlying's stock product in rt.Product. It
 // returns nil once a retired greeler has nothing left to do.
 func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 	v.runtimeLock.Lock()
 	defer v.runtimeLock.Unlock()
 
-	optEx, ok := rt.Exchange.(exchange.OptionsExchange)
+	optEx, ok := rt.Account.(exchange.OptionsExchange)
 	if !ok {
-		return fmt.Errorf("greeler %s needs an options exchange: %w", v.uid, os.ErrInvalid)
+		return fmt.Errorf("greeler %s needs an options account: %w", v.uid, os.ErrInvalid)
 	}
 	if rt.Product == nil || rt.Product.ProductID() != v.cfg.ProductID {
 		return fmt.Errorf("greeler %s needs product %s: %w", v.uid, v.cfg.ProductID, os.ErrInvalid)
@@ -518,7 +518,7 @@ func (r *runner) flipToWheel(ctx context.Context, now time.Time, flip string) er
 	}
 	v.opened = false
 	slog.Info("flipped to wheel mode", "greeler", v, "position", uid, "option-type", optionType, "spot", r.spot)
-	r.notify(ctx, now, "Greeler %s flipped to wheel mode; writing a %s on %s (%s).", v.uid, optionType, v.cfg.ProductID, v.cfg.ExchangeName)
+	r.notify(ctx, now, "Greeler %s flipped to wheel mode; writing a %s on %s (%s).", v.uid, optionType, v.cfg.ProductID, v.cfg.AccountName)
 
 	// Check opens it later if this fails.
 	err = pos.Open(ctx, r.fctx, v.constraint(optionType))
@@ -586,10 +586,10 @@ func (r *runner) stepWheel(ctx context.Context, now time.Time, holdings []decima
 	}
 	if fact := pos.Assignment(); fact != nil {
 		slog.Info("option position was assigned; back to grid mode", "greeler", v, "position", pos.UID(), "shares", fact.Shares, "strike", fact.Price)
-		r.notify(ctx, now, "Greeler %s was assigned %s shares of %s at %s (%s).", v.uid, fact.Shares, v.cfg.ProductID, fact.Price.StringFixed(2), v.cfg.ExchangeName)
+		r.notify(ctx, now, "Greeler %s was assigned %s shares of %s at %s (%s).", v.uid, fact.Shares, v.cfg.ProductID, fact.Price.StringFixed(2), v.cfg.AccountName)
 	} else {
 		slog.Info("option position ended; back to grid mode", "greeler", v, "position", pos.UID(), "outcome", pos.Outcome())
-		r.notify(ctx, now, "Greeler %s option position on %s ended %s (%s).", v.uid, v.cfg.ProductID, pos.Outcome(), v.cfg.ExchangeName)
+		r.notify(ctx, now, "Greeler %s option position on %s ended %s (%s).", v.uid, v.cfg.ProductID, pos.Outcome(), v.cfg.AccountName)
 	}
 	return nil
 }
@@ -654,7 +654,7 @@ func (r *runner) addLimiter(ctx context.Context, e *epoch, level int, pt *point.
 	uid := path.Join(v.uid, fmt.Sprintf("epoch-%06d/level-%03d/%s-%06d", len(v.epochs)-1, level, strings.ToLower(pt.Side()), len(e.LevelLimiterIDs[level])))
 	v.mu.Unlock()
 
-	l, err := limiter.New(uid, v.cfg.ExchangeName, v.cfg.ProductID, pt)
+	l, err := limiter.New(uid, v.cfg.AccountName, v.cfg.ProductID, pt)
 	if err != nil {
 		return nil, err
 	}

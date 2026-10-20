@@ -73,6 +73,7 @@ type OptLimiter struct {
 	mu sync.Mutex
 
 	uid          string
+	accountName  string
 	exchangeName string
 	contractID   string
 	contractSize decimal.Decimal
@@ -102,7 +103,7 @@ type OptLimiter struct {
 // New creates a sell-to-open order for numContracts of contractID at a
 // per-share premium no lower than minPremium. Zero repriceStep or
 // repriceInterval select the defaults.
-func New(uid, exchangeName, contractID string, contractSize, numContracts, minPremium, repriceStep decimal.Decimal, repriceInterval time.Duration) (*OptLimiter, error) {
+func New(uid, accountName, contractID string, contractSize, numContracts, minPremium, repriceStep decimal.Decimal, repriceInterval time.Duration) (*OptLimiter, error) {
 	if repriceStep.IsZero() {
 		repriceStep = DefaultRepriceStep
 	}
@@ -111,7 +112,8 @@ func New(uid, exchangeName, contractID string, contractSize, numContracts, minPr
 	}
 	v := &OptLimiter{
 		uid:             uid,
-		exchangeName:    exchangeName,
+		accountName:     accountName,
+		exchangeName:    exchange.FromAccountName(accountName),
 		contractID:      contractID,
 		contractSize:    contractSize,
 		numContracts:    numContracts,
@@ -141,8 +143,8 @@ func (v *OptLimiter) check() error {
 	if len(v.uid) == 0 {
 		return fmt.Errorf("optlimiter uid is empty")
 	}
-	if len(v.exchangeName) == 0 {
-		return fmt.Errorf("optlimiter exchange name is empty")
+	if len(v.accountName) == 0 {
+		return fmt.Errorf("optlimiter account name is empty")
 	}
 	if len(v.contractID) == 0 {
 		return fmt.Errorf("optlimiter contract id is empty")
@@ -185,6 +187,7 @@ func (v *OptLimiter) LogValue() slog.Value {
 }
 
 func (v *OptLimiter) UID() string                   { return v.uid }
+func (v *OptLimiter) AccountName() string           { return v.accountName }
 func (v *OptLimiter) ExchangeName() string          { return v.exchangeName }
 func (v *OptLimiter) ContractID() string            { return v.contractID }
 func (v *OptLimiter) ContractSize() decimal.Decimal { return v.contractSize }
@@ -297,6 +300,7 @@ func (v *OptLimiter) Save(ctx context.Context, rw kv.ReadWriter) error {
 	gv := &gobs.OptLimiterState{
 		V1: &gobs.OptLimiterStateV1{
 			Config: &gobs.OptLimiterConfig{
+				AccountName:     v.accountName,
 				ExchangeName:    v.exchangeName,
 				ContractID:      v.contractID,
 				ContractSize:    v.contractSize,
@@ -356,13 +360,18 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*OptLimiter, error) {
 		return nil, fmt.Errorf("optlimiter state at %q is incomplete", key)
 	}
 	config, progress := gv.V1.Config, gv.V1.Progress
+	accountName := config.AccountName
+	if len(accountName) == 0 {
+		accountName = config.ExchangeName
+	}
 	seed := uid
 	if len(config.ClientIDSeed) > 0 {
 		seed = config.ClientIDSeed
 	}
 	v := &OptLimiter{
 		uid:             uid,
-		exchangeName:    config.ExchangeName,
+		accountName:     accountName,
+		exchangeName:    exchange.FromAccountName(accountName),
 		contractID:      config.ContractID,
 		contractSize:    config.ContractSize,
 		numContracts:    config.NumContracts,

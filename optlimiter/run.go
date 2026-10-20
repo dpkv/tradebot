@@ -48,8 +48,8 @@ func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, pr
 	if product.ContractID() != v.contractID {
 		return fmt.Errorf("optlimiter %s: product is for contract %q, want %q: %w", v.uid, product.ContractID(), v.contractID, os.ErrInvalid)
 	}
-	if optEx.ExchangeName() != v.exchangeName {
-		return fmt.Errorf("optlimiter %s: exchange is %q, want %q: %w", v.uid, optEx.ExchangeName(), v.exchangeName, os.ErrInvalid)
+	if optEx.AccountName() != v.accountName {
+		return fmt.Errorf("optlimiter %s: account is %q, want %q: %w", v.uid, optEx.AccountName(), v.accountName, os.ErrInvalid)
 	}
 
 	// Subscribe before recovery so no update between the refresh and the loop

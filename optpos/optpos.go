@@ -92,6 +92,7 @@ type attempt struct {
 // greeler, which calls its methods from one goroutine.
 type Position struct {
 	uid          string
+	accountName  string
 	exchangeName string
 	underlying   string
 
@@ -130,10 +131,11 @@ type Position struct {
 
 // New creates a position with empty progress. The greeler saves it under
 // its wheel epoch before calling Open.
-func New(uid, exchangeName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) *Position {
+func New(uid, accountName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) *Position {
 	v := &Position{
 		uid:          uid,
-		exchangeName: exchangeName,
+		accountName:  accountName,
+		exchangeName: exchange.FromAccountName(accountName),
 		underlying:   underlying,
 		selector:     selector,
 		knobs:        knobs,
@@ -153,8 +155,8 @@ func (v *Position) check() error {
 	if len(v.uid) == 0 {
 		return fmt.Errorf("optpos uid is empty")
 	}
-	if len(v.exchangeName) == 0 {
-		return fmt.Errorf("optpos exchange name is empty")
+	if len(v.accountName) == 0 {
+		return fmt.Errorf("optpos account name is empty")
 	}
 	if len(v.underlying) == 0 {
 		return fmt.Errorf("optpos underlying is empty")
@@ -418,7 +420,7 @@ func (v *Position) newAttempt(ctx context.Context, fctx context.Context, c *Cons
 	}
 	contract := sel.Contract
 	legUID := path.Join(v.uid, fmt.Sprintf("leg-%06d", len(v.legIDs)))
-	leg, err := optlimiter.New(legUID, v.exchangeName, contract.ContractID, contract.ContractSize, numContracts, sel.MinPremium, step, interval)
+	leg, err := optlimiter.New(legUID, v.accountName, contract.ContractID, contract.ContractSize, numContracts, sel.MinPremium, step, interval)
 	if err != nil {
 		return fmt.Errorf("could not create attempt for %s: %w", contract.ContractID, err)
 	}
@@ -610,12 +612,13 @@ func (v *Position) finish(ctx context.Context, outcome string, at time.Time, fac
 	return nil
 }
 
-// Save writes Config (exchangeName, underlying) and Progress (contract,
-// legIDs, outcome, assignment) as gobs.OptPositionStateV1.
+// Save writes Config (accountName, exchangeName, underlying) and Progress
+// (contract, legIDs, outcome, assignment) as gobs.OptPositionStateV1.
 func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
 	gv := &gobs.OptPositionState{
 		V1: &gobs.OptPositionStateV1{
 			Config: &gobs.OptPositionConfig{
+				AccountName:  v.accountName,
 				ExchangeName: v.exchangeName,
 				Underlying:   v.underlying,
 			},
@@ -651,7 +654,11 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
 		return nil, fmt.Errorf("optpos state at %q is incomplete", key)
 	}
 	config, progress := gv.V1.Config, gv.V1.Progress
-	v := New(uid, config.ExchangeName, config.Underlying, selector, knobs, optEx, db)
+	accountName := config.AccountName
+	if len(accountName) == 0 {
+		accountName = config.ExchangeName
+	}
+	v := New(uid, accountName, config.Underlying, selector, knobs, optEx, db)
 	v.contract = progress.Contract
 	v.legIDs = append([]string(nil), progress.Legs...)
 	v.outcome = progress.Outcome

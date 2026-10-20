@@ -349,6 +349,7 @@ type OptLimiterStateV1 struct {
 // OptLimiterConfig is fixed at creation; Load rebuilds the order intent
 // from it plus Progress.
 type OptLimiterConfig struct {
+    AccountName  string
     ExchangeName string
     ContractID   string
 
@@ -413,6 +414,7 @@ type OptPositionStateV1 struct {
 // The selector and re-price knobs are not here: the owning greeler
 // passes them to optpos.Load from its own Config.
 type OptPositionConfig struct {
+    AccountName  string
     ExchangeName string
     Underlying   string
 }
@@ -482,6 +484,7 @@ type GreelerStateV1 struct {
 // including its ContractSelector, from this alone (scenario 1).
 type GreelConfig struct {
     ProductID    string
+    AccountName  string
     ExchangeName string
 
     // GridLevels are the adjacent grid levels this greeler owns; sizes
@@ -609,6 +612,7 @@ type GreelLadderStateV1 struct {
 // greeler's dynamic state lives on its own record.
 type GreelLadderConfig struct {
     ProductID    string
+    AccountName  string
     ExchangeName string
 
     GreelerIDs []string
@@ -820,7 +824,7 @@ type GreelLadderProgress struct{}
 11. **Selector name and resolved knob values persisted in
     `GreelerStateV1` — decided after design review.** `server.Load` has
     only a KV reader, so the greeler must rebuild its `ContractSelector`
-    from its own record; the options exchange comes from `rt.Exchange` at
+    from its own record; the options exchange comes from `rt.Account` at
     `Run` time (scenario 1). (`RollPolicy` and its name are v2.)
 12. **`OptLimiterStateV1` is the record of an option order state machine,
     not a wrapped `limiter.Limiter` — decided.** It stores its own orders,
@@ -851,14 +855,16 @@ type GreelLadderProgress struct{}
     (`ClientIDOffset`, `Orders`).
 17. **`OptPositionStateV1` splits into `Config *OptPositionConfig` and
     `Progress *OptPositionProgress` — decided**, the same way as
-    decisions #15–#16. Config is `ExchangeName` and `Underlying`;
+    decisions #15–#16. Config is `AccountName`, `ExchangeName` and
+    `Underlying`;
     Progress is the `Contract` cache, `Legs`, `Outcome`/`OutcomeAt` and
     `Assignment`. No `Options` (a position is a component). The selector
     and `WheelKnobs` stay on the greeler's Config, passed to
     `optpos.Load`, not copied here.
 18. **`GreelLadderStateV1` splits into `Config *GreelLadderConfig` and
     an empty `Progress *GreelLadderProgress` — decided.** Config is
-    `ProductID`, `ExchangeName` and `GreelerIDs` (fixed when `New` spawns
+    `ProductID`, `AccountName`, `ExchangeName` and `GreelerIDs` (fixed
+    when `New` spawns
     the bands); `Options` stays top level as on the greeler. Nothing on
     the ladder is written while trading, but the empty Progress keeps the
     same shape as every other state and is where risk-gate state would

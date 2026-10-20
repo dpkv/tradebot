@@ -24,6 +24,7 @@ type GreelerStateV1 struct {
 // GreelConfig is fixed at creation; Load rebuilds the greeler from it alone.
 type GreelConfig struct {
 	ProductID    string
+	AccountName  string
 	ExchangeName string
 
 	// GridLevels are in ascending price order and never reordered.

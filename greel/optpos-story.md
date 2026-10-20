@@ -53,7 +53,7 @@ write below lands in `Progress`. `Open` then does, in order:
    there is one (greelladder-story). DTE/liquidity knobs live on the
    selector itself (decision #1).
 3. `optEx.OpenOptionsProduct(ctx, contract.ContractID)` opens the product.
-4. `optlimiter.New(legUID, exchangeName, contract.ContractID, contract.ContractSize, numContracts, sel.MinPremium, knobs.RepriceStep, knobs.RepriceInterval)`
+4. `optlimiter.New(legUID, accountName, contract.ContractID, contract.ContractSize, numContracts, sel.MinPremium, knobs.RepriceStep, knobs.RepriceInterval)`
    builds the opening attempt, with a deterministic
    `legUID = path.Join(positionUID, "leg-%06d")`.
 5. **Write-ahead:** append the leg's UID to `Legs`, set `Contract` (the
@@ -240,6 +240,7 @@ type ContractSelector interface {
 // greeler.
 type Position struct {
     uid          string
+    accountName  string
     exchangeName string
     underlying   string
 
@@ -262,7 +263,7 @@ type Position struct {
     db    kv.Database
 }
 
-func New(uid, exchangeName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) *Position {
+func New(uid, accountName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) *Position {
     panic("unimplemented")
 }
 
@@ -290,7 +291,7 @@ func (v *Position) Abandon(ctx context.Context) error {
 // Outcome is empty while open or settling; terminal otherwise.
 func (v *Position) Outcome() string { return v.outcome }
 
-// Save writes Config (exchangeName, underlying) and Progress (contract,
+// Save writes Config (accountName, exchangeName, underlying) and Progress (contract,
 // legIDs, outcome, assignment) as gobs.OptPositionStateV1.
 func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
     panic("unimplemented")
