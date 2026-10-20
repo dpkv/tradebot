@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
 	"time"
 
 	"github.com/bvk/tradebot/gobs"
@@ -14,7 +15,18 @@ import (
 	"github.com/visvasity/topic"
 )
 
-var ErrNoFund = errors.New("insufficient fund")
+var (
+	ErrNoFund   = errors.New("insufficient fund")
+	ErrNeedsAck = errors.New("needs user acknowledgment")
+)
+
+type Messenger interface {
+	SendMessage(ctx context.Context, at time.Time, fmtstr string, args ...any)
+}
+
+type DisplayRunner interface {
+	RunWithDisplay(cmd *exec.Cmd) error
+}
 
 type Order interface {
 	ServerID() string
@@ -54,8 +66,10 @@ type BalanceUpdate interface {
 type Product interface {
 	io.Closer
 
-	ProductID() string
+	AccountName() string
 	ExchangeName() string
+
+	ProductID() string
 	BaseMinSize() decimal.Decimal
 
 	GetPriceUpdates() (*topic.Receiver[PriceUpdate], error)
@@ -112,8 +126,15 @@ type OptionsProduct interface {
 }
 
 type Exchange interface {
+	ExchangeName() string
+
+	Accounts(context.Context) ([]Account, error)
+}
+
+type Account interface {
 	io.Closer
 
+	AccountName() string
 	ExchangeName() string
 
 	// GetBalanceUpdates is a channel that sends update notifications
@@ -137,11 +158,19 @@ type Exchange interface {
 	GetOrder(ctx context.Context, productID string, serverID string) (OrderDetail, error)
 }
 
+type TaxLotResolver interface {
+	ResolveTaxLots(ctx context.Context, serverIDs []string) ([]gobs.TaxLotID, decimal.Decimal, error)
+}
+
+type TaxLotSeller interface {
+	LimitSellTaxLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []gobs.TaxLotID) (Order, error)
+}
+
 // OptionsExchange is implemented by exchanges that support options trading.
 // Algorithms requiring options use this interface directly; exchanges that
 // don't support options simply don't implement it.
 type OptionsExchange interface {
-	Exchange
+	Account
 
 	// GetOptionsChain returns all available option contracts for the given
 	// underlying across all expirations and types.
