@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
+	"time"
 
 	"github.com/bvk/tradebot/gobs"
 	"github.com/google/uuid"
@@ -13,7 +15,18 @@ import (
 	"github.com/visvasity/topic"
 )
 
-var ErrNoFund = errors.New("insufficient fund")
+var (
+	ErrNoFund   = errors.New("insufficient fund")
+	ErrNeedsAck = errors.New("needs user acknowledgment")
+)
+
+type Messenger interface {
+	SendMessage(ctx context.Context, at time.Time, fmtstr string, args ...any)
+}
+
+type DisplayRunner interface {
+	RunWithDisplay(cmd *exec.Cmd) error
+}
 
 type Order interface {
 	ServerID() string
@@ -53,8 +66,10 @@ type BalanceUpdate interface {
 type Product interface {
 	io.Closer
 
-	ProductID() string
+	AccountName() string
 	ExchangeName() string
+
+	ProductID() string
 	BaseMinSize() decimal.Decimal
 
 	GetPriceUpdates() (*topic.Receiver[PriceUpdate], error)
@@ -68,8 +83,15 @@ type Product interface {
 }
 
 type Exchange interface {
+	ExchangeName() string
+
+	Accounts(context.Context) ([]Account, error)
+}
+
+type Account interface {
 	io.Closer
 
+	AccountName() string
 	ExchangeName() string
 
 	// GetBalanceUpdates is a channel that sends update notifications
@@ -91,4 +113,12 @@ type Exchange interface {
 	GetSpotProduct(ctx context.Context, base, quote string) (*gobs.Product, error)
 
 	GetOrder(ctx context.Context, productID string, serverID string) (OrderDetail, error)
+}
+
+type TaxLotResolver interface {
+	ResolveTaxLots(ctx context.Context, serverIDs []string) ([]gobs.TaxLotID, decimal.Decimal, error)
+}
+
+type TaxLotSeller interface {
+	LimitSellTaxLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []gobs.TaxLotID) (Order, error)
 }

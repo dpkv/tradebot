@@ -11,15 +11,24 @@ import (
 	"time"
 
 	"github.com/bvk/tradebot/exchange"
+	"github.com/bvk/tradebot/job"
 	"github.com/bvk/tradebot/trader"
 	"github.com/bvkgo/kv"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/visvasity/topic"
 )
 
 const SaveClientIDOffsetSize = 10
 const CancelOffsetTimeout = time.Minute
 
-func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
+func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) (status error) {
+	defer func() {
+		if errors.Is(status, exchange.ErrNeedsAck) {
+			status = errors.Join(job.ErrPause, status)
+		}
+	}()
+
 	v.runtimeLock.Lock()
 	defer v.runtimeLock.Unlock()
 
@@ -198,6 +207,26 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 	if _, err := v.fetchOrderMap(ctx, rt.Product); err != nil {
 		return err
 	}
+
+	// If the product supports tax lots, fetch the tax lot metadata and save
+	// it into the database. Exchanges may have time limits for how long they
+	// hold metadata for the completed orders, so we should save it locally.
+	if v.IsBuy() {
+		if taxLotResolver, ok := rt.Product.(exchange.TaxLotResolver); ok {
+			serverIDs := v.ServerOrderIDs()
+			lots, size, err := taxLotResolver.ResolveTaxLots(ctx, serverIDs)
+			if err != nil {
+				slog.Error("could not resolve tax lot info", "limiter", v, "err", err)
+				return err
+			}
+			if wanted := v.FilledSize(); !size.Equal(wanted) {
+				slog.Error("tax lots resolved to unexpected buy size", "limiter", v, "wanted", wanted, "got", size)
+				return fmt.Errorf("tax lots resolved to unexpected buy size")
+			}
+			v.SetTaxLotIDs(lots)
+		}
+	}
+
 	if err := kv.WithReadWriter(ctx, rt.Database, v.Save); err != nil {
 		return err
 	}
@@ -245,15 +274,15 @@ func (v *Limiter) create(ctx context.Context, rt *trader.Runtime) (string, error
 	var order exchange.Order
 	if v.IsSell() {
 		s := time.Now()
-		order, err = rt.Product.LimitSell(ctx, clientOrderID, size, v.point.Price)
+		order, err = v.limitSell(ctx, rt, clientOrderID, size, v.point.Price)
 		latency = time.Now().Sub(s)
 	} else {
 		s := time.Now()
-		order, err = rt.Product.LimitBuy(ctx, clientOrderID, size, v.point.Price)
+		order, err = v.limitBuy(ctx, rt, clientOrderID, size, v.point.Price)
 		latency = time.Now().Sub(s)
 	}
 	if err != nil {
-		if rt.Exchange.CanDedupOnClientUUID() {
+		if rt.Account.CanDedupOnClientUUID() {
 			v.idgen.RevertID()
 			slog.Error("create limit order has failed; client order id is reverted", "limiter", v, "point", v.point, "client-order-id", clientOrderID, "offset", offset, "latency", latency, "err", err)
 			return "", err
@@ -323,4 +352,16 @@ func (v *Limiter) fetchOrderMap(ctx context.Context, product exchange.Product) (
 		nupdated++
 	}
 	return nupdated, nil
+}
+
+func (v *Limiter) limitSell(ctx context.Context, rt *trader.Runtime, clientOrderID uuid.UUID, size, price decimal.Decimal) (exchange.Order, error) {
+	taxLotSeller, ok := rt.Product.(exchange.TaxLotSeller)
+	if ok {
+		return taxLotSeller.LimitSellTaxLots(ctx, clientOrderID, size, price, v.taxLots)
+	}
+	return rt.Product.LimitSell(ctx, clientOrderID, size, price)
+}
+
+func (v *Limiter) limitBuy(ctx context.Context, rt *trader.Runtime, clientOrderID uuid.UUID, size, price decimal.Decimal) (exchange.Order, error) {
+	return rt.Product.LimitBuy(ctx, clientOrderID, size, price)
 }

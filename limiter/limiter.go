@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type Limiter struct {
 	runtimeLock sync.Mutex
 
 	productID    string
+	accountName  string
 	exchangeName string
 
 	uid string
@@ -61,6 +63,10 @@ type Limiter struct {
 	// orders. It's value is typically less than the total size so that large
 	// orders can be avoided.
 	sizeLimitOpt atomic.Pointer[decimal.Decimal]
+
+	// taxLots holds opaque tax lots related to this limiter. Their usage and
+	// interpretation is completely up to the exchange/product implementations.
+	taxLots []gobs.TaxLotID
 }
 
 var _ trader.Trader = &Limiter{}
@@ -69,10 +75,11 @@ var _ trader.Trader = &Limiter{}
 // orders at the exchange are canceled and recreated automatically as the
 // ticker price crosses the cancel threshold and comes closer to the
 // limit-price.
-func New(uid, exchangeName, productID string, point *point.Point) (*Limiter, error) {
+func New(uid, accountName, productID string, point *point.Point) (*Limiter, error) {
 	v := &Limiter{
 		productID:    productID,
-		exchangeName: exchangeName,
+		accountName:  accountName,
+		exchangeName: exchange.FromAccountName(accountName),
 		uid:          uid,
 		point:        *point,
 		idgen:        idgen.New(uid, 0),
@@ -113,6 +120,10 @@ func (v *Limiter) ExchangeName() string {
 	return v.exchangeName
 }
 
+func (v *Limiter) AccountName() string {
+	return v.accountName
+}
+
 func (v *Limiter) BudgetAt(feePct decimal.Decimal) decimal.Decimal {
 	return v.point.Value().Add(v.point.FeeAt(feePct))
 }
@@ -123,6 +134,23 @@ func (v *Limiter) IsBuy() bool {
 
 func (v *Limiter) IsSell() bool {
 	return v.point.Side() == "SELL"
+}
+
+func (v *Limiter) ServerOrderIDs() []string {
+	var ids []string
+	v.orderMap.Range(func(id string, _ *exchange.SimpleOrder) bool {
+		ids = append(ids, id)
+		return true
+	})
+	return ids
+}
+
+func (v *Limiter) TaxLotIDs() []gobs.TaxLotID {
+	return slices.Clone(v.taxLots)
+}
+
+func (v *Limiter) SetTaxLotIDs(lots []gobs.TaxLotID) {
+	v.taxLots = slices.Clone(lots)
 }
 
 func (v *Limiter) dupOrderMap() map[string]*exchange.SimpleOrder {
@@ -185,6 +213,7 @@ func (v *Limiter) GetSummary(r *timerange.Range) *gobs.Summary {
 
 	s := &gobs.Summary{
 		Exchange:  v.exchangeName,
+		Account:   v.accountName,
 		ProductID: v.productID,
 		Budget:    decimal.Zero,
 	}
@@ -312,6 +341,7 @@ func (v *Limiter) Save(ctx context.Context, rw kv.ReadWriter) error {
 	gv := &gobs.LimiterState{
 		V2: &gobs.LimiterStateV2{
 			ProductID:      v.productID,
+			AccountName:    v.accountName,
 			ExchangeName:   v.exchangeName,
 			ClientIDSeed:   v.idgen.Seed(),
 			ClientIDOffset: v.idgen.Offset(),
@@ -321,6 +351,7 @@ func (v *Limiter) Save(ctx context.Context, rw kv.ReadWriter) error {
 				Cancel: v.point.Cancel,
 			},
 			ServerIDOrderMap: make(map[string]*gobs.Order),
+			TaxLots:          v.taxLots,
 		},
 	}
 	for k, v := range v.dupOrderMap() {
@@ -386,6 +417,7 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Limiter, error) {
 		uid:          uid,
 		productID:    gv.V2.ProductID,
 		exchangeName: gv.V2.ExchangeName,
+		accountName:  gv.V2.AccountName,
 		idgen:        idgen.New(seed, gv.V2.ClientIDOffset+SaveClientIDOffsetSize),
 
 		point: point.Point{
@@ -393,6 +425,7 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*Limiter, error) {
 			Price:  gv.V2.TradePoint.Price,
 			Cancel: gv.V2.TradePoint.Cancel,
 		},
+		taxLots: gv.V2.TaxLots,
 	}
 	for kk, vv := range gv.V2.ServerIDOrderMap {
 		cuuid, err := uuid.Parse(vv.ClientOrderID)
