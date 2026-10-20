@@ -379,7 +379,7 @@ type OptLimiterConfig struct {
 type OptLimiterProgress struct {
     // ClientIDOffset is saved ahead of each broker order, so every client
     // ID below it was possibly placed; on resume, any not in Orders is
-    // looked up with OptionsExchange.GetOptionsOrderByClientID
+    // looked up with OptionsAccount.GetOptionsOrderByClientID
     // (optlimiter-story scenario 4).
     ClientIDOffset uint64
 

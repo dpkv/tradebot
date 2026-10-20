@@ -120,7 +120,7 @@ type Position struct {
 	retryAt             time.Time // no Open, re-selection, restart or Abandon retry before this; in memory only
 
 	// Held at construction (New/Load), not re-passed to every method.
-	optEx exchange.OptionsExchange
+	optEx exchange.OptionsAccount
 	db    kv.Database
 
 	// Overridable in tests.
@@ -131,7 +131,7 @@ type Position struct {
 
 // New creates a position with empty progress. The greeler saves it under
 // its wheel epoch before calling Open.
-func New(uid, accountName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) *Position {
+func New(uid, accountName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsAccount, db kv.Database) *Position {
 	v := &Position{
 		uid:          uid,
 		accountName:  accountName,
@@ -641,7 +641,7 @@ func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
 // Load restores a position. If it isn't terminal, its last attempt is
 // loaded too; the next Check reattaches it, or opens the position if no
 // attempt was saved.
-func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) (*Position, error) {
+func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsAccount, db kv.Database) (*Position, error) {
 	if len(uid) == 0 {
 		return nil, fmt.Errorf("optpos uid is empty")
 	}

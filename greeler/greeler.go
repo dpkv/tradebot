@@ -96,8 +96,8 @@ type Greeler struct {
 	// Overridable in tests.
 	now          func() time.Time
 	interval     time.Duration
-	newPosition  func(uid string, optEx exchange.OptionsExchange, db kv.Database) position
-	loadPosition func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsExchange, db kv.Database) (position, error)
+	newPosition  func(uid string, optEx exchange.OptionsAccount, db kv.Database) position
+	loadPosition func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsAccount, db kv.Database) (position, error)
 }
 
 var _ trader.Trader = &Greeler{}
@@ -155,10 +155,10 @@ func newGreeler(uid string, cfg *gobs.GreelConfig) (*Greeler, error) {
 func (v *Greeler) setDefaults() {
 	v.now = time.Now
 	v.interval = 10 * time.Second
-	v.newPosition = func(uid string, optEx exchange.OptionsExchange, db kv.Database) position {
+	v.newPosition = func(uid string, optEx exchange.OptionsAccount, db kv.Database) position {
 		return optpos.New(uid, v.cfg.AccountName, v.cfg.ProductID, v.selector, v.cfg.WheelKnobs, optEx, db)
 	}
-	v.loadPosition = func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsExchange, db kv.Database) (position, error) {
+	v.loadPosition = func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsAccount, db kv.Database) (position, error) {
 		return optpos.Load(ctx, uid, r, v.selector, v.cfg.WheelKnobs, optEx, db)
 	}
 }

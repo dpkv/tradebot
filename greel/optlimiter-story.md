@@ -111,7 +111,7 @@ offset *k* is deterministic. **Before placing each order, the offset is
 advanced and saved** — one KV write, then the broker call. On resume:
 
 1. Every client ID below the saved offset that isn't in the order list is
-   looked up with `OptionsExchange.GetOptionsOrderByClientID` (added for
+   looked up with `OptionsAccount.GetOptionsOrderByClientID` (added for
    this — it covers filled and cancelled orders, not just open ones; a
    filled order missing from an open-orders listing would otherwise look
    "never placed" and get placed again). Found → adopt it. `os.ErrNotExist`
@@ -163,7 +163,7 @@ saves it; both writers are the same in-memory instance, guarded by the
 
 ### 7. What this requires of the exchange
 
-From the etrade `OptionsExchange` implementation (follow-on work):
+From the etrade `OptionsAccount` implementation (follow-on work):
 - option orders placed as regular-session day orders;
 - `GetOptionsProduct` snapshots with live `Bid`/`Ask`;
 - `GetOptionsOrderByClientID`, including filled and cancelled orders
@@ -183,7 +183,7 @@ then:
 - **Rolls** are one atomic broker order across two contracts, priced on
   net quotes: for a credit roll, mid = new mid − prior mid, worst = new
   bid − prior ask. They need an exchange primitive for a two-contract
-  order (sketched earlier as `OptionsExchange.OpenOptionsRollProduct`;
+  order (sketched earlier as `OptionsAccount.OpenOptionsRollProduct`;
   removed from `exchange/api.go` for v1, decision #8).
 - `RollPolicy.Decide` needs a position snapshot (premium collected net of
   rolls, current contract, quote, Greeks) and should return the limit with
@@ -241,7 +241,7 @@ func New(uid, accountName, contractID string, contractSize, numContracts, minPre
 // Run places and re-prices until filled or ctx is cancelled; on cancel it
 // cancels the live order and waits for confirmation. Saves itself to db
 // ahead of each placement.
-func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, product exchange.OptionsProduct, db kv.Database) error {
+func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsAccount, product exchange.OptionsProduct, db kv.Database) error {
     panic("unimplemented")
 }
 
@@ -268,7 +268,7 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*OptLimiter, error) {
 2. **Never two live orders** — cancel, confirm, recompute, then place
    (scenario 3).
 3. **Client IDs written ahead; lookup by client ID covers completed
-   orders** — `OptionsExchange.GetOptionsOrderByClientID` added to
+   orders** — `OptionsAccount.GetOptionsOrderByClientID` added to
    `exchange/api.go` (scenario 4).
 4. **Regular-session day orders** — the order dies at the close and
    re-pricing restarts from the mid each session (scenario 2).
@@ -281,7 +281,7 @@ func Load(ctx context.Context, uid string, r kv.Reader) (*OptLimiter, error) {
    `optlimiter` (scenario 5).
 8. **`OpenOptionsRollProduct`/`OptionsRollProduct` removed from
    `exchange/api.go` until v2 — decided.** v1 never rolls, and every
-   `OptionsExchange` implementation would otherwise have to provide them;
+   `OptionsAccount` implementation would otherwise have to provide them;
    the roll design may change in v2 anyway.
 
 No open questions remain in this module.

@@ -25,11 +25,11 @@ const testContract = "AAPL_20261218_P00200000"
 
 func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
-// fakeBroker implements OptionsExchange and OptionsProduct for one contract.
+// fakeBroker implements OptionsAccount and OptionsProduct for one contract.
 // It fails the test if two of its orders are ever live at once.
 type fakeBroker struct {
-	exchange.OptionsExchange // unused methods panic
-	exchange.OptionsProduct  // unused methods panic
+	exchange.OptionsAccount // unused methods panic
+	exchange.OptionsProduct // unused methods panic
 
 	t *testing.T
 

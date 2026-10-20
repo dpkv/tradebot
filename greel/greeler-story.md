@@ -180,7 +180,7 @@ The server reloads jobs generically — `server.Load(ctx, r, uid, typename)`
 r)` must rebuild everything from `GreelerStateV1.Config`: `GridLevels`, zone
 parameters, and the `ContractSelector` looked up by its persisted name and
 built from the persisted `WheelKnobs` (gobs-story.md decision #11). The one runtime dependency the record can't hold, the
-options exchange, comes from `rt.Account.(exchange.OptionsExchange)` in
+options exchange, comes from `rt.Account.(exchange.OptionsAccount)` in
 `Run`, so every wheel epoch's position loads there, once; `Load` itself
 loads every grid epoch's limiters (decision #1). `server.Load` gains
 `greeler`/`greelladder` cases.
@@ -261,7 +261,7 @@ type Epoch struct {
 
 func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) error {
     panic("unimplemented")
-    // optEx, ok := rt.Account.(exchange.OptionsExchange) — required.
+    // optEx, ok := rt.Account.(exchange.OptionsAccount) — required.
     // Loop:
     //   last := v.epochs[len(v.epochs)-1]   // authoritative (write-ahead)
     //   switch last.Mode {

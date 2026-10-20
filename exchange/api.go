@@ -167,10 +167,10 @@ type TaxLotSeller interface {
 	LimitSellTaxLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []gobs.TaxLotID) (Order, error)
 }
 
-// OptionsExchange is implemented by exchanges that support options trading.
-// Algorithms requiring options use this interface directly; exchanges that
+// OptionsAccount is implemented by accounts that support options trading.
+// Algorithms requiring options use this interface directly; accounts that
 // don't support options simply don't implement it.
-type OptionsExchange interface {
+type OptionsAccount interface {
 	Account
 
 	// GetOptionsChain returns all available option contracts for the given
