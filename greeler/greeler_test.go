@@ -30,7 +30,7 @@ func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 // fakeExchange is an options exchange with one stock product.
 type fakeExchange struct {
-	exchange.OptionsExchange // unused methods panic
+	exchange.OptionsAccount // unused methods panic
 }
 
 func (f *fakeExchange) AccountName() string        { return "fake" }
@@ -387,14 +387,14 @@ func newTestEnv(t *testing.T) *testEnv {
 // hook makes v use the test clock and fake positions.
 func (e *testEnv) hook(v *Greeler) *Greeler {
 	v.now = e.clock.Now
-	v.newPosition = func(uid string, optEx exchange.OptionsExchange, db kv.Database) position {
+	v.newPosition = func(uid string, optEx exchange.OptionsAccount, db kv.Database) position {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		p := &fakePosition{uid: uid}
 		e.positions[uid] = p
 		return p
 	}
-	v.loadPosition = func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsExchange, db kv.Database) (position, error) {
+	v.loadPosition = func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsAccount, db kv.Database) (position, error) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		p, ok := e.positions[uid]

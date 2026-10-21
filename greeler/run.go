@@ -48,7 +48,7 @@ type running struct {
 type runner struct {
 	v     *Greeler
 	rt    *trader.Runtime
-	optEx exchange.OptionsExchange
+	optEx exchange.OptionsAccount
 
 	// fctx bounds every child: canceled when Run returns.
 	fctx context.Context
@@ -67,7 +67,7 @@ type runner struct {
 	doneCh chan struct{}
 }
 
-func (v *Greeler) newRunner(fctx context.Context, rt *trader.Runtime, optEx exchange.OptionsExchange) *runner {
+func (v *Greeler) newRunner(fctx context.Context, rt *trader.Runtime, optEx exchange.OptionsAccount) *runner {
 	return &runner{
 		v:       v,
 		rt:      rt,
@@ -87,7 +87,7 @@ func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 	v.runtimeLock.Lock()
 	defer v.runtimeLock.Unlock()
 
-	optEx, ok := rt.Account.(exchange.OptionsExchange)
+	optEx, ok := rt.Account.(exchange.OptionsAccount)
 	if !ok {
 		return fmt.Errorf("greeler %s needs an options account: %w", v.uid, os.ErrInvalid)
 	}
@@ -160,7 +160,7 @@ func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 
 // loadChildren loads every wheel epoch's position, once. Load has already
 // loaded the grid epochs' limiters; positions need the options exchange.
-func (v *Greeler) loadChildren(ctx context.Context, db kv.Database, optEx exchange.OptionsExchange) error {
+func (v *Greeler) loadChildren(ctx context.Context, db kv.Database, optEx exchange.OptionsAccount) error {
 	if v.loaded {
 		return nil
 	}

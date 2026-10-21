@@ -22,7 +22,7 @@ import (
 // count are per session and are not persisted: after a restart the live
 // order (if any) is canceled and pricing restarts from the mid.
 type runState struct {
-	optEx   exchange.OptionsExchange
+	optEx   exchange.OptionsAccount
 	product exchange.OptionsProduct
 	db      kv.Database
 
@@ -41,7 +41,7 @@ type runState struct {
 // At most one broker order is live at any time: a re-price cancels the
 // live order and waits until the broker confirms it is done before placing
 // the next one, sized to what is still unfilled.
-func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsExchange, product exchange.OptionsProduct, db kv.Database) error {
+func (v *OptLimiter) Run(ctx context.Context, optEx exchange.OptionsAccount, product exchange.OptionsProduct, db kv.Database) error {
 	v.runMu.Lock()
 	defer v.runMu.Unlock()
 
@@ -407,7 +407,7 @@ func (v *OptLimiter) liveOrders() []string {
 // lookup absentSettle after its failed placement or first miss still
 // misses is not looked up again, even after a restart. A failed lookup
 // stops the lookups, but the known orders are still refreshed.
-func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsExchange, product exchange.OptionsProduct) error {
+func (v *OptLimiter) recover(ctx context.Context, optEx exchange.OptionsAccount, product exchange.OptionsProduct) error {
 	known := v.knownClientIDs()
 
 	now := v.now()

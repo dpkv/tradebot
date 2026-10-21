@@ -21,7 +21,7 @@ parameters, option selection criteria, upfront budget.
 Outputs: continuous premium/profit collection in both regimes. State persists
 in the KV store so runs resume after restart.
 
-Constraints: requires an `exchange.OptionsExchange`. Underlying must have a
+Constraints: requires an `exchange.OptionsAccount`. Underlying must have a
 listed options chain (equities/ETFs via etrade; not crypto).
 
 ---
@@ -303,7 +303,7 @@ developer checkpoints at every step.
 
 1. **Assignment detection** — *resolved* (optpos-story): each position asks
    the broker how its own contract stands; only broker truth writes
-   `expired`/`assigned`, via `OptionsExchange.GetOptionsSettlement` (added).
+   `expired`/`assigned`, via `OptionsAccount.GetOptionsSettlement` (added).
 2. **Accounting model** — *resolved* (accounting-story): `gobs.Summary` is stock-centric. Premium, assignment
    cost basis, and per-greeler netting (e.g., CC sale recorded at greeler
    level against level cost bases) need an extended P&L model
@@ -311,7 +311,7 @@ developer checkpoints at every step.
    greeler and ladder still implement minimal `Actions`/`BudgetAt`/
    `GetSummary`, since `trader.Trader` requires them.
 3. **Runtime plumbing** — *resolved*: the greeler gets its
-   `OptionsExchange` from `rt.Account` and passes it down; option orders
+   `OptionsAccount` from `rt.Account` and passes it down; option orders
    take it directly rather than a `trader.Runtime` (optpos-story).
 4. **Market hours**: options trade regular hours only. Option orders are
    regular-session day orders and sleep outside the session (optlimiter-
@@ -323,7 +323,7 @@ developer checkpoints at every step.
    `SetOption` on running greelers) violates the `trader.Trader` contract —
    options change only while a job isn't running. Per-greeler freeze
    (`freeze=grid|wheel|all`) and retire stay as operator controls.
-7. **Paper trading / simulation**: a simulated `OptionsExchange` for engine
+7. **Paper trading / simulation**: a simulated `OptionsAccount` for engine
    testing and future backtesting.
 8. **Observability**: per-greeler status (mode, band, open strike, collected
    premium); messenger notifications on assignment/roll/terminal events.
@@ -336,7 +336,7 @@ developer checkpoints at every step.
 12. **Option order execution** — *resolved* (optlimiter-story): an option
     order state machine that places immediately and re-prices on a timer.
 13. **`OpenOptionsRollProduct`/`OptionsRollProduct`** — *resolved*: removed
-    from `exchange/api.go` until v2, so v1 `OptionsExchange` implementations
+    from `exchange/api.go` until v2, so v1 `OptionsAccount` implementations
     don't need them (optlimiter-story decision #8).
 
 ---
