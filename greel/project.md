@@ -338,6 +338,8 @@ developer checkpoints at every step.
 13. **`OpenOptionsRollProduct`/`OptionsRollProduct`** — *resolved*: removed
     from `exchange/api.go` until v2, so v1 `OptionsExchange` implementations
     don't need them (optlimiter-story decision #8).
+14. **A real `OptionsExchange` and `StockHoldings`** — *in design*
+    (etrade-options-story): etrade implements both; no exchange does yet.
 
 ---
 
@@ -348,6 +350,7 @@ developer checkpoints at every step.
 - [x] `optpos` story — drafted in [optpos-story.md](optpos-story.md), reviewed (design-review items resolved)
 - [x] `greeler` story — drafted in [greeler-story.md](greeler-story.md), reviewed
 - [x] `greelladder` story — drafted in [greelladder-story.md](greelladder-story.md), reviewed
+- [ ] `etrade` options story — drafted in [etrade-options-story.md](etrade-options-story.md), in review
 
 ---
 
