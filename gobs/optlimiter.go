@@ -19,6 +19,7 @@ type OptLimiterStateV1 struct {
 
 // OptLimiterConfig is fixed at creation.
 type OptLimiterConfig struct {
+	AccountName  string
 	ExchangeName string
 	ContractID   string
 

@@ -97,6 +97,7 @@ func newFakeExchange(t *testing.T) *fakeExchange {
 	return f
 }
 
+func (f *fakeExchange) AccountName() string  { return "fake" }
 func (f *fakeExchange) ExchangeName() string { return "fake" }
 
 func (f *fakeExchange) GetOptionsChain(ctx context.Context, underlying string) ([]*gobs.OptionContract, error) {
@@ -166,6 +167,7 @@ func (f *fakeExchange) GetOptionsOrderByClientID(ctx context.Context, clientID u
 }
 
 func (p *fakeProduct) ContractID() string   { return p.id }
+func (p *fakeProduct) AccountName() string  { return "fake" }
 func (p *fakeProduct) ExchangeName() string { return "fake" }
 func (p *fakeProduct) Close() error         { return nil }
 

@@ -180,7 +180,7 @@ The server reloads jobs generically — `server.Load(ctx, r, uid, typename)`
 r)` must rebuild everything from `GreelerStateV1.Config`: `GridLevels`, zone
 parameters, and the `ContractSelector` looked up by its persisted name and
 built from the persisted `WheelKnobs` (gobs-story.md decision #11). The one runtime dependency the record can't hold, the
-options exchange, comes from `rt.Exchange.(exchange.OptionsExchange)` in
+options exchange, comes from `rt.Account.(exchange.OptionsExchange)` in
 `Run`, so every wheel epoch's position loads there, once; `Load` itself
 loads every grid epoch's limiters (decision #1). `server.Load` gains
 `greeler`/`greelladder` cases.
@@ -221,6 +221,7 @@ import (
 // it's runnable standalone; under a ladder, the ladder drives it.
 type Greeler struct {
     uid          string
+    accountName  string
     exchangeName string
     productID    string
 
@@ -260,7 +261,7 @@ type Epoch struct {
 
 func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) error {
     panic("unimplemented")
-    // optEx, ok := rt.Exchange.(exchange.OptionsExchange) — required.
+    // optEx, ok := rt.Account.(exchange.OptionsExchange) — required.
     // Loop:
     //   last := v.epochs[len(v.epochs)-1]   // authoritative (write-ahead)
     //   switch last.Mode {
@@ -353,7 +354,7 @@ var _ trader.Trader = (*Greeler)(nil)
    stays a separate, spot-dependent decision (scenario 3).
 8. **`Load` rebuilds from the record alone — decided after design
    review.** Selector from its persisted name and knobs; options exchange
-   from `rt.Exchange` in `Run` (scenario 5).
+   from `rt.Account` in `Run` (scenario 5).
 9. **Minimal `Actions`/`BudgetAt`/`GetSummary`/`Status` until the
    accounting model lands** (scenario 5).
 10. **An unopened position is abandoned by the normal flip-back rule —

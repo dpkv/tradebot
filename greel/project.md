@@ -311,7 +311,7 @@ developer checkpoints at every step.
    greeler and ladder still implement minimal `Actions`/`BudgetAt`/
    `GetSummary`, since `trader.Trader` requires them.
 3. **Runtime plumbing** — *resolved*: the greeler gets its
-   `OptionsExchange` from `rt.Exchange` and passes it down; option orders
+   `OptionsExchange` from `rt.Account` and passes it down; option orders
    take it directly rather than a `trader.Runtime` (optpos-story).
 4. **Market hours**: options trade regular hours only. Option orders are
    regular-session day orders and sleep outside the session (optlimiter-

@@ -187,7 +187,7 @@ func TestRunSendsGateAlerts(t *testing.T) {
 	db := newTestDB(t)
 	stock := &fakeStock{prices: topic.New[exchange.PriceUpdate]()}
 	msgr := &fakeMessenger{}
-	rt := &trader.Runtime{Exchange: &fakeExchange{}, Database: db, Product: stock, Messenger: msgr}
+	rt := &trader.Runtime{Account: &fakeExchange{}, Database: db, Product: stock, Messenger: msgr}
 	v := newTestLadder(t, band(98), band(102))
 	if _, err := v.SetOption("max-contracts", "1"); err != nil {
 		t.Fatal(err)

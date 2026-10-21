@@ -76,6 +76,7 @@ func newFakeBroker(t *testing.T, bid, ask string) *fakeBroker {
 	return &fakeBroker{t: t, bid: d(bid), ask: d(ask), updates: topic.New[exchange.OrderUpdate]()}
 }
 
+func (f *fakeBroker) AccountName() string  { return "fake" }
 func (f *fakeBroker) ExchangeName() string { return "fake" }
 func (f *fakeBroker) ContractID() string   { return testContract }
 func (f *fakeBroker) Close() error         { return nil }
