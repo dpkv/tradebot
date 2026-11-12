@@ -9,9 +9,25 @@ CPG_URL        = os.environ.get("CPG_URL", "https://localhost:5000")
 
 RESTART_COOLDOWN_SEC = 3600
 POST_RESTART_WAIT_SEC = 30
+# While this file exists the bot never logs in or restarts the gateway, so a
+# manual Client Portal login is left alone; it still tickles to keep whatever
+# session exists warm. `touch` it to disable and `rm` it to re-enable (see the
+# ibkr-cp-gw-login-off/on Makefile targets). It lives in the container's
+# writable layer: it survives `docker restart` but not recreating the container.
+LOGIN_DISABLED_FILE = os.environ.get("IBKR_LOGIN_DISABLED_FILE", "/opt/ibkr-gateway/login-disabled")
 
 _last_restart_time = 0.0
 _previous_login_failed = False
+
+class LoginDisabled(Exception):
+    pass
+
+def login_loop_enabled() -> bool:
+    return not os.path.exists(LOGIN_DISABLED_FILE)
+
+def ensure_login_enabled():
+    if not login_loop_enabled():
+        raise LoginDisabled(f"login disabled by {LOGIN_DISABLED_FILE}")
 
 def restart_gateway():
     global _last_restart_time
@@ -69,11 +85,16 @@ def login() -> dict:
 
     if _previous_login_failed and (time.time() - _last_restart_time) > RESTART_COOLDOWN_SEC:
         restart_gateway()
+        # The restart waits POST_RESTART_WAIT_SEC; the flag may have been set
+        # meanwhile (e.g. to log in by hand on the fresh gateway).
+        ensure_login_enabled()
 
     try:
         cookies = _do_login_flow()
         _previous_login_failed = False
         return cookies
+    except LoginDisabled:
+        raise
     except Exception:
         _previous_login_failed = True
         raise
@@ -88,6 +109,10 @@ def _do_login_flow() -> dict:
         page.goto(CPG_URL, wait_until="domcontentloaded")
         page.wait_for_selector('#xyz-field-username', state="visible", timeout=30000)
         print("Page loaded")
+
+        # Last chance to back off before submitting credentials replaces any
+        # session someone started by hand while this flow was loading.
+        ensure_login_enabled()
 
         # Step 2: Fill credentials
         js_fill(page, '#xyz-field-username', USERNAME)
@@ -187,9 +212,12 @@ def _do_login_flow() -> dict:
 
 def do_login(max_attempts: int = 3) -> dict:
     for attempt in range(1, max_attempts + 1):
+        ensure_login_enabled()
         try:
             print(f"\n--- Login attempt {attempt}/{max_attempts} ---")
             return login()
+        except LoginDisabled:
+            raise
         except Exception as e:
             print(f"Attempt {attempt} failed: {e}")
             if attempt < max_attempts:
@@ -200,13 +228,19 @@ def do_login(max_attempts: int = 3) -> dict:
 
 def relogin_loop():
     fail_count = 0
-    cookies = do_login()
-    print("Startup login successful — tickle loop starting\n")
+    cookies = {}
+    try:
+        cookies = do_login()
+        print("Startup login successful — tickle loop starting\n")
+    except LoginDisabled as e:
+        print(f"Skipping startup login: {e}\n")
 
     def safe_tickle():
         nonlocal cookies, fail_count
 
-        # Tickle first to keep session warm
+        # Tickle first to keep session warm. This runs even while login is
+        # disabled: it never creates or replaces a session, and it keeps a
+        # manual login alive when the trading server isn't tickling.
         try:
             httpx.post(
                 f"{CPG_URL}/v1/api/tickle",
@@ -221,6 +255,11 @@ def relogin_loop():
         if is_session_alive(cookies):
             fail_count = 0
             print("Session alive")
+        elif not login_loop_enabled():
+            # Don't accumulate failures while disabled, or re-enabling would
+            # re-login on the very next tick instead of after 3 dead checks.
+            fail_count = 0
+            print(f"Session dead — not re-logging in, {LOGIN_DISABLED_FILE} exists")
         else:
             fail_count += 1
             print(f"Session dead (fail {fail_count}/3)")
@@ -231,6 +270,9 @@ def relogin_loop():
                     cookies = do_login()
                     fail_count = 0
                     print("Re-login successful")
+                except LoginDisabled as e:
+                    fail_count = 0
+                    print(f"Re-login aborted: {e}")
                 except Exception as e:
                     print(f"Re-login failed: {e} — will retry on next tick")
 
@@ -244,4 +286,5 @@ def relogin_loop():
 if __name__ == "__main__":
     print("Starting IBKR CPG login bot...")
     print(f"CPG_URL: {CPG_URL}")
+    print(f"Login disabled file: {LOGIN_DISABLED_FILE} enabled={login_loop_enabled()}")
     relogin_loop()

@@ -1,4 +1,4 @@
-playwright
-apscheduler
-httpx
-pyotp
+playwright==1.65.1
+apscheduler==3.11.3
+httpx==0.28.1
+pyotp==2.10.0

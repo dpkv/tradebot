@@ -65,8 +65,19 @@ docker-build-tradebot-live: docker-build-tradebot
 docker-build-tradebot-paper: docker-build-tradebot
 	$(DOCKER) tag $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG) $(IMAGE_TRADEBOT):$(TRADEBOT_IMAGE_TAG)-paper
 
+# IBKR Client Portal Gateway, fetched once into the (gitignored) third-party
+# dir; delete the file to pick up a newer release.
+IBKR_CP_GW_ZIP := third-party/ibkr/clientportal.gw.zip
+IBKR_CP_GW_URL ?= https://download2.interactivebrokers.com/portal/clientportal.gw.zip
+
+$(IBKR_CP_GW_ZIP):
+	mkdir -p $(dir $@)
+	curl -fsSL -o $@.tmp "$(IBKR_CP_GW_URL)"
+	unzip -tq $@.tmp
+	mv $@.tmp $@
+
 .PHONY: docker-build-ibkr-cp-gw
-docker-build-ibkr-cp-gw:
+docker-build-ibkr-cp-gw: $(IBKR_CP_GW_ZIP)
 	$(DOCKER) build -f docker/ibkr-cp-gw/Dockerfile -t $(IMAGE_IBKR_CP_GW):latest .
 
 # Run IBKR Client Portal Gateway: map host PORT to container 5000.
@@ -83,6 +94,22 @@ docker-run-ibkr-cp-gw:
 	@test -n "$(ENV_FILE)" || (echo "usage: make docker-run-ibkr-cp-gw PORT=<host-port> CNAME=<docker-hostname-and-container-name> ENV_FILE=<path-to-env-file>" >&2; exit 1)
 	$(DOCKER) run -d --init --restart unless-stopped --hostname "$(CNAME)" --name "$(CNAME)" $(DOCKER_TZ_FLAGS) \
 		--env-file "$(ENV_FILE)" -p $(PORT):5000 $(IMAGE_IBKR_CP_GW):latest
+
+# Stop/resume the IBKR login bot's automatic login and gateway restarts without
+# restarting the container, e.g. to log in to the Client Portal by hand. The
+# bot keeps tickling either way. The setting survives `docker restart` but not
+# recreating the container.
+# Usage: make ibkr-cp-gw-login-off CNAME=ibkr-cp-gw
+.PHONY: ibkr-cp-gw-login-off
+ibkr-cp-gw-login-off:
+	@test -n "$(CNAME)" || (echo "usage: make ibkr-cp-gw-login-off CNAME=<container-name>" >&2; exit 1)
+	$(DOCKER) exec "$(CNAME)" touch /opt/ibkr-gateway/login-disabled
+
+# Usage: make ibkr-cp-gw-login-on CNAME=ibkr-cp-gw
+.PHONY: ibkr-cp-gw-login-on
+ibkr-cp-gw-login-on:
+	@test -n "$(CNAME)" || (echo "usage: make ibkr-cp-gw-login-on CNAME=<container-name>" >&2; exit 1)
+	$(DOCKER) exec "$(CNAME)" rm -f /opt/ibkr-gateway/login-disabled
 
 # Run tradebot image with data directory on the host mounted at /root/.tradebot.
 # PORT maps host port to container 10000 (tradebot server default).
