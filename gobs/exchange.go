@@ -113,7 +113,8 @@ type Accounts struct {
 }
 
 type OptionContract struct {
-	// ContractID uniquely identifies the contract, e.g. "AAPL_20261218_C00200000".
+	// ContractID uniquely identifies the contract: the OSI option symbol
+	// without its space padding, e.g. "AAPL261218C00200000".
 	ContractID string
 
 	Underlying string
