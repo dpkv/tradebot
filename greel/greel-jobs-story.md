@@ -109,11 +109,12 @@ other aren't expressible with flags and are left out.
 The grid flags are waller's: `--begin-price`, `--end-price`, one of
 `--buy-interval` / `--buy-interval-pct`, one of `--profit-margin` /
 `--profit-margin-pct`, `--buy-size`, `--sell-size` (must equal buy size)
-and `--cancel-offset-pct` (default 5, as in waller). They go through
-waller's generator (`subcmds/waller/spec.go`, `fixedProfitPairs` and
-`percentProfitPairs`), so a range means exactly what it means to
-`waller add`. Waller's fee adjustment is left out (no `--fee-pct` on
-`add`): greel's grid sells at the price it is given. There is no form for
+`--cancel-offset-pct` (default 5, as in waller) and `--fee-pct` (default
+0.25, as in waller). They go through waller's generator
+(`subcmds/waller/spec.go`, `fixedProfitPairs` and `percentProfitPairs`),
+fee adjustment included, so a range means exactly what it means to
+`waller add`: each sell price is raised so the margin survives the fee on
+both legs. `--fee-pct 0` turns the adjustment off. There is no form for
 explicit levels.
 
 ### 5. No hidden defaults
@@ -162,8 +163,8 @@ and `simulate` need no server):
   limits and usage, then one block per band.
 - `print <name-or-uid>`: the gob as JSON.
 - `query`: takes the config flags and prints what a job would need without
-  creating it: the grid levels, the stock budget (waller's `Analyze`, with
-  an optional `--fee-pct`, default 0), the price bounds of the grid and far
+  creating it: the grid levels, the stock budget (waller's `Analyze`
+  at `--fee-pct`), the price bounds of the grid and far
   zones, the contracts the grid can cover, and the worst-case put exposure
   (contracts × 100 × the lowest buy price). The ladder version prints this
   per band and in total.
@@ -188,8 +189,7 @@ and `simulate` need no server):
 - `server/server.go`: `doGreel`, `doGreelLadder`, registered in the handler
   map; an `OptionsAccount` check helper.
 - `greeler/greeler.go`: wheel knob validation in `check`.
-- `subcmds/waller/spec.go`: export the pair generator, with fee adjustment
-  optional.
+- `subcmds/waller/spec.go`: export the pair generator.
 - `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
   checks, conversion to `gobs.GreelConfig`, and band splitting.
 - `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the eight
@@ -218,7 +218,7 @@ flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query` and
    text; `--account` and `--product` are required. A ladder is one range
    cut into `--bands N` equal bands with the same settings (scenario 3).
 5. **The grid is a range, as in waller,** through waller's generator
-   without the fee adjustment (scenario 4).
+   with its fee adjustment and `--fee-pct` (scenario 4).
 6. **No hidden defaults;** wheel knob validation moves into
    `greeler.New` (scenario 5).
 7. **`--dry-run` validates locally and prints the grid** (scenario 6).
