@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
@@ -36,6 +37,13 @@ func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *
 			client.Close()
 		}
 	}()
+
+	// Option order entries outlive their orders; drop those long past expiry.
+	if n, err := pruneOptionOrders(ctx, db, time.Now()); err != nil {
+		return nil, err
+	} else if n > 0 {
+		slog.Info("etrade: pruned option order entries past retention", "count", n)
+	}
 
 	v := &Exchange{
 		db:     db,
