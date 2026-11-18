@@ -87,8 +87,21 @@ type portfolioPosition struct {
 	PositionID  int64  `json:"positionId"`
 	LotsDetails string `json:"lotsDetails"`
 	Product     struct {
-		Symbol string `json:"symbol"`
+		// Symbol is the underlying for an option position.
+		Symbol       string `json:"symbol"`
+		SecurityType string `json:"securityType"` // "EQ", "OPTN", ...
 	} `json:"Product"`
+
+	// Quantity is the number of shares, or contracts for an option.
+	Quantity decimal.Decimal `json:"quantity"`
+	// PositionType is "LONG" or "SHORT".
+	PositionType string `json:"positionType"`
+}
+
+// isEquity reports whether the position is stock. An empty security type is
+// taken as stock, which is what positions were before the field was read.
+func (p *portfolioPosition) isEquity() bool {
+	return p.Product.SecurityType == "" || strings.EqualFold(p.Product.SecurityType, "EQ")
 }
 
 type positionLotsResponseWrapper struct {
@@ -229,13 +242,20 @@ type Client struct {
 	// each nonce is unique.
 	nonceCounter atomic.Int64
 
-	// symbolOrderTopicMap is a per-symbol topic for order updates. Products
-	// subscribe to their symbol's topic to receive live order state changes.
+	// symbolOrderTopicMap is a per-instrument topic for order updates, keyed
+	// by orderTopicKey: the symbol for equity orders and the contract ID for
+	// option orders. Products subscribe to their key's topic to receive live
+	// order state changes.
 	symbolOrderTopicMap syncmap.Map[string, *topic.Topic[*internal.Order]]
 
 	// symbolPriceTopicMap is a per-symbol topic for quote updates. Any symbol
 	// present in this map is included in each price poll cycle.
 	symbolPriceTopicMap syncmap.Map[string, *topic.Topic[*internal.Quote]]
+
+	// optionPriceTopicMap is a per-contract topic for option quote updates,
+	// keyed by contract ID. Any contract present in this map is included in
+	// each price poll cycle, through a separate detailFlag=OPTIONS request.
+	optionPriceTopicMap syncmap.Map[string, *topic.Topic[*internal.OptionQuote]]
 
 	// balancesTopicMap holds balancesTopic that publishes account balance
 	// updates polled from the API. Each account has separate balance, so this is
@@ -1083,6 +1103,11 @@ func (c *Client) GetPortfolio(ctx context.Context, accountID string) ([]*positio
 
 	var lots []*positionLot
 	for _, pos := range positions {
+		// Lots are for tax-lot selling of stock. An option position's symbol is
+		// its underlying, so its lots would pass for the underlying's shares.
+		if !pos.isEquity() {
+			continue
+		}
 		detailURL, err := url.Parse(pos.LotsDetails)
 		if err != nil {
 			return nil, err
@@ -1176,9 +1201,13 @@ func (c *Client) goPollPrices(ctx context.Context) {
 				slog.Warn("etrade: could not poll prices (will retry)", "symbols", symbols, "err", err)
 			}
 			for _, quote := range quotes {
-				c.getSymbolPriceTopic(quote.Symbol).Send(quote)
+				if tp := c.getSymbolPriceTopic(quote.Symbol); tp != nil {
+					tp.Send(quote)
+				}
 			}
 		}
+
+		c.pollOptionPrices(ctx)
 	}
 }
 
@@ -1274,7 +1303,7 @@ func (c *Client) goRefreshOrders(ctx context.Context, accountID string) {
 
 			newOrderMap := make(map[int64]*internal.Order)
 			for _, v := range orders {
-				c.getSymbolOrdersTopic(v.Symbol).Send(v)
+				c.publishOrder(v)
 				if _, ok := trackingOrderMap[v.OrderID]; ok {
 					newOrderMap[v.OrderID] = v
 				}
@@ -1299,7 +1328,7 @@ func (c *Client) goRefreshOrders(ctx context.Context, accountID string) {
 				if !order.IsDone() {
 					slog.Error("etrade: live order is found missing in list open orders (unexpected)", "orderID", orderID)
 				}
-				c.getSymbolOrdersTopic(order.Symbol).Send(order)
+				c.publishOrder(order)
 			}
 
 			trackingOrderMap = newOrderMap
