@@ -76,7 +76,7 @@ tradebot greeler add --name aapl-greel \
   --min-premium-yield 0.5 --min-open-interest 100 --max-spread-pct 10 \
   --reprice-step 0.25 --reprice-interval 5m
 
-tradebot greelladder add --name aapl-ladder --bands 4 \
+tradebot greelladder add --name aapl-ladder \
   --max-contracts 4 --max-put-exposure 80000 \
   ...the same grid, zone and wheel flags...
 ```
@@ -94,15 +94,17 @@ by every greel command that takes a config (`add` and `query`):
 `--account` and `--product` are required; there is no default account,
 since only an options account works.
 
-**A ladder's bands.** `greelladder add` builds the grid over the whole
-range exactly as `greeler add` would, then cuts its levels into `--bands N`
-consecutive bands with as equal a number of levels as possible (lower
-bands take any remainder). Every band gets the same zone and wheel
-settings. So a ladder over a range trades the same levels as one greeler
-over it, split into bands that each can flip to the wheel on their own.
-Each band must still hold one contract's worth of shares, which
-`greeler.New` already checks. Bands with different settings from each
-other aren't expressible with flags and are left out.
+**A ladder's greels.** `greelladder add` builds the grid over the whole
+range exactly as `greeler add` would, then cuts its levels, from the
+bottom, into consecutive greels of one contract each: every greel gets
+`ceil(100 / buy-size)` levels, the fewest that hold 100 shares. Levels
+left over at the top, too few for a contract, join the top greel. A
+range too small for even one greel is an error. So the range decides how
+many greels there are, there is no count flag, and a ladder over a range
+trades the same levels as one greeler over it. Every greel gets the same
+zone and wheel settings; greels with different settings aren't
+expressible with flags and are left out. `--dry-run` prints each greel's
+levels.
 
 ### 4. The grid is a range, as in waller
 
@@ -160,14 +162,14 @@ and `summary` read the database directly through `cmdutil.DBFlags`;
   `Status` summary (grid round trips, premiums, assignments), the current
   mode and epoch, the pending flip and its dwell clock, the held contract,
   and one row per grid level. `greelladder get` prints the ladder's gate
-  limits and usage, then one block per band.
+  limits and usage, then one block per greel.
 - `print <name-or-uid>`: the gob as JSON.
 - `query`: takes the config flags and prints what a job would need without
   creating it: the grid levels, the stock budget (waller's `Analyze`
   at `--fee-pct`), the price bounds of the grid and far
   zones, the contracts the grid can cover, and the worst-case put exposure
   (contracts × 100 × the lowest buy price). The ladder version prints this
-  per band and in total.
+  per greel and in total.
 - `upgrade <uid>...`: load and save, to rewrite old state in the current
   form.
 - `summary`: waller summary's flags and formats (`table`, `json`,
@@ -188,7 +190,7 @@ only the grid half of a greel job.
 - `greeler/greeler.go`: wheel knob validation in `check`.
 - `subcmds/waller/spec.go`: export the pair generator.
 - `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
-  checks, conversion to `gobs.GreelConfig`, and band splitting.
+  checks, conversion to `gobs.GreelConfig`, and cutting a ladder into greels.
 - `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the seven
   commands for each group.
 - `main.go`: `greeler` and `greelladder` command groups.
@@ -213,7 +215,8 @@ flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
    before its limits are set (scenario 2).
 4. **Configs come from flags,** with a sample command line in each help
    text; `--account` and `--product` are required. A ladder is one range
-   cut into `--bands N` equal bands with the same settings (scenario 3).
+   cut into greels of one contract each, with the same settings
+   (scenario 3).
 5. **The grid is a range, as in waller,** through waller's generator
    with its fee adjustment and `--fee-pct` (scenario 4).
 6. **No hidden defaults;** wheel knob validation moves into
