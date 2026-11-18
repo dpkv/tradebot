@@ -294,6 +294,14 @@ type Client struct {
 	// lotDetailMap is a mapping from position URL to it's last known lots metadata.
 	lotDetailMap syncmap.Map[string, []*positionLot]
 
+	// positionsMap holds each account's positions from its latest portfolio
+	// fetch, for GetStockHolding.
+	positionsMap syncmap.Map[string, []*portfolioPosition]
+
+	// settlementAlerted holds the transaction IDs already alerted as unknown
+	// settlement types, so each alerts once per process.
+	settlementAlerted syncmap.Map[int64, bool]
+
 	// portfolioMu serializes the read-modify-write updates to portfolioMap and
 	// lotDetailMap in updatePortfolio, which can run from both goTrackPortfolio
 	// and ResolveOrderLots for the same account.
@@ -1083,10 +1091,29 @@ func (c *Client) GetTaxLotDetail(ctx context.Context, taxLotID gobs.TaxLotID) ([
 // orders. It is fetched with GET
 // /v1/accounts/{accountIdKey}/portfolio?lotsRequired=true.
 func (c *Client) GetPortfolio(ctx context.Context, accountID string) ([]*positionLot, error) {
+	_, lots, err := c.fetchPortfolio(ctx, accountID)
+	return lots, err
+}
+
+// refreshPortfolio fetches the account's portfolio, saves its positions as
+// the latest snapshot for GetStockHolding, and updates the lot cache.
+func (c *Client) refreshPortfolio(ctx context.Context, accountID string) ([]*portfolioPosition, error) {
+	positions, lots, err := c.fetchPortfolio(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	c.positionsMap.Store(accountID, positions)
+	c.updatePortfolio(lots)
+	return positions, nil
+}
+
+// fetchPortfolio fetches every position of the account, and the lots of its
+// stock positions.
+func (c *Client) fetchPortfolio(ctx context.Context, accountID string) ([]*portfolioPosition, []*positionLot, error) {
 	creds := c.creds.Load()
 	accountIDKey, err := creds.GetAccountIDKey(accountID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	apiPath := "/v1/accounts/" + url.PathEscape(accountIDKey) + "/portfolio"
 	params := url.Values{
@@ -1098,7 +1125,7 @@ func (c *Client) GetPortfolio(ctx context.Context, accountID string) ([]*positio
 	for i := 0; i == 0 || nextPageNo != ""; i++ {
 		wrapper := new(portfolioResponseWrapper)
 		if err := doGetJSON(ctx, c, apiPath, params, wrapper); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, ap := range wrapper.PortfolioResponse.AccountPortfolio {
 			positions = append(positions, ap.Position...)
@@ -1116,11 +1143,11 @@ func (c *Client) GetPortfolio(ctx context.Context, accountID string) ([]*positio
 		}
 		detailURL, err := url.Parse(pos.LotsDetails)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		var posWrapper positionLotsResponseWrapper
 		if err := doGetJSON(ctx, c, detailURL.Path, nil, &posWrapper); err != nil {
-			return nil, fmt.Errorf("etrade: could not fetch lots from %q: %w", pos.LotsDetails, err)
+			return nil, nil, fmt.Errorf("etrade: could not fetch lots from %q: %w", pos.LotsDetails, err)
 		}
 		for _, v := range posWrapper.PositionLotsResponse.PositionLots {
 			v.LotsDetails = pos.LotsDetails
@@ -1129,7 +1156,7 @@ func (c *Client) GetPortfolio(ctx context.Context, accountID string) ([]*positio
 			lots = append(lots, v)
 		}
 	}
-	return lots, nil
+	return positions, lots, nil
 }
 
 // GetURL performs an OAuth-signed GET against an E*TRADE API URL and returns
@@ -1354,12 +1381,10 @@ func (c *Client) goTrackPortfolio(ctx context.Context, accountID string) {
 	}()
 
 	for ; ctx.Err() == nil; ctxutil.Sleep(ctx, time.Minute) {
-		lots, err := c.GetPortfolio(ctx, accountID)
-		if err != nil {
+		if _, err := c.refreshPortfolio(ctx, accountID); err != nil {
 			slog.Error("etrade: could not fetch portfolio for an account (will retry)", "account-id", accountID, "err", err)
 			continue
 		}
-		c.updatePortfolio(lots)
 	}
 }
 
@@ -1465,12 +1490,10 @@ func (c *Client) ResolveOrderLots(ctx context.Context, accountID, symbol string,
 	// times until *every* requested order resolves to at least one lot.
 	var lastErr error
 	for attempt := 1; attempt <= resolveLotsMaxAttempts; attempt++ {
-		full, err := c.GetPortfolio(ctx, accountID)
-		if err != nil {
+		if _, err := c.refreshPortfolio(ctx, accountID); err != nil {
 			return nil, err
 		}
 		slog.Info("fetched full portfolio for account to resolve orders", "account-id", accountID, "symbol", symbol, "orders", serverOrderIDs, "attempt", attempt)
-		c.updatePortfolio(full)
 
 		lots, err := c.resolveLotsFromCache(accountID, symbol, serverOrderIDs)
 		if err == nil {
