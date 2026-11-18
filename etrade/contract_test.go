@@ -98,3 +98,12 @@ func TestContractExpiry(t *testing.T) {
 		t.Errorf("Expiry() %v is not after the expiry-day close %v", got, afterClose)
 	}
 }
+
+func TestContractQuoteSymbol(t *testing.T) {
+	if got, err := ContractQuoteSymbol("AAPL261218P00200000"); err != nil || got != "AAPL:2026:12:18:PUT:200" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := ContractQuoteSymbol("AAPL"); err == nil {
+		t.Fatal("want an error for an invalid contract id")
+	}
+}
