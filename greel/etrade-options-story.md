@@ -189,34 +189,11 @@ place twice.
 
 #### The same gap on the equity side
 
-The equity product has the hole this scenario closes for options. When a
-placement errors, `goCancelFailedCreates` looks for the order among
-**open** orders only (`etrade/product.go:690`), and so does startup
-recovery for an entry with no server ID (`etrade/product.go:253`). An
-order that reached E*TRADE and filled at once is never open, so the
-product decides it was never created and deletes its record. Limiter saw
-only the error (`limiter/run.go:310`) and places again with a new client
-ID, so the level trades twice and limiter's books miss one fill. The
-ladder's reconciliation would alert on the extra shares, but nothing
-corrects them.
-
-Fixing the product alone isn't enough: limiter ignores updates for server
-IDs it doesn't know (`limiter/limiter.go:345`), so a found order would
-still go unrecorded. The fix has two halves:
-
-- **Product**: search the account's orders in every status (the same
-  `ListOrders` the option lookup uses) from the placement day. A match
-  that is live is cancelled as today; a match that is done keeps its
-  record, and either way the order is published on the symbol topic with
-  its client ID set.
-- **Limiter**: remember the client IDs whose placement failed, and adopt
-  an update whose server ID is new but whose client ID is one of those,
-  counting its fill. The remembered IDs are saved with the limiter, so a
-  restart doesn't forget them.
-
-This changes `limiter`, which every production grid order runs through,
-so it gets its own tests (a placement that errors but fills, before and
-after a restart).
+The equity product has the hole this scenario closes for options: a
+placement that errors but fills at once is missed by its open-orders-only
+search, and limiter ignores the order even when found. That fix touches
+`limiter` and is tracked separately in issue 24; it will reuse this
+story's all-status `ListOrders`.
 
 ### 6. Settlement: `GetOptionsSettlement`
 
@@ -308,8 +285,6 @@ depend on the request, so it can't exercise this logic.
 - `etrade/options.go`: `SettlementLookback` (default 45 days) and
   `ChainCacheTTL` (default 60 seconds).
 - `subcmds/etrade/`: the three read-only subcommands.
-- `etrade/product.go` and `limiter`: the equity failed-create fix
-  (scenario 5), with `gobs.LimiterStateV2` gaining the failed client IDs.
 
 ---
 
@@ -340,9 +315,6 @@ depend on the request, so it can't exercise this logic.
    the portfolio poller's latest snapshot (scenario 7).
 10. **Tests use an httptest fake; real responses are checked with three
     read-only debug subcommands** (scenario 8).
-11. **The equity failed-create gap is fixed in the same code PR**: the
-    product searches every order status, and limiter adopts orders whose
-    placement errored (scenario 5).
 
 ### Open question
 
