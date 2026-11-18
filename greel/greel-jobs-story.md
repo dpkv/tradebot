@@ -21,10 +21,9 @@ This story adds the same pair for a single greeler and for a ladder.
 
 - `POST /trader/greel` takes `api.GreelRequest{Config *gobs.GreelConfig,
   Options map[string]string}` and answers `{UID}`.
-- `POST /trader/greelladder` takes `api.GreelLadderRequest{Config
-  *gobs.GreelConfig, Options map[string]string}` and answers `{UID}`. The
-  config is one greeler config over the ladder's whole range; the server
-  cuts it into greels (scenario 3).
+- `POST /trader/greelladder` takes `api.GreelLadderRequest{AccountName,
+  ProductID string, Bands []*gobs.GreelConfig, Options map[string]string}`
+  and answers `{UID}`.
 
 The handlers follow `doWall`:
 
@@ -35,21 +34,37 @@ The handlers follow `doWall`:
    state.
 3. `getProduct(account, product)`, which also checks the product is enabled
    on the exchange.
-4. `greeler.New(uuid, cfg)`, or for a ladder `greelladder.Cut(cfg)` and
-   then `greelladder.New(uuid, account, product, bands)` on its result.
-   These constructors already validate everything about the config
+4. `greeler.New(uuid, cfg)` or `greelladder.New(uuid, account, product,
+   bands)`. These constructors already validate everything about the config
    (grid order, equal sizes, one contract's worth of shares, `0 < grid < far`,
    hysteresis below far, dwell not negative, a registered selector), so the
-   handler adds no rules of its own.
+   handler adds no rules of its own. Those checks are factored out so the
+   client runs the very same code (below).
 5. Apply `Options` with `SetOption`, then save and `runner.Add` in one
    transaction, then `runner.Resume`.
 
-The request carries the gobs config directly: the server is the single
-place configs are validated and ladders are cut, and the subcommand just
-builds the config.
+The request carries the gobs configs directly, and the ladder request
+keeps its list of bands: the client decides the bands (scenario 3) and the
+server validates them.
 
-`greelladder.New` keeps taking a list of bands, as it does today; `Cut`
-is a new function beside it, so the merged ladder code doesn't change.
+**Shared validation.** Today the config rules live inside the
+constructors' private `check` methods, mixed with the UID check, so the
+client could only reach them by building a job. They move into exported
+functions that need no UID and no exchange:
+
+- `greeler.CheckConfig(cfg *gobs.GreelConfig) error`: product and account
+  set, the grid rules, the zone rules, the wheel knobs (scenario 5) and a
+  registered selector. `greeler.New` and `Load` call it, so nothing
+  changes for them.
+- `greelladder.CheckBands(accountName, productID string, bands
+  []*gobs.GreelConfig) error`: the ladder's own rules (account and product
+  set, at least one band, each band's product and account empty or
+  matching), then `greeler.CheckConfig` on each band as `New` would fill
+  it. `greelladder.New` calls it.
+
+The server reaches them through the constructors; `add` calls them before
+it posts, and `--dry-run` and `query` call them instead of posting, so a
+config error reads the same everywhere and the rules have one copy.
 
 ### 2. Options at creation: the risk gates need them
 
@@ -101,17 +116,16 @@ by every greel command that takes a config (`add` and `query`):
 since only an options account works.
 
 **A ladder's greels.** `greelladder add` builds the grid over the whole
-range exactly as `greeler add` would and sends it as one config. The
-server's `greelladder.Cut` then cuts its levels, from the
-bottom, into consecutive greels of one contract each: every greel gets
+range exactly as `greeler add` would, then `greelladder.Cut` cuts its
+levels, from the bottom, into consecutive greels of one contract each: every greel gets
 `ceil(100 / buy-size)` levels, the fewest that hold 100 shares. Levels
 left over at the top, too few for a contract, join the top greel. A
 range too small for even one greel is an error. So the range decides how
 many greels there are, there is no count flag, and a ladder over a range
 trades the same levels as one greeler over it. Every greel gets the same
 zone and wheel settings; greels with different settings aren't
-expressible with flags and are left out. `--dry-run` and `query` call the
-same `Cut`, so they print exactly the greels the server would create.
+expressible with flags and are left out. `--dry-run` prints each greel's
+levels.
 
 ### 4. The grid is a range, as in waller
 
@@ -134,15 +148,16 @@ zero, and an empty `contract-selector` means the default selector. A
 greeler that sells options with a default someone didn't choose is the
 wrong failure.
 
-The constructors don't check the wheel knobs today, so `greeler.New` gains
-that check, where every path (subcommand, a future one, a test) gets it:
+The constructors don't check the wheel knobs today, so
+`greeler.CheckConfig` gains that check, where every path (server,
+subcommand, dry run, a test) gets it:
 `wheel` present, `min-dte` ≥ 0 and ≤ `max-dte`, `reprice-step` in (0, 1],
 `reprice-interval` > 0, and the rest not negative.
 
 ### 6. `--dry-run`
 
-`--dry-run` builds the configs, runs `greeler.New` or `greelladder.New`
-locally (no server, no exchange), and prints the resolved config, one line
+`--dry-run` builds the configs, runs `greeler.CheckConfig` or
+`greelladder.CheckBands` locally (no server, no exchange), and prints the resolved config, one line
 per grid level, so the generated grid can be checked before anything
 trades. It catches every config error the server would, except the account
 and product checks of scenario 1.
@@ -194,9 +209,12 @@ only the grid half of a greel job.
   `Check`.
 - `server/server.go`: `doGreel`, `doGreelLadder`, registered in the handler
   map; an `OptionsAccount` check helper.
-- `greeler/greeler.go`: wheel knob validation in `check`.
+- `greeler/greeler.go`: `CheckConfig`, factored out of `check`, with the
+  wheel knob rules added.
+- `greelladder/greelladder.go`: `CheckBands`, factored out of `New`.
 - `greelladder/cut.go`: `Cut(cfg) ([]*gobs.GreelConfig, error)`, the
-  one-contract cutting rule.
+  one-contract cutting rule, used by the client's `add`, `--dry-run` and
+  `query`.
 - `subcmds/waller/spec.go`: export the pair generator.
 - `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
   checks, and conversion to `gobs.GreelConfig`.
@@ -204,19 +222,17 @@ only the grid half of a greel job.
   commands for each group.
 - `main.go`: `greeler` and `greelladder` command groups.
 
-Planned as seven PRs: knob validation and `Cut`; API and server; the
-shared flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
+Planned as seven PRs: `CheckConfig`, `CheckBands` and `Cut`; API and
+server; the shared flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
 `summary`.
 
 ---
 
 ## Decisions made at this checkpoint
 
-1. **Two endpoints, `/trader/greel` and `/trader/greelladder`,** each
-   taking one gobs `GreelConfig`; for a ladder the server cuts it into
-   one-contract greels with a new `greelladder.Cut`, and validates through
-   the existing constructors, adding only the account and product checks
-   (scenarios 1 and 3).
+1. **Two endpoints, `/trader/greel` and `/trader/greelladder`,** taking
+   gobs configs; the server validates through the existing constructors
+   and adds only the account and product checks (scenario 1).
 2. **The account must implement `exchange.OptionsAccount`** or the create
    is rejected (scenario 1). A ladder on an account without
    `StockHoldings` is accepted: stock reconciliation is alert-only and
@@ -230,9 +246,12 @@ shared flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
    (scenario 3).
 5. **The grid is a range, as in waller,** through waller's generator
    with its fee adjustment and `--fee-pct` (scenario 4).
-6. **No hidden defaults;** wheel knob validation moves into
-   `greeler.New` (scenario 5).
-7. **`--dry-run` validates locally and prints the grid** (scenario 6).
+6. **No hidden defaults;** the config checks move into exported
+   `greeler.CheckConfig` and `greelladder.CheckBands`, used by the
+   constructors, `add`, `--dry-run` and `query`, and gain the wheel knob
+   rules (scenarios 1 and 5).
+7. **`--dry-run` validates locally with those checks and prints the
+   grid** (scenario 6).
 8. **`--name` is required;** ladder greelers get no job names (scenario 7).
 9. **Parity with waller, except `simulate`:** `add`, `list`, `get`,
    `print`, `query`, `upgrade` and `summary` for both groups (scenario 8).
