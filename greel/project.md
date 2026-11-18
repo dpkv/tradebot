@@ -338,8 +338,8 @@ developer checkpoints at every step.
 13. **`OpenOptionsRollProduct`/`OptionsRollProduct`** — *resolved*: removed
     from `exchange/api.go` until v2, so v1 `OptionsAccount` implementations
     don't need them (optlimiter-story decision #8).
-14. **A real `OptionsExchange` and `StockHoldings`** — *in design*
-    (etrade-options-story): etrade implements both; no exchange does yet.
+14. **A real `OptionsAccount` and `StockHoldings`** — *in design*
+    (etrade-options-story): etrade implements both; no account does yet.
 
 ---
 
