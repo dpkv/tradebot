@@ -82,7 +82,7 @@ tradebot greelladder add --name aapl-ladder --bands 4 \
 ```
 
 The flags fall into three sets, defined once in `subcmds/greel` and shared
-by every greel command that takes a config (`add`, `query`, `simulate`):
+by every greel command that takes a config (`add` and `query`):
 
 - **Grid:** waller's range flags (scenario 4).
 - **Zones:** `--grid-pct`, `--far-pct`, `--hysteresis-pct`, `--dwell-time`
@@ -148,10 +148,10 @@ no job names.
 ### 8. Parity with waller
 
 `waller` has `add`, `list`, `get`, `print`, `query`, `upgrade`, `simulate`
-and `summary`. The `greeler` and `greelladder` groups get the same eight,
-each working like waller's (`get`, `print`, `list`, `upgrade` and
-`summary` read the database directly through `cmdutil.DBFlags`; `query`
-and `simulate` need no server):
+and `summary`. The `greeler` and `greelladder` groups get all of them but
+`simulate`, each working like waller's (`get`, `print`, `list`, `upgrade`
+and `summary` read the database directly through `cmdutil.DBFlags`;
+`query` needs no server):
 
 - `list`: job keys under `/greelers/` or `/greelladders/`. `greeler list`
   leaves out a ladder's greelers (`<ladder-uid>/greeler-NNNNNN`), as
@@ -170,15 +170,12 @@ and `simulate` need no server):
   per band and in total.
 - `upgrade <uid>...`: load and save, to rewrite old state in the current
   form.
-- `simulate <prices-file>`: replays prices through the grid and the zone
-  rules (grid, far, hysteresis; dwell counted in price samples is not
-  meaningful, so dwell is treated as zero) and prints grid profit, the
-  number of flips to the wheel and back, and the time spent in each mode.
-  It cannot price options from a price file, so it reports no premiums
-  and no assignments, and says so in its output.
 - `summary`: waller summary's flags and formats (`table`, `json`,
   `template`), over greelers or ladders, using `greeler.Summary` and
   `greelladder.Summary`, with the premium columns added.
+
+No `simulate`: a prices file has no option prices, so it could replay
+only the grid half of a greel job.
 
 ---
 
@@ -192,13 +189,13 @@ and `simulate` need no server):
 - `subcmds/waller/spec.go`: export the pair generator.
 - `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
   checks, conversion to `gobs.GreelConfig`, and band splitting.
-- `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the eight
+- `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the seven
   commands for each group.
 - `main.go`: `greeler` and `greelladder` command groups.
 
 Planned as six PRs: API and server; knob validation and the shared
-flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query` and
-`simulate`; `summary`.
+flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
+`summary`.
 
 ---
 
@@ -223,6 +220,5 @@ flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query` and
    `greeler.New` (scenario 5).
 7. **`--dry-run` validates locally and prints the grid** (scenario 6).
 8. **`--name` is required;** ladder greelers get no job names (scenario 7).
-9. **Parity with waller:** `add`, `list`, `get`, `print`, `query`,
-   `upgrade`, `simulate` and `summary` for both groups; `simulate` covers
-   the grid and zone flips but not option premiums (scenario 8).
+9. **Parity with waller, except `simulate`:** `add`, `list`, `get`,
+   `print`, `query`, `upgrade` and `summary` for both groups (scenario 8).
