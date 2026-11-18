@@ -338,8 +338,11 @@ developer checkpoints at every step.
 13. **`OpenOptionsRollProduct`/`OptionsRollProduct`** — *resolved*: removed
     from `exchange/api.go` until v2, so v1 `OptionsAccount` implementations
     don't need them (optlimiter-story decision #8).
-14. **A real `OptionsAccount` and `StockHoldings`** — *designed*
-    (etrade-options-story): etrade implements both; no account does yet.
+14. **A real `OptionsAccount` and `StockHoldings`** — *resolved*
+    (etrade-options-story): `etrade.ExchangeAccount` implements both. The
+    real E*TRADE transaction type strings for assignment and expiration
+    are undocumented; check them with `etrade list-transactions` after the
+    first settlement.
 
 ---
 

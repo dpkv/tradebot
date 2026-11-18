@@ -143,3 +143,13 @@ var newYork = func() *time.Location {
 	}
 	return loc
 }()
+
+// ContractQuoteSymbol returns the quote-endpoint symbol for a contract ID,
+// e.g. "AAPL:2026:12:18:PUT:200" for "AAPL261218P00200000".
+func ContractQuoteSymbol(contractID string) (string, error) {
+	k, err := parseContractID(contractID)
+	if err != nil {
+		return "", err
+	}
+	return k.QuoteSymbol(), nil
+}

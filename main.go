@@ -158,6 +158,9 @@ func main() {
 		new(subcmdsetrade.CancelOrder),
 		new(subcmdsetrade.GetBalance),
 		new(subcmdsetrade.GetPortfolio),
+		new(subcmdsetrade.OptionChain),
+		new(subcmdsetrade.OptionQuote),
+		new(subcmdsetrade.ListTransactions),
 		new(subcmdsetrade.Wget),
 	}
 
