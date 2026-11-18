@@ -20,12 +20,21 @@ start succeeding.
 
 ### 1. Contract identity
 
-`gobs.OptionContract.ContractID` is ours, not E*TRADE's. It keeps the
-format the gobs comment already shows, an OSI key with readable separators:
+`gobs.OptionContract.ContractID` is the standard OSI option symbol in
+its compact form, without the space padding OSI uses to fill the root to
+six characters:
 
 ```
-AAPL_20261218_P00200000     underlying _ YYYYMMDD _ C|P strike×1000 (8 digits)
+AAPL261218P00200000     root, YYMMDD, C|P, strike×1000 (8 digits)
 ```
+
+This is the form most brokers and data vendors display. It parses from
+the end: the last 15 characters are always date, type and strike, and
+whatever precedes them is the root, so a root that ends in a digit (an
+adjusted contract such as `AAPL1`) is still unambiguous. The padded form
+is rejected rather than trimmed, so one contract has exactly one ID in KV
+keys, logs and CLI arguments. The `gobs/exchange.go` comment, which still shows
+`AAPL_20261218_C00200000`, moves to this form in the code PR.
 
 E*TRADE never sees it. Every E*TRADE request names an option by its
 product fields (`symbol`, `callPut`, `expiryYear/Month/Day`,
@@ -252,8 +261,8 @@ depend on the request, so it can't exercise this logic.
 
 ## Decisions to make at this checkpoint
 
-1. **ContractID is our OSI-style key**, `AAPL_20261218_P00200000`; E*TRADE
-   only ever sees product fields (scenario 1).
+1. **ContractID is the compact OSI symbol**, `AAPL261218P00200000`
+   (no space padding); E*TRADE only ever sees product fields (scenario 1).
 2. **Expiry is 16:00 New York time on the expiry date** (scenario 1).
 3. **Only standard, unadjusted contracts are listed**, so `ContractSize`
    is always 100 (scenario 2).
