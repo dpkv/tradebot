@@ -21,9 +21,10 @@ This story adds the same pair for a single greeler and for a ladder.
 
 - `POST /trader/greel` takes `api.GreelRequest{Config *gobs.GreelConfig,
   Options map[string]string}` and answers `{UID}`.
-- `POST /trader/greelladder` takes `api.GreelLadderRequest{AccountName,
-  ProductID string, Bands []*gobs.GreelConfig, Options map[string]string}`
-  and answers `{UID}`.
+- `POST /trader/greelladder` takes `api.GreelLadderRequest{Config
+  *gobs.GreelConfig, Options map[string]string}` and answers `{UID}`. The
+  config is one greeler config over the ladder's whole range; the server
+  cuts it into greels (scenario 3).
 
 The handlers follow `doWall`:
 
@@ -34,16 +35,21 @@ The handlers follow `doWall`:
    state.
 3. `getProduct(account, product)`, which also checks the product is enabled
    on the exchange.
-4. `greeler.New(uuid, cfg)` or `greelladder.New(uuid, account, product,
-   bands)`. These constructors already validate everything about the config
+4. `greeler.New(uuid, cfg)`, or for a ladder `greelladder.Cut(cfg)` and
+   then `greelladder.New(uuid, account, product, bands)` on its result.
+   These constructors already validate everything about the config
    (grid order, equal sizes, one contract's worth of shares, `0 < grid < far`,
    hysteresis below far, dwell not negative, a registered selector), so the
    handler adds no rules of its own.
 5. Apply `Options` with `SetOption`, then save and `runner.Add` in one
    transaction, then `runner.Resume`.
 
-The request carries the gobs configs directly: the server is the single
-place configs are validated, and the subcommand just builds them.
+The request carries the gobs config directly: the server is the single
+place configs are validated and ladders are cut, and the subcommand just
+builds the config.
+
+`greelladder.New` keeps taking a list of bands, as it does today; `Cut`
+is a new function beside it, so the merged ladder code doesn't change.
 
 ### 2. Options at creation: the risk gates need them
 
@@ -95,7 +101,8 @@ by every greel command that takes a config (`add` and `query`):
 since only an options account works.
 
 **A ladder's greels.** `greelladder add` builds the grid over the whole
-range exactly as `greeler add` would, then cuts its levels, from the
+range exactly as `greeler add` would and sends it as one config. The
+server's `greelladder.Cut` then cuts its levels, from the
 bottom, into consecutive greels of one contract each: every greel gets
 `ceil(100 / buy-size)` levels, the fewest that hold 100 shares. Levels
 left over at the top, too few for a contract, join the top greel. A
@@ -103,8 +110,8 @@ range too small for even one greel is an error. So the range decides how
 many greels there are, there is no count flag, and a ladder over a range
 trades the same levels as one greeler over it. Every greel gets the same
 zone and wheel settings; greels with different settings aren't
-expressible with flags and are left out. `--dry-run` prints each greel's
-levels.
+expressible with flags and are left out. `--dry-run` and `query` call the
+same `Cut`, so they print exactly the greels the server would create.
 
 ### 4. The grid is a range, as in waller
 
@@ -188,24 +195,28 @@ only the grid half of a greel job.
 - `server/server.go`: `doGreel`, `doGreelLadder`, registered in the handler
   map; an `OptionsAccount` check helper.
 - `greeler/greeler.go`: wheel knob validation in `check`.
+- `greelladder/cut.go`: `Cut(cfg) ([]*gobs.GreelConfig, error)`, the
+  one-contract cutting rule.
 - `subcmds/waller/spec.go`: export the pair generator.
 - `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
-  checks, conversion to `gobs.GreelConfig`, and cutting a ladder into greels.
+  checks, and conversion to `gobs.GreelConfig`.
 - `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the seven
   commands for each group.
 - `main.go`: `greeler` and `greelladder` command groups.
 
-Planned as six PRs: API and server; knob validation and the shared
-flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
+Planned as seven PRs: knob validation and `Cut`; API and server; the
+shared flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
 `summary`.
 
 ---
 
 ## Decisions made at this checkpoint
 
-1. **Two endpoints, `/trader/greel` and `/trader/greelladder`,** taking
-   gobs configs; the server validates through the existing constructors
-   and adds only the account and product checks (scenario 1).
+1. **Two endpoints, `/trader/greel` and `/trader/greelladder`,** each
+   taking one gobs `GreelConfig`; for a ladder the server cuts it into
+   one-contract greels with a new `greelladder.Cut`, and validates through
+   the existing constructors, adding only the account and product checks
+   (scenarios 1 and 3).
 2. **The account must implement `exchange.OptionsAccount`** or the create
    is rejected (scenario 1). A ladder on an account without
    `StockHoldings` is accepted: stock reconciliation is alert-only and
