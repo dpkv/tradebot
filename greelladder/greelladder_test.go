@@ -401,7 +401,7 @@ func TestReconciler(t *testing.T) {
 // fakeExchange is an options exchange with one stock product that reports
 // the account's shares.
 type fakeExchange struct {
-	exchange.OptionsAccount // unused methods panic
+	exchange.ExchangeOptionsAccount // unused methods panic
 
 	mu     sync.Mutex
 	shares decimal.Decimal
