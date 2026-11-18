@@ -104,11 +104,12 @@ func newContract(symbol, callPut string, year, month, day int, strike decimal.De
 		Day:     day,
 		Strike:  strike,
 	}
-	if _, err := parseContractID(c.ID()); err != nil {
-		return nil, fmt.Errorf("etrade: invalid option product %s %s %04d-%02d-%02d %s: %w", symbol, callPut, year, month, day, strike, err)
-	}
+	// Checked before ID, which reads the first letter of CallPut.
 	if c.CallPut != "CALL" && c.CallPut != "PUT" {
 		return nil, fmt.Errorf("etrade: invalid option type %q: %w", callPut, os.ErrInvalid)
+	}
+	if _, err := parseContractID(c.ID()); err != nil {
+		return nil, fmt.Errorf("etrade: invalid option product %s %s %04d-%02d-%02d %s: %w", symbol, callPut, year, month, day, strike, err)
 	}
 	if !strike.Mul(thousand).IsInteger() || !strike.IsPositive() || strike.GreaterThan(maxStrike) {
 		return nil, fmt.Errorf("etrade: invalid option strike %s: %w", strike, os.ErrInvalid)

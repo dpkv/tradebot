@@ -4,6 +4,7 @@ package etrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/bvk/tradebot/etrade/internal"
 	"github.com/shopspring/decimal"
+	"github.com/visvasity/topic"
 )
 
 // Option market data, option order placement and account transactions. The
@@ -160,23 +162,149 @@ func (c *Client) fetchOptionChain(ctx context.Context, symbol string, e *chainEn
 	e.quotes = quotes
 }
 
-// GetOptionQuote fetches the live quote and greeks of one option contract
-// from GET /v1/market/quote/{symbol}?detailFlag=OPTIONS. quoteSymbol is in
-// E*TRADE's quote form (contract.QuoteSymbol). It is never cached. Returns
-// os.ErrNotExist when E*TRADE has no option quote for the symbol.
-func (c *Client) GetOptionQuote(ctx context.Context, quoteSymbol string) (*internal.OptionQuote, error) {
+// maxQuoteSymbols is the most symbols E*TRADE accepts in one quote request.
+const maxQuoteSymbols = 25
+
+// GetOptionQuotes fetches live quotes and greeks for option contracts from
+// GET /v1/market/quote/{symbols}?detailFlag=OPTIONS, in batches of
+// maxQuoteSymbols. quoteSymbols are in E*TRADE's quote form
+// (contract.QuoteSymbol). Contracts E*TRADE has no option quote for are
+// missing from the result. Never cached.
+func (c *Client) GetOptionQuotes(ctx context.Context, quoteSymbols []string) ([]*internal.OptionQuote, error) {
 	params := url.Values{"detailFlag": {"OPTIONS"}}
-	apiPath := "/v1/market/quote/" + url.PathEscape(quoteSymbol)
-	var wrapper quoteResponseWrapper
-	if err := doGetJSON(ctx, c, apiPath, params, &wrapper); err != nil {
+	var quotes []*internal.OptionQuote
+	for start := 0; start < len(quoteSymbols); start += maxQuoteSymbols {
+		batch := quoteSymbols[start:min(start+maxQuoteSymbols, len(quoteSymbols))]
+		apiPath := "/v1/market/quote/" + url.PathEscape(strings.Join(batch, ","))
+		var wrapper quoteResponseWrapper
+		if err := doGetJSON(ctx, c, apiPath, params, &wrapper); err != nil {
+			return nil, err
+		}
+		for _, qd := range wrapper.QuoteResponse.QuoteData {
+			if q := internal.NewOptionQuoteFromAPI(qd); q != nil {
+				quotes = append(quotes, q)
+			}
+		}
+	}
+	return quotes, nil
+}
+
+// GetOptionQuote fetches the live quote and greeks of one option contract.
+// See GetOptionQuotes. Returns os.ErrNotExist when E*TRADE has no option
+// quote for the symbol.
+func (c *Client) GetOptionQuote(ctx context.Context, quoteSymbol string) (*internal.OptionQuote, error) {
+	quotes, err := c.GetOptionQuotes(ctx, []string{quoteSymbol})
+	if err != nil {
 		return nil, err
 	}
-	for _, qd := range wrapper.QuoteResponse.QuoteData {
-		if q := internal.NewOptionQuoteFromAPI(qd); q != nil {
+	if len(quotes) == 0 {
+		return nil, fmt.Errorf("etrade: no option quote for %s: %w", quoteSymbol, os.ErrNotExist)
+	}
+	return quotes[0], nil
+}
+
+// optionQuoteContractID returns the contract ID an option quote is for.
+func optionQuoteContractID(q *internal.OptionQuote) (string, error) {
+	k, err := newContract(q.Symbol, q.CallPut, q.Year, q.Month, q.Day, q.Strike)
+	if err != nil {
+		return "", err
+	}
+	return k.ID(), nil
+}
+
+// orderTopicKey returns the order topic key for an order: the symbol for an
+// equity order and the contract ID for an option order. E*TRADE reports an
+// option order's symbol as its underlying, so keying options by symbol would
+// deliver them to the underlying's equity product.
+func orderTopicKey(o *internal.Order) (string, error) {
+	if !strings.EqualFold(o.SecurityType, "OPTN") {
+		return o.Symbol, nil
+	}
+	k, err := newContract(o.Symbol, o.CallPut, o.ExpiryYear, o.ExpiryMonth, o.ExpiryDay, o.StrikePrice)
+	if err != nil {
+		return "", err
+	}
+	return k.ID(), nil
+}
+
+// publishOrder sends an order update to its instrument's order topic.
+func (c *Client) publishOrder(o *internal.Order) {
+	key, err := orderTopicKey(o)
+	if err != nil {
+		slog.Warn("etrade: dropping option order update with an invalid contract", "account-id", o.AccountID, "order-id", o.OrderID, "err", err)
+		return
+	}
+	c.getSymbolOrdersTopic(key).Send(o)
+}
+
+// getOptionPriceTopic returns the contract's price topic, or nil when the
+// contract isn't watched.
+func (c *Client) getOptionPriceTopic(contractID string) *topic.Topic[*internal.OptionQuote] {
+	tp, ok := c.optionPriceTopicMap.Load(contractID)
+	if !ok {
+		return nil
+	}
+	return tp
+}
+
+// WatchOption adds the contract to the price poll and returns its current
+// quote. Its updates go to the contract's price topic until UnwatchOption.
+func (c *Client) WatchOption(ctx context.Context, contractID string) (*internal.OptionQuote, error) {
+	if tp := c.getOptionPriceTopic(contractID); tp != nil {
+		if q, ok := tp.Last(); ok {
 			return q, nil
 		}
 	}
-	return nil, fmt.Errorf("etrade: no option quote for %s: %w", quoteSymbol, os.ErrNotExist)
+	k, err := parseContractID(contractID)
+	if err != nil {
+		return nil, err
+	}
+	q, err := c.GetOptionQuote(ctx, k.QuoteSymbol())
+	if err != nil {
+		return nil, err
+	}
+	tp, _ := c.optionPriceTopicMap.LoadOrStore(contractID, topic.New[*internal.OptionQuote]())
+	tp.Send(q)
+	return q, nil
+}
+
+// UnwatchOption removes the contract from the price poll, so a closed or
+// expired contract stops costing a quote per poll. Existing subscribers stop
+// receiving updates.
+func (c *Client) UnwatchOption(contractID string) {
+	if tp, ok := c.optionPriceTopicMap.LoadAndDelete(contractID); ok {
+		tp.Close()
+	}
+}
+
+// pollOptionPrices fetches quotes for every watched contract and sends each
+// to its contract's price topic. Called from goPollPrices.
+func (c *Client) pollOptionPrices(ctx context.Context) {
+	var symbols []string
+	c.optionPriceTopicMap.Range(func(contractID string, _ *topic.Topic[*internal.OptionQuote]) bool {
+		if k, err := parseContractID(contractID); err == nil {
+			symbols = append(symbols, k.QuoteSymbol())
+		}
+		return true
+	})
+	if len(symbols) == 0 {
+		return
+	}
+
+	quotes, err := c.GetOptionQuotes(ctx, symbols)
+	if err != nil && !errors.Is(err, context.Cause(ctx)) {
+		slog.Warn("etrade: could not poll option prices (will retry)", "symbols", symbols, "err", err)
+	}
+	for _, q := range quotes {
+		id, err := optionQuoteContractID(q)
+		if err != nil {
+			slog.Warn("etrade: dropping option quote with an invalid contract", "symbol", q.Symbol, "err", err)
+			continue
+		}
+		if tp := c.getOptionPriceTopic(id); tp != nil {
+			tp.Send(q)
+		}
+	}
 }
 
 // Option order actions.

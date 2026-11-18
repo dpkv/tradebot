@@ -63,6 +63,10 @@ func matchOpenOrder(candidates []*internal.Order, accountID, symbol string, p or
 		if o.AccountID != accountID {
 			continue
 		}
+		// An option order reports its underlying as the symbol.
+		if !strings.EqualFold(o.SecurityType, "EQ") {
+			continue
+		}
 		if o.Symbol != symbol {
 			continue
 		}
