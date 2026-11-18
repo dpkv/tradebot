@@ -47,6 +47,10 @@ type Options struct {
 	// Default: 30s.
 	PollBalancesInterval time.Duration
 
+	// ChainCacheTTL is how long an option chain stays cached in the client,
+	// shared by every account and greeler on the underlying. Default: 60s.
+	ChainCacheTTL time.Duration
+
 	// DisplayRunner when non-nil, holds display server instance, X11 or VNC
 	// server where GUI application commands (like the web browser for automated
 	// login) can be run. This is required to perform unattened periodic logins
@@ -85,6 +89,9 @@ func (o *Options) setDefaults() {
 	}
 	if o.PollBalancesInterval == 0 {
 		o.PollBalancesInterval = 30 * time.Second
+	}
+	if o.ChainCacheTTL == 0 {
+		o.ChainCacheTTL = 60 * time.Second
 	}
 }
 

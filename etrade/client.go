@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -186,6 +187,14 @@ type placeOrderLot struct {
 type placeOrderProduct struct {
 	SecurityType string `json:"securityType"`
 	Symbol       string `json:"symbol"`
+
+	// Option fields, set only when SecurityType is "OPTN". Symbol is then the
+	// underlying.
+	CallPut     string           `json:"callPut,omitempty"`
+	ExpiryYear  int              `json:"expiryYear,omitempty"`
+	ExpiryMonth int              `json:"expiryMonth,omitempty"`
+	ExpiryDay   int              `json:"expiryDay,omitempty"`
+	StrikePrice *decimal.Decimal `json:"strikePrice,omitempty"`
 }
 
 // placeOrderResponseWrapper is the outer envelope for the place order response.
@@ -263,6 +272,15 @@ type Client struct {
 	// lotDetailMap in updatePortfolio, which can run from both goTrackPortfolio
 	// and ResolveOrderLots for the same account.
 	portfolioMu sync.Mutex
+
+	// chainMu guards chainMap, the option chain cache keyed by underlying
+	// symbol. See GetCachedOptionChain.
+	chainMu  sync.Mutex
+	chainMap map[string]*chainEntry
+
+	// testBaseURL, when set, replaces the https://<rest host> base of every
+	// request. Only tests set it, to point the client at an httptest server.
+	testBaseURL *url.URL
 }
 
 // New creates a new E*TRADE client, verifies credentials, and starts background
@@ -459,6 +477,9 @@ func (c *Client) do(ctx context.Context, method, apiPath string, queryParams url
 		Scheme: "https",
 		Host:   c.opts.restHostname(),
 		Path:   apiPath,
+	}
+	if c.testBaseURL != nil {
+		baseURL.Scheme, baseURL.Host = c.testBaseURL.Scheme, c.testBaseURL.Host
 	}
 	authHeader := c.oauthSign(method, baseURL.String(), queryParams)
 	if len(queryParams) > 0 {
@@ -707,18 +728,47 @@ func (c *Client) GetBalance(ctx context.Context, accountID string) (*internal.Ba
 	return internal.NewBalanceFromAPI(wrapper.BalanceResponse), nil
 }
 
-// maxOrderPages caps the number of pages ListOpenOrders will follow, as a
-// safety valve against an API bug returning a marker that never clears.
-// Real accounts don't have anywhere close to this many open orders.
+// maxOrderPages caps the number of pages ListOrders and ListTransactions
+// will follow, as a safety valve against an API bug returning a marker that
+// never clears. Real accounts don't have anywhere close to this many pages.
 const maxOrderPages = 1000
 
-// ListOpenOrders fetches all currently open orders for the account from
-// GET /v1/accounts/{accountIdKey}/orders?status=OPEN, following the API's
-// marker-based pagination (ordersResponse.Marker) until every page has been
-// fetched. Callers get the complete list either way -- without this, an
-// account with more open orders than fit on one page would silently see
-// only the first page.
+// ListOrdersFilter narrows ListOrders. Zero fields don't filter.
+type ListOrdersFilter struct {
+	// Status is an E*TRADE order status, e.g. "OPEN". Empty lists orders in
+	// every status.
+	Status string
+
+	// Symbol limits the list to one symbol. For options it is the underlying.
+	Symbol string
+
+	// SecurityType is "EQ" or "OPTN".
+	SecurityType string
+
+	// FromDate and ToDate bound the placement date, as New York calendar
+	// days. A zero FromDate uses E*TRADE's default range; a zero ToDate with
+	// a FromDate means today.
+	FromDate, ToDate time.Time
+}
+
+// etradeDate formats t as the MMDDYYYY New York calendar day the E*TRADE
+// list endpoints take.
+func etradeDate(t time.Time) string {
+	return t.In(newYork).Format("01022006")
+}
+
+// ListOpenOrders fetches all currently open orders for the account. See
+// ListOrders.
 func (c *Client) ListOpenOrders(ctx context.Context, accountID string) ([]*internal.Order, error) {
+	return c.ListOrders(ctx, accountID, &ListOrdersFilter{Status: "OPEN"})
+}
+
+// ListOrders fetches the account's orders matching filter from
+// GET /v1/accounts/{accountIdKey}/orders, following the API's marker-based
+// pagination (ordersResponse.Marker) until every page has been fetched.
+// Callers get the complete list either way -- without this, an account with
+// more orders than fit on one page would silently see only the first page.
+func (c *Client) ListOrders(ctx context.Context, accountID string, filter *ListOrdersFilter) ([]*internal.Order, error) {
 	creds := c.creds.Load()
 	accountIDKey, err := creds.GetAccountIDKey(accountID)
 	if err != nil {
@@ -726,15 +776,37 @@ func (c *Client) ListOpenOrders(ctx context.Context, accountID string) ([]*inter
 	}
 	apiPath := "/v1/accounts/" + url.PathEscape(accountIDKey) + "/orders"
 
+	if filter == nil {
+		filter = new(ListOrdersFilter)
+	}
+	query := url.Values{}
+	if filter.Status != "" {
+		query.Set("status", filter.Status)
+	}
+	if filter.Symbol != "" {
+		query.Set("symbol", filter.Symbol)
+	}
+	if filter.SecurityType != "" {
+		query.Set("securityType", filter.SecurityType)
+	}
+	if !filter.FromDate.IsZero() {
+		to := filter.ToDate
+		if to.IsZero() {
+			to = time.Now()
+		}
+		query.Set("fromDate", etradeDate(filter.FromDate))
+		query.Set("toDate", etradeDate(to))
+	}
+
 	var orders []*internal.Order
 
 	marker := ""
 	for page := 0; ; page++ {
 		if page >= maxOrderPages {
-			return nil, fmt.Errorf("etrade: ListOpenOrders exceeded %d pages (marker %q); aborting", maxOrderPages, marker)
+			return nil, fmt.Errorf("etrade: ListOrders exceeded %d pages (marker %q); aborting", maxOrderPages, marker)
 		}
 
-		params := url.Values{"status": {"OPEN"}}
+		params := maps.Clone(query)
 		if marker != "" {
 			params.Set("marker", marker)
 		}
@@ -823,12 +895,19 @@ func (c *Client) PlaceLimitOrder(ctx context.Context, accountID, symbol, side st
 		}},
 	}
 
+	return c.previewAndPlace(ctx, accountPath, "EQ", clientOrderID, &orderDetail)
+}
+
+// previewAndPlace runs E*TRADE's two-step order flow for one order detail:
+// POST /orders/preview, then POST /orders/place with the returned previewId.
+// orderType is "EQ" or "OPTN". Returns the E*TRADE-assigned order ID.
+func (c *Client) previewAndPlace(ctx context.Context, accountPath, orderType, clientOrderID string, orderDetail *placeOrderDetail) (int64, error) {
 	// Step 1: preview (required by E*TRADE — skipping causes error code 101).
 	previewReq := previewOrderRequestWrapper{
 		PreviewOrderRequest: previewOrderRequest{
 			ClientOrderID: clientOrderID,
-			OrderType:     "EQ",
-			Order:         []placeOrderDetail{orderDetail},
+			OrderType:     orderType,
+			Order:         []placeOrderDetail{*orderDetail},
 		},
 	}
 	var previewResp previewOrderResponseWrapper
@@ -843,9 +922,9 @@ func (c *Client) PlaceLimitOrder(ctx context.Context, accountID, symbol, side st
 	placeReq := placeOrderRequestWrapper{
 		PlaceOrderRequest: placeOrderRequest{
 			ClientOrderID: clientOrderID,
-			OrderType:     "EQ",
+			OrderType:     orderType,
 			PreviewIds:    previewResp.PreviewOrderResponse.PreviewIds,
-			Order:         []placeOrderDetail{orderDetail},
+			Order:         []placeOrderDetail{*orderDetail},
 		},
 	}
 	var resp placeOrderResponseWrapper
