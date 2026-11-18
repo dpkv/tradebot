@@ -328,4 +328,3 @@ func (p *OptionProduct) adopt(order *internal.Order) {
 		p.client.TrackOrder(p.account.AccountID, order.OrderID)
 	}
 }
-
