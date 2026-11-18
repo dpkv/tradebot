@@ -257,6 +257,12 @@ type Client struct {
 	// each price poll cycle, through a separate detailFlag=OPTIONS request.
 	optionPriceTopicMap syncmap.Map[string, *topic.Topic[*internal.OptionQuote]]
 
+	// optionWatchMu guards optionWatchRefs, the WatchOption count per
+	// contract, and serializes adding and removing optionPriceTopicMap
+	// entries.
+	optionWatchMu   sync.Mutex
+	optionWatchRefs map[string]int
+
 	// balancesTopicMap holds balancesTopic that publishes account balance
 	// updates polled from the API. Each account has separate balance, so this is
 	// a mapping from AccountID to it's balance. Written at startup and whenever a

@@ -248,13 +248,10 @@ func (c *Client) getOptionPriceTopic(contractID string) *topic.Topic[*internal.O
 }
 
 // WatchOption adds the contract to the price poll and returns its current
-// quote. Its updates go to the contract's price topic until UnwatchOption.
+// quote. Watches are counted: the contract stays in the poll, and its updates
+// keep going to its price topic, until every WatchOption has been matched by
+// an UnwatchOption. Each open OptionProduct holds one watch.
 func (c *Client) WatchOption(ctx context.Context, contractID string) (*internal.OptionQuote, error) {
-	if tp := c.getOptionPriceTopic(contractID); tp != nil {
-		if q, ok := tp.Last(); ok {
-			return q, nil
-		}
-	}
 	k, err := parseContractID(contractID)
 	if err != nil {
 		return nil, err
@@ -263,15 +260,39 @@ func (c *Client) WatchOption(ctx context.Context, contractID string) (*internal.
 	if err != nil {
 		return nil, err
 	}
-	tp, _ := c.optionPriceTopicMap.LoadOrStore(contractID, topic.New[*internal.OptionQuote]())
+
+	c.optionWatchMu.Lock()
+	defer c.optionWatchMu.Unlock()
+
+	tp, ok := c.optionPriceTopicMap.Load(contractID)
+	if !ok {
+		tp = topic.New[*internal.OptionQuote]()
+		c.optionPriceTopicMap.Store(contractID, tp)
+	}
+	if c.optionWatchRefs == nil {
+		c.optionWatchRefs = make(map[string]int)
+	}
+	c.optionWatchRefs[contractID]++
 	tp.Send(q)
 	return q, nil
 }
 
-// UnwatchOption removes the contract from the price poll, so a closed or
-// expired contract stops costing a quote per poll. Existing subscribers stop
-// receiving updates.
+// UnwatchOption releases one WatchOption. When the last watch is released
+// the contract leaves the price poll, so a closed or expired contract stops
+// costing a quote per poll, and its price topic is closed.
 func (c *Client) UnwatchOption(contractID string) {
+	c.optionWatchMu.Lock()
+	defer c.optionWatchMu.Unlock()
+
+	n := c.optionWatchRefs[contractID]
+	if n == 0 {
+		return
+	}
+	if n > 1 {
+		c.optionWatchRefs[contractID] = n - 1
+		return
+	}
+	delete(c.optionWatchRefs, contractID)
 	if tp, ok := c.optionPriceTopicMap.LoadAndDelete(contractID); ok {
 		tp.Close()
 	}
