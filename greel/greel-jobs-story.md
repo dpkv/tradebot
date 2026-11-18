@@ -61,69 +61,64 @@ take repeated `--option key=value` for anything else (`freeze`, for a job
 that should start frozen). An unknown key or bad value fails the request,
 since `SetOption` rejects it.
 
-### 3. The spec file
+### 3. Configs come from flags
 
-A greeler config has a grid, three zone percentages, a dwell time, a
-selector name and eight wheel knobs; a ladder is a list of those. That is
-too much for flags, and a ladder's bands differ from each other. So both
-subcommands read a JSON spec file:
+Both `add` commands take the whole config as flags, like `waller add`, and
+each command's help ends with a sample command line:
 
 ```sh
-tradebot greeler add --spec aapl.json --name aapl-greel
-tradebot greelladder add --spec aapl-ladder.json --name aapl-ladder --max-contracts 4
+tradebot greeler add --name aapl-greel \
+  --account etrade/main --product AAPL \
+  --begin-price 150 --end-price 200 --buy-interval-pct 2 \
+  --profit-margin-pct 3 --buy-size 50 \
+  --grid-pct 5 --far-pct 12 --hysteresis-pct 2 --dwell-time 48h \
+  --target-delta 0.3 --min-dte 21 --max-dte 45 \
+  --min-premium-yield 0.5 --min-open-interest 100 --max-spread-pct 10 \
+  --reprice-step 0.25 --reprice-interval 5m
+
+tradebot greelladder add --name aapl-ladder --bands 4 \
+  --max-contracts 4 --max-put-exposure 80000 \
+  ...the same grid, zone and wheel flags...
 ```
 
-The spec is the subcommand's own schema, not gobs JSON, so it can be written
-by hand: percentages and prices as numbers or strings, durations as Go
-duration strings (`"48h"`), lower-case dashed keys. Unknown keys are an
-error, so a typo doesn't silently become a zero.
+The flags fall into three sets, defined once in `subcmds/greel` and shared
+by every greel command that takes a config (`add`, `query`, `simulate`):
 
-```json
-{
-  "account": "etrade/main",
-  "product": "AAPL",
-  "grid": {
-    "begin-price": 150, "end-price": 200,
-    "buy-interval-pct": 2, "profit-margin-pct": 3,
-    "size": 50, "cancel-offset-pct": 5
-  },
-  "grid-pct": 5, "far-pct": 12, "hysteresis-pct": 2, "dwell-time": "48h",
-  "contract-selector": "",
-  "wheel": {
-    "target-delta": 0.3, "min-dte": 21, "max-dte": 45,
-    "min-premium-yield": 0.5, "min-open-interest": 100, "max-spread-pct": 10,
-    "reprice-step": 0.25, "reprice-interval": "5m"
-  }
-}
-```
+- **Grid:** waller's range flags (scenario 4).
+- **Zones:** `--grid-pct`, `--far-pct`, `--hysteresis-pct`, `--dwell-time`
+  (a Go duration), `--contract-selector`.
+- **Wheel:** `--target-delta`, `--min-dte`, `--max-dte`,
+  `--min-premium-yield`, `--min-open-interest`, `--max-spread-pct`,
+  `--reprice-step`, `--reprice-interval`.
 
-A ladder spec has `account`, `product` and `bands`, a list of the same
-objects without `account` and `product` (a band that names them must match
-the ladder's, as `greelladder.New` already requires).
+`--account` and `--product` are required; there is no default account,
+since only an options account works.
 
-`--account` and `--product` flags override the spec's, so one band file can
-be reused across symbols.
+**A ladder's bands.** `greelladder add` builds the grid over the whole
+range exactly as `greeler add` would, then cuts its levels into `--bands N`
+consecutive bands with as equal a number of levels as possible (lower
+bands take any remainder). Every band gets the same zone and wheel
+settings. So a ladder over a range trades the same levels as one greeler
+over it, split into bands that each can flip to the wheel on their own.
+Each band must still hold one contract's worth of shares, which
+`greeler.New` already checks. Bands with different settings from each
+other aren't expressible with flags and are left out.
 
-### 4. The grid: explicit levels or a range
+### 4. The grid is a range, as in waller
 
-`grid` is either:
-
-- `"levels": [{"buy": 150, "sell": 155, "size": 50, "buy-cancel": 160,
-  "sell-cancel": 145}, ...]`, used as written; or
-- a range, as above: `begin-price`, `end-price`, one of `buy-interval` /
-  `buy-interval-pct`, one of `profit-margin` / `profit-margin-pct`, `size`,
-  and `cancel-offset-pct` (default 5).
-
-The range form reuses waller's generator (`subcmds/waller/spec.go`,
-`fixedProfitPairs` and `percentProfitPairs`), so a range means exactly what
-it means to `waller add`. Waller's fee adjustment is left out: greel's
-grid sells at the price it is given. Every point needs a cancel price
-(`point.Point.Check`), which is why the explicit form asks for one and the
-range form derives it.
+The grid flags are waller's: `--begin-price`, `--end-price`, one of
+`--buy-interval` / `--buy-interval-pct`, one of `--profit-margin` /
+`--profit-margin-pct`, `--buy-size`, `--sell-size` (must equal buy size)
+and `--cancel-offset-pct` (default 5, as in waller). They go through
+waller's generator (`subcmds/waller/spec.go`, `fixedProfitPairs` and
+`percentProfitPairs`), so a range means exactly what it means to
+`waller add`. Waller's fee adjustment is left out (no `--fee-pct` on
+`add`): greel's grid sells at the price it is given. There is no form for
+explicit levels.
 
 ### 5. No hidden defaults
 
-Every zone percentage and every wheel knob must be in the spec, except
+Every zone percentage and every wheel knob must be given as a flag, except
 where zero is already meaningful: `hysteresis-pct` and `dwell-time` may be
 zero, and an empty `contract-selector` means the default selector. A
 greeler that sells options with a default someone didn't choose is the
@@ -149,11 +144,40 @@ the create. A ladder's greelers are already named by the ladder
 (`<ladder-uid>/greeler-000000`, ...) and aren't separate jobs, so they get
 no job names.
 
-### 8. What this doesn't add
+### 8. Parity with waller
 
-No `list`, `get` or `print` subcommands: `tradebot job list` and `tradebot
-status` already show greel jobs, and greel summaries are in `tradebot
-summary` (accounting-story). They can follow once the jobs are in use.
+`waller` has `add`, `list`, `get`, `print`, `query`, `upgrade`, `simulate`
+and `summary`. The `greeler` and `greelladder` groups get the same eight,
+each working like waller's (`get`, `print`, `list`, `upgrade` and
+`summary` read the database directly through `cmdutil.DBFlags`; `query`
+and `simulate` need no server):
+
+- `list`: job keys under `/greelers/` or `/greelladders/`. `greeler list`
+  leaves out a ladder's greelers (`<ladder-uid>/greeler-NNNNNN`), as
+  `waller list` leaves out its loops; `--all` includes them.
+- `get <name-or-uid>`: a human-readable state, like `waller get`: the
+  `Status` summary (grid round trips, premiums, assignments), the current
+  mode and epoch, the pending flip and its dwell clock, the held contract,
+  and one row per grid level. `greelladder get` prints the ladder's gate
+  limits and usage, then one block per band.
+- `print <name-or-uid>`: the gob as JSON.
+- `query`: takes the config flags and prints what a job would need without
+  creating it: the grid levels, the stock budget (waller's `Analyze`, with
+  an optional `--fee-pct`, default 0), the price bounds of the grid and far
+  zones, the contracts the grid can cover, and the worst-case put exposure
+  (contracts × 100 × the lowest buy price). The ladder version prints this
+  per band and in total.
+- `upgrade <uid>...`: load and save, to rewrite old state in the current
+  form.
+- `simulate <prices-file>`: replays prices through the grid and the zone
+  rules (grid, far, hysteresis; dwell counted in price samples is not
+  meaningful, so dwell is treated as zero) and prints grid profit, the
+  number of flips to the wheel and back, and the time spent in each mode.
+  It cannot price options from a price file, so it reports no premiums
+  and no assignments, and says so in its output.
+- `summary`: waller summary's flags and formats (`table`, `json`,
+  `template`), over greelers or ladders, using `greeler.Summary` and
+  `greelladder.Summary`, with the premium columns added.
 
 ---
 
@@ -164,14 +188,17 @@ summary` (accounting-story). They can follow once the jobs are in use.
 - `server/server.go`: `doGreel`, `doGreelLadder`, registered in the handler
   map; an `OptionsAccount` check helper.
 - `greeler/greeler.go`: wheel knob validation in `check`.
-- `subcmds/greel/spec.go`: the spec schema, parsing (strict), conversion to
-  `gobs.GreelConfig`, grid generation through waller's generator (exported
-  from `subcmds/waller` or moved to a shared package).
-- `subcmds/greel/greeler_add.go`, `subcmds/greel/ladder_add.go`: the two
-  `add` commands, `--dry-run`, `--name`, `--option`, the ladder's gate flags.
+- `subcmds/waller/spec.go`: export the pair generator, with fee adjustment
+  optional.
+- `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
+  checks, conversion to `gobs.GreelConfig`, and band splitting.
+- `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the eight
+  commands for each group.
 - `main.go`: `greeler` and `greelladder` command groups.
 
-Planned as three PRs: API and server; spec and grid; the subcommands.
+Planned as six PRs: API and server; knob validation and the shared
+flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query` and
+`simulate`; `summary`.
 
 ---
 
@@ -187,12 +214,15 @@ Planned as three PRs: API and server; spec and grid; the subcommands.
 3. **Options are applied at creation,** and the ladder subcommand has
    `--max-contracts` and `--max-put-exposure`, so a ladder never runs
    before its limits are set (scenario 2).
-4. **Configs come from a strict JSON spec file** with a hand-writable
-   schema; `--account`/`--product` override (scenario 3).
-5. **The grid is explicit levels or a range,** the range through waller's
-   generator without the fee adjustment (scenario 4).
+4. **Configs come from flags,** with a sample command line in each help
+   text; `--account` and `--product` are required. A ladder is one range
+   cut into `--bands N` equal bands with the same settings (scenario 3).
+5. **The grid is a range, as in waller,** through waller's generator
+   without the fee adjustment (scenario 4).
 6. **No hidden defaults;** wheel knob validation moves into
    `greeler.New` (scenario 5).
 7. **`--dry-run` validates locally and prints the grid** (scenario 6).
 8. **`--name` is required;** ladder greelers get no job names (scenario 7).
-9. **Only `add` for now** (scenario 8).
+9. **Parity with waller:** `add`, `list`, `get`, `print`, `query`,
+   `upgrade`, `simulate` and `summary` for both groups; `simulate` covers
+   the grid and zone flips but not option premiums (scenario 8).
