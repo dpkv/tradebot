@@ -44,9 +44,12 @@ and formats all three, and everything else goes through it. A contract ID
 that doesn't parse is `os.ErrInvalid` before any request is made.
 
 `Expiry` is 16:00 America/New_York on the expiry date, the close of the
-last session. optpos starts settling at `Expiry` (`optpos/optpos.go:251`)
-and the selector counts DTE from it, so midnight would make a contract
-look expired for its whole last trading day.
+last session. A contract on its expiry date (0DTE) still trades until
+then, and our code must agree: optpos starts settling at `Expiry`
+(`optpos/optpos.go:251`) and the selector skips contracts whose `Expiry`
+has passed. With `Expiry` at midnight starting the expiry date, both
+would treat a tradable 0DTE contract as already expired for the whole
+day.
 
 `ContractSize` is 100. Only standard contracts are listed (scenario 2), so
 it never varies.
