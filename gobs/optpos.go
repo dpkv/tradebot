@@ -20,6 +20,7 @@ type OptPositionStateV1 struct {
 // OptPositionConfig is fixed at creation; the owning greeler supplies the
 // selector and re-price knobs.
 type OptPositionConfig struct {
+	AccountName  string
 	ExchangeName string
 	Underlying   string
 }

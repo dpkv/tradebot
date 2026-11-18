@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bvk/tradebot/api"
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/kvutil"
 	"github.com/shopspring/decimal"
@@ -19,11 +20,11 @@ func (s *Server) doExchangeGetOrder(ctx context.Context, req *api.ExchangeGetOrd
 	if err := req.Check(); err != nil {
 		return nil, err
 	}
-	ex, ok := s.exchangeMap[strings.ToLower(req.ExchangeName)]
+	account, ok := s.accountMap[strings.ToLower(req.AccountName)]
 	if !ok {
-		return nil, fmt.Errorf("no exchange with name %q: %w", req.ExchangeName, os.ErrNotExist)
+		return nil, fmt.Errorf("no account with name %q: %w", req.AccountName, os.ErrNotExist)
 	}
-	order, err := ex.GetOrder(ctx, req.ProductID, req.OrderID)
+	order, err := account.GetOrder(ctx, req.ProductID, req.OrderID)
 	if err != nil {
 		return &api.ExchangeGetOrderResponse{Error: err.Error()}, nil
 	}
@@ -50,12 +51,12 @@ func (s *Server) doExchangeGetOrder(ctx context.Context, req *api.ExchangeGetOrd
 }
 
 func (s *Server) doGetProduct(ctx context.Context, req *api.ExchangeGetProductRequest) (*api.ExchangeGetProductResponse, error) {
-	exchangeName := strings.ToLower(req.ExchangeName)
-	ex, ok := s.exchangeMap[exchangeName]
+	accountName := strings.ToLower(req.AccountName)
+	account, ok := s.accountMap[accountName]
 	if !ok {
-		return nil, fmt.Errorf("no exchange with name %q: %w", req.ExchangeName, os.ErrNotExist)
+		return nil, fmt.Errorf("no account with name %q: %w", req.AccountName, os.ErrNotExist)
 	}
-	product, err := ex.GetSpotProduct(ctx, req.Base, req.Quote)
+	product, err := account.GetSpotProduct(ctx, req.Base, req.Quote)
 	if err != nil {
 		return &api.ExchangeGetProductResponse{Error: err.Error()}, nil
 	}
@@ -73,11 +74,20 @@ func (s *Server) doExchangeUpdateProduct(ctx context.Context, req *api.ExchangeU
 	}
 
 	exchangeName := strings.ToLower(req.ExchangeName)
-	ex, ok := s.exchangeMap[exchangeName]
-	if !ok {
+	if _, ok := s.exchangeMap[exchangeName]; !ok {
 		return nil, fmt.Errorf("no exchange with name %q: %w", req.ExchangeName, os.ErrNotExist)
 	}
-	p, err := ex.GetSpotProduct(ctx, req.Base, req.Quote)
+	var account exchange.Account
+	for _, a := range s.accountMap {
+		if a.ExchangeName() == exchangeName {
+			account = a
+			break
+		}
+	}
+	if account == nil {
+		return nil, fmt.Errorf("exchange %q has no accounts", req.ExchangeName)
+	}
+	p, err := account.GetSpotProduct(ctx, req.Base, req.Quote)
 	if err != nil {
 		return nil, fmt.Errorf("could not find spot product for base=%s quote=%s: %w", req.Base, req.Quote, err)
 	}

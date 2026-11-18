@@ -57,9 +57,9 @@ func (v *GreelLadder) Run(ctx context.Context, rt *trader.Runtime) error {
 		}()
 	}
 
-	holdings, _ := rt.Exchange.(StockHoldings)
+	holdings, _ := rt.Account.(StockHoldings)
 	if holdings == nil {
-		slog.Warn("exchange doesn't report stock holdings; stock reconciliation is off", "greelladder", v, "exchange", v.cfg.ExchangeName)
+		slog.Warn("account doesn't report stock holdings; stock reconciliation is off", "greelladder", v, "account", v.cfg.AccountName)
 	}
 	ticker := time.NewTicker(v.reconcileInterval)
 	defer ticker.Stop()

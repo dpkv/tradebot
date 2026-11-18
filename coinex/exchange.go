@@ -25,6 +25,7 @@ type Exchange struct {
 	productMap syncmap.Map[string, *Product]
 }
 
+var _ exchange.Account = &Exchange{}
 var _ exchange.Exchange = &Exchange{}
 
 func NewExchange(ctx context.Context, key, secret string, opts *Options) (_ *Exchange, status error) {
@@ -57,8 +58,17 @@ func (v *Exchange) Close() error {
 	return nil
 }
 
+func (v *Exchange) AccountName() string {
+	return "coinex"
+}
+
 func (v *Exchange) ExchangeName() string {
 	return "coinex"
+}
+
+// Accounts returns the exchange itself as its single trading account.
+func (v *Exchange) Accounts(ctx context.Context) ([]exchange.Account, error) {
+	return []exchange.Account{v}, nil
 }
 
 func (v *Exchange) CanDedupOnClientUUID() bool {

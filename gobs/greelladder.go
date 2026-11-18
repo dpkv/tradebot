@@ -16,6 +16,7 @@ type GreelLadderStateV1 struct {
 // GreelLadderConfig is fixed at creation.
 type GreelLadderConfig struct {
 	ProductID    string
+	AccountName  string
 	ExchangeName string
 
 	GreelerIDs []string

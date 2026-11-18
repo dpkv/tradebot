@@ -32,10 +32,10 @@ var expiry = time.Date(2026, 12, 18, 21, 0, 0, 0, time.UTC)
 
 func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
-// fakeExchange implements OptionsExchange with one fakeProduct per contract.
+// fakeExchange implements OptionsAccount with one fakeProduct per contract.
 // It fails the test if two orders are ever live at once.
 type fakeExchange struct {
-	exchange.OptionsExchange // unused methods panic
+	exchange.OptionsAccount // unused methods panic
 
 	t *testing.T
 
@@ -97,6 +97,7 @@ func newFakeExchange(t *testing.T) *fakeExchange {
 	return f
 }
 
+func (f *fakeExchange) AccountName() string  { return "fake" }
 func (f *fakeExchange) ExchangeName() string { return "fake" }
 
 func (f *fakeExchange) GetOptionsChain(ctx context.Context, underlying string) ([]*gobs.OptionContract, error) {
@@ -166,6 +167,7 @@ func (f *fakeExchange) GetOptionsOrderByClientID(ctx context.Context, clientID u
 }
 
 func (p *fakeProduct) ContractID() string   { return p.id }
+func (p *fakeProduct) AccountName() string  { return "fake" }
 func (p *fakeProduct) ExchangeName() string { return "fake" }
 func (p *fakeProduct) Close() error         { return nil }
 

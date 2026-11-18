@@ -5,13 +5,15 @@ go 1.24.0
 toolchain go1.24.11
 
 require (
-	github.com/bvkgo/kv v0.0.0-20240323055300-c2b9891dec55
+	github.com/KarpelesLab/vncpasswd v1.0.1
+	github.com/bvkgo/kv v0.0.0-20261019220201-62ab605212a8
 	github.com/bvkgo/kvbadger v0.0.0-20231109001103-13dc1607ba8d
 	github.com/bvkgo/topic v1.0.1-0.20231225172130-d8945de4fa3c
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/go-telegram/bot v1.15.0
-	github.com/google/uuid v1.4.0
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.4.0
+	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/nightlyone/lockfile v1.0.0
 	github.com/shirou/gopsutil/v4 v4.25.6
 	github.com/shopspring/decimal v1.3.1
@@ -28,10 +30,13 @@ require (
 require (
 	github.com/beevik/ntp v1.5.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
+	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/glog v1.1.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect

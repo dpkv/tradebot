@@ -245,6 +245,7 @@ func addPremiums(s *gobs.Summary, facts []*optpos.Facts, r *timerange.Range) {
 func (v *Greeler) GetSummary(r *timerange.Range) *gobs.Summary {
 	s := &gobs.Summary{
 		Exchange:  v.cfg.ExchangeName,
+		Account:   v.cfg.AccountName,
 		ProductID: v.cfg.ProductID,
 		Budget:    v.BudgetAt(decimal.Zero),
 	}

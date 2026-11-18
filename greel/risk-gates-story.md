@@ -130,7 +130,7 @@ Like exclusion, gates count only the ladder's own greelers. Standalone
 greelers, other ladders, and manual option trades on the same account are
 invisible to them. An account-wide limit needs the exchange's view of open
 option positions and is left for when an exchange implements
-`OptionsExchange`.
+`OptionsAccount`.
 
 Freed room goes to whichever blocked greeler steps first; there is no
 queue or priority between bands in v1.

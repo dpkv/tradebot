@@ -53,7 +53,7 @@ write below lands in `Progress`. `Open` then does, in order:
    there is one (greelladder-story). DTE/liquidity knobs live on the
    selector itself (decision #1).
 3. `optEx.OpenOptionsProduct(ctx, contract.ContractID)` opens the product.
-4. `optlimiter.New(legUID, exchangeName, contract.ContractID, contract.ContractSize, numContracts, sel.MinPremium, knobs.RepriceStep, knobs.RepriceInterval)`
+4. `optlimiter.New(legUID, accountName, contract.ContractID, contract.ContractSize, numContracts, sel.MinPremium, knobs.RepriceStep, knobs.RepriceInterval)`
    builds the opening attempt, with a deterministic
    `legUID = path.Join(positionUID, "leg-%06d")`.
 5. **Write-ahead:** append the leg's UID to `Legs`, set `Contract` (the
@@ -156,7 +156,7 @@ doesn't list yet, optlimiter-story scenario 4), they try again after
 
 ### 6. Settlement check: broker truth about the contract
 
-`OptionsExchange.GetOptionsSettlement(ctx, contractID)` (in
+`OptionsAccount.GetOptionsSettlement(ctx, contractID)` (in
 `exchange/api.go`) returns an `OptionsSettlement`: status
 (`open | assigned | expired`), the broker transaction key, the number of
 contracts, and when. `"assigned"` and `"expired"` come only from explicit
@@ -240,6 +240,7 @@ type ContractSelector interface {
 // greeler.
 type Position struct {
     uid          string
+    accountName  string
     exchangeName string
     underlying   string
 
@@ -258,11 +259,11 @@ type Position struct {
     lastSettlementCheck time.Time // in memory only (scenario 6)
 
     // Held at construction (New/Load), not re-passed to every method.
-    optEx exchange.OptionsExchange
+    optEx exchange.OptionsAccount
     db    kv.Database
 }
 
-func New(uid, exchangeName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) *Position {
+func New(uid, accountName, underlying string, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsAccount, db kv.Database) *Position {
     panic("unimplemented")
 }
 
@@ -290,13 +291,13 @@ func (v *Position) Abandon(ctx context.Context) error {
 // Outcome is empty while open or settling; terminal otherwise.
 func (v *Position) Outcome() string { return v.outcome }
 
-// Save writes Config (exchangeName, underlying) and Progress (contract,
+// Save writes Config (accountName, exchangeName, underlying) and Progress (contract,
 // legIDs, outcome, assignment) as gobs.OptPositionStateV1.
 func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
     panic("unimplemented")
 }
 
-func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsExchange, db kv.Database) (*Position, error) {
+func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelector, knobs *gobs.WheelKnobs, optEx exchange.OptionsAccount, db kv.Database) (*Position, error) {
     panic("unimplemented") // scenario 5
 }
 ```
@@ -333,7 +334,7 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
 7. **Sibling exclusion via `Constraint.Exclude` — decided after design
    review**, provided by the ladder; nil when standalone. TODO: revisit the
    restriction (greelladder-story).
-8. **`OptionsExchange.GetOptionsSettlement` added — approved and
+8. **`OptionsAccount.GetOptionsSettlement` added — approved and
    implemented** (scenario 6); the etrade implementation is follow-on work.
 9. **v1 holds to settlement; `RollPolicy`, closes, and rolls are v2 —
    decided.** `Check` only settles, waits, or re-selects.

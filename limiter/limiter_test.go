@@ -123,13 +123,13 @@ func TestFetchOrderMapCopiesNotFoundOrders(t *testing.T) {
 	}
 }
 
-// finishedExchange reports every order finished at one time.
-type finishedExchange struct {
-	exchange.Exchange // unused methods panic
-	at                time.Time
+// finishedAccount reports every order finished at one time.
+type finishedAccount struct {
+	exchange.Account // unused methods panic
+	at               time.Time
 }
 
-func (e *finishedExchange) GetOrder(ctx context.Context, productID, serverID string) (exchange.OrderDetail, error) {
+func (e *finishedAccount) GetOrder(ctx context.Context, productID, serverID string) (exchange.OrderDetail, error) {
 	return &exchange.SimpleOrder{ServerOrderID: serverID, Done: true, FinishTime: gobs.RemoteTime{Time: e.at}}, nil
 }
 
@@ -138,7 +138,7 @@ func (e *finishedExchange) GetOrder(ctx context.Context, productID, serverID str
 func TestUpdateActiveLimiterCopiesOrders(t *testing.T) {
 	const n = 200
 	l := newTestLimiter(t, n)
-	ex := &finishedExchange{at: time.Now()}
+	account := &finishedAccount{at: time.Now()}
 	ctx := context.Background()
 
 	done := make(chan struct{})
@@ -149,7 +149,7 @@ func TestUpdateActiveLimiterCopiesOrders(t *testing.T) {
 			o := addOrder(t, l, id)
 			o.FilledSize, o.FilledPrice, o.Done = d("1"), d("100"), true
 			l.orderMap.Store(id, &o)
-			if err := updateActiveLimiter(ctx, ex, l); err != nil {
+			if err := updateActiveLimiter(ctx, account, l); err != nil {
 				t.Error(err)
 				return
 			}
@@ -159,8 +159,8 @@ func TestUpdateActiveLimiterCopiesOrders(t *testing.T) {
 
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("order-%d", i)
-		if o, ok := l.orderMap.Load(id); !ok || !o.FinishTime.Time.Equal(ex.at) {
-			t.Fatalf("%s = %+v, want finished at %s", id, o, ex.at)
+		if o, ok := l.orderMap.Load(id); !ok || !o.FinishTime.Time.Equal(account.at) {
+			t.Fatalf("%s = %+v, want finished at %s", id, o, account.at)
 		}
 	}
 }

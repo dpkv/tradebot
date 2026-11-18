@@ -110,6 +110,7 @@ const reconcileInterval = time.Hour
 // contract (scenario 2), and cross-checks stock movement (scenario 3).
 type GreelLadder struct {
     uid          string
+    accountName  string
     exchangeName string
     productID    string
 
@@ -119,7 +120,7 @@ type GreelLadder struct {
     claimed map[string]string // contractID -> greeler UID (scenario 2)
 }
 
-func New(uid, exchangeName, productID string /* band configs */) (*GreelLadder, error) {
+func New(uid, accountName, productID string /* band configs */) (*GreelLadder, error) {
     panic("unimplemented") // mirrors waller.New's per-band spawn loop
 }
 
