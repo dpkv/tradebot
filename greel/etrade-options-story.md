@@ -1,7 +1,7 @@
-# Story: etrade — OptionsAccount and StockHoldings
+# Story: etrade — ExchangeOptionsAccount and StockHoldings
 
 Companion to [project.md](project.md) (the last unbuilt piece: no account
-implements `exchange.OptionsAccount` yet),
+implements `exchange.ExchangeOptionsAccount` yet),
 [optlimiter-story.md](optlimiter-story.md) (section 7, what option orders
 need from the exchange) and [optpos-story.md](optpos-story.md) (scenario 6,
 settlement). Until this lands a greeler on etrade refuses to run
@@ -12,7 +12,7 @@ The work extends the existing `etrade` package as it stands after the
 Exchange/Account split (PRs 21 and 22): an `Exchange` lists its accounts,
 and each `*etrade.ExchangeAccount` trades. Nothing in `exchange`, `gobs`,
 `optlimiter`, `optpos`, `greeler` or `greelladder` changes:
-`ExchangeAccount` gains the five `OptionsAccount` methods and
+`ExchangeAccount` gains the five `ExchangeOptionsAccount` methods and
 `GetStockHolding`, and the type assertions those packages already make on
 `rt.Account` start succeeding. Market data (chains, quotes) belongs to the
 shared client; orders, settlement and holdings belong to one account.
@@ -271,7 +271,7 @@ depend on the request, so it can't exercise this logic.
   `ListTransactions`; routing by instrument in `goRefreshOrders` and
   `goPollPrices`; security type and quantity on portfolio positions, with
   options kept out of the lot cache.
-- `etrade/option_account.go`: the five `OptionsAccount` methods and
+- `etrade/option_account.go`: the five `ExchangeOptionsAccount` methods and
   `GetStockHolding` on `ExchangeAccount`; entry pruning.
 - `etrade/option_product.go`: `OptionProduct`.
 - `etrade/options.go`: `SettlementLookback` (default 45 days) and
