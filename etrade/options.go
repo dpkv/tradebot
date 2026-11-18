@@ -47,6 +47,11 @@ type Options struct {
 	// Default: 30s.
 	PollBalancesInterval time.Duration
 
+	// SettlementLookback is how far back GetOptionsSettlement reads account
+	// transactions. It only needs to cover the bot being down. Default: 45
+	// days.
+	SettlementLookback time.Duration
+
 	// ChainCacheTTL is how long an option chain stays cached in the client,
 	// shared by every account and greeler on the underlying. Default: 60s.
 	ChainCacheTTL time.Duration
@@ -89,6 +94,9 @@ func (o *Options) setDefaults() {
 	}
 	if o.PollBalancesInterval == 0 {
 		o.PollBalancesInterval = 30 * time.Second
+	}
+	if o.SettlementLookback == 0 {
+		o.SettlementLookback = 45 * 24 * time.Hour
 	}
 	if o.ChainCacheTTL == 0 {
 		o.ChainCacheTTL = 60 * time.Second

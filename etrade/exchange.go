@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/bvk/tradebot/exchange"
@@ -23,6 +24,11 @@ type Exchange struct {
 	client *Client
 
 	productMap syncmap.Map[string, *Product]
+
+	// optionMu guards optionProducts, the open option products keyed by
+	// account ID and contract ID.
+	optionMu       sync.Mutex
+	optionProducts map[string]*sharedOptionProduct
 }
 
 // NewExchange creates an Exchange, verifies credentials, and starts the
@@ -53,6 +59,14 @@ func NewExchange(ctx context.Context, db kv.Database, creds *Credentials, opts *
 }
 
 func (v *Exchange) Close() error {
+	v.optionMu.Lock()
+	open := v.optionProducts
+	v.optionProducts = nil
+	v.optionMu.Unlock()
+	for _, s := range open {
+		s.product.Close()
+	}
+
 	if err := v.client.Close(); err != nil {
 		slog.Error("etrade: could not close client (ignored)", "err", err)
 	}
