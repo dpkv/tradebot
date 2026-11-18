@@ -17,6 +17,13 @@ import (
 type apiQuoteProduct struct {
 	Symbol       string `json:"symbol"`
 	SecurityType string `json:"securityType"`
+
+	// Option fields; zero for equity quotes.
+	CallPut     string          `json:"callPut"`
+	ExpiryYear  int             `json:"expiryYear"`
+	ExpiryMonth int             `json:"expiryMonth"`
+	ExpiryDay   int             `json:"expiryDay"`
+	StrikePrice decimal.Decimal `json:"strikePrice"`
 }
 
 type apiQuoteAll struct {
@@ -66,6 +73,9 @@ type APIQuoteData struct {
 	DateTimeUTC int64           `json:"dateTimeUTC"`
 	Product     apiQuoteProduct `json:"Product"`
 	All         apiQuoteAll     `json:"All"`
+
+	// Option is set for option quotes fetched with detailFlag=OPTIONS.
+	Option *apiQuoteOption `json:"Option"`
 
 	// Unused: whether the quote is a real-time or delayed quote.
 	QuoteStatus string `json:"quoteStatus"`
