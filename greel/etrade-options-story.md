@@ -46,13 +46,17 @@ product fields (`symbol`, `callPut`, `expiryYear/Month/Day`,
 and formats all three, and everything else goes through it. A contract ID
 that doesn't parse is `os.ErrInvalid` before any request is made.
 
-`Expiry` is 16:00 America/New_York on the expiry date, the close of the
-last session. A contract on its expiry date (0DTE) still trades until
-then, and our code must agree: optpos starts settling at `Expiry`
-(`optpos/optpos.go:251`) and the selector skips contracts whose `Expiry`
-has passed. With `Expiry` at midnight starting the expiry date, both
-would treat a tradable 0DTE contract as already expired for the whole
-day.
+`Expiry` is 23:59 America/New_York on the expiry date, not the 16:00
+close. A contract on its expiry date (0DTE) still trades until the close,
+and exercise and settlement can run later that evening (some exchanges
+allow late settlement), so the contract counts as live until the day
+ends. optpos starts settling at `Expiry` (`optpos/optpos.go:251`) and the
+selector skips contracts whose `Expiry` has passed. With `Expiry` at
+midnight starting the expiry date, both would treat a tradable 0DTE
+contract as already expired for the whole day. The hours between the
+close and 23:59 cost nothing: optlimiter places only in the regular
+session, and settlement is read from the broker hourly whatever
+`Expiry` says (`optpos/optpos.go:238`).
 
 `ContractSize` is 100. Only standard contracts are listed (scenario 2), so
 it never varies.
@@ -110,9 +114,16 @@ account caches open option products by contract ID.
   product sends what it is given.
 - **No background cancel of failed placements.** The equity product
   cancels an order whose placement errored but turns up later
-  (`goCancelFailedCreates`). For options that is optlimiter's job: it
-  finds the order by client ID and cancels it (optlimiter-story section
-  4). Two actors cancelling would race.
+  (`goCancelFailedCreates`). For options that is optlimiter's job, and
+  its code already does it: a failed `LimitSellToOpen` marks the client
+  ID absent and saves that before `Run` returns (`optlimiter/run.go:202`);
+  while any ID is absent and unsettled, nothing new is placed and `Run`
+  returns `ErrUnconfirmed`; the next `Run` looks the ID up with
+  `GetOptionsOrderByClientID` (`optlimiter/run.go:431`), adopts the order
+  if found, live or filled, and cancels or keeps it under the one-live-order
+  rule. The only thing etrade must do is keep the write-ahead entry
+  (scenario 5) so that lookup can succeed. Two actors cancelling would
+  race.
 
 ### 4. Routing order and price updates
 
@@ -221,10 +232,12 @@ Three things to know:
 - **The exact type strings aren't documented.** Matching on substrings
   survives the likely spellings ("Option Assignment", "Assigned", "Option
   Expiration", "Expired"). A transaction on the contract with a type the
-  matcher doesn't know is logged at warning with the raw type, so the
-  first real expiry shows it if the guess is wrong. Until then the
-  position stays settling, which is the safe failure: optpos records
-  nothing, and the greeler stays in wheel mode until someone looks.
+  matcher doesn't know is logged at warning and **sent as an alert**
+  through the etrade messenger (`Options.Messenger`, already used for
+  login failures), naming the account, contract, transaction ID and raw
+  type. Each transaction alerts once per process. Until a person looks,
+  the position stays settling, which is the safe failure: optpos records
+  nothing, and the greeler stays in wheel mode.
 - **The lookback bounds the query.** optpos asks hourly while the greeler
   runs, so an assignment is seen within an hour; the 45 days only need to
   cover the bot being down. A longer outage leaves the position settling
@@ -288,11 +301,16 @@ depend on the request, so it can't exercise this logic.
 
 ---
 
-## Decisions to make at this checkpoint
+## Decisions made at this checkpoint
+
+Reviewed on 2026-11-18. Decisions 1, 3, 4, 6, 7, 9 and 10 were approved
+as proposed; 2 and 8 were revised, and 5 was approved with the
+failed-placement handling confirmed in scenario 3.
 
 1. **ContractID is the compact OSI symbol**, `AAPL261218P00200000`
    (no space padding); E*TRADE only ever sees product fields (scenario 1).
-2. **Expiry is 16:00 New York time on the expiry date** (scenario 1).
+2. **Expiry is 23:59 New York time on the expiry date**, allowing for
+   late settlement (scenario 1).
 3. **Only standard, unadjusted contracts are listed**, so `ContractSize`
    is always 100 (scenario 2).
 4. **The chain covers every expiry and strike, cached 60 seconds per
@@ -300,7 +318,7 @@ depend on the request, so it can't exercise this logic.
    never cached.
 5. **Option orders are regular-session day limit orders**, unrounded,
    with no extended-hours retry and no background cancel of failed
-   placements (scenario 3).
+   placements; optlimiter already finds and cancels those (scenario 3).
 6. **Order, price and portfolio data are routed by instrument**: symbol
    for equity, contract ID for options; option positions stay out of the
    equity lot cache (scenario 4).
@@ -309,8 +327,8 @@ depend on the request, so it can't exercise this logic.
    in all statuses, and an ambiguous match is an error (scenario 5).
 8. **Settlement comes from account transactions** matched on the
    contract's product fields and on "assign"/"expir" in the type, over a
-   45-day lookback; anything unrecognized leaves the position settling
-   (scenario 6).
+   45-day lookback; a transaction on the contract with an unknown type is
+   alerted and leaves the position settling (scenario 6).
 9. **Stock holdings are the account's trade-date equity quantity** from
    the portfolio poller's latest snapshot (scenario 7).
 10. **Tests use an httptest fake; real responses are checked with three
