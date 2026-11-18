@@ -106,13 +106,13 @@ func (e *chainEntry) finished() bool {
 	}
 }
 
-// GetOptionChain returns every standard, unadjusted call and put on the
+// GetCachedOptionChain returns every standard, unadjusted call and put on the
 // underlying, across all expiries and strikes. A successful chain is cached
 // for Options.ChainCacheTTL, and concurrent callers share one in-flight
 // fetch, so greelers on any account re-selecting at the same moment cost one
 // chain fetch. A failed fetch is not cached. The returned quotes are shared
 // with other callers and must not be modified.
-func (c *Client) GetOptionChain(ctx context.Context, symbol string) ([]*internal.OptionQuote, error) {
+func (c *Client) GetCachedOptionChain(ctx context.Context, symbol string) ([]*internal.OptionQuote, error) {
 	symbol = strings.ToUpper(symbol)
 
 	c.chainMu.Lock()

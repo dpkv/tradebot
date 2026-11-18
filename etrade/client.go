@@ -274,7 +274,7 @@ type Client struct {
 	portfolioMu sync.Mutex
 
 	// chainMu guards chainMap, the option chain cache keyed by underlying
-	// symbol. See GetOptionChain.
+	// symbol. See GetCachedOptionChain.
 	chainMu  sync.Mutex
 	chainMap map[string]*chainEntry
 

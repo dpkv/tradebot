@@ -108,12 +108,12 @@ func optionChainHandler(t *testing.T, expiryCalls, chainCalls *atomic.Int32, gat
 	return mux
 }
 
-func TestGetOptionChain(t *testing.T) {
+func TestGetCachedOptionChain(t *testing.T) {
 	var expiryCalls, chainCalls atomic.Int32
 	c := newTestClient(t, optionChainHandler(t, &expiryCalls, &chainCalls, nil))
 	ctx := context.Background()
 
-	quotes, err := c.GetOptionChain(ctx, "aapl")
+	quotes, err := c.GetCachedOptionChain(ctx, "aapl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestGetOptionChain(t *testing.T) {
 	}
 
 	// Served from the cache.
-	if _, err := c.GetOptionChain(ctx, "AAPL"); err != nil {
+	if _, err := c.GetCachedOptionChain(ctx, "AAPL"); err != nil {
 		t.Fatal(err)
 	}
 	if e, n := expiryCalls.Load(), chainCalls.Load(); e != 1 || n != 2 {
@@ -142,7 +142,7 @@ func TestGetOptionChain(t *testing.T) {
 	c.chainMu.Lock()
 	c.chainMap["AAPL"].at = time.Now().Add(-c.opts.ChainCacheTTL)
 	c.chainMu.Unlock()
-	if _, err := c.GetOptionChain(ctx, "AAPL"); err != nil {
+	if _, err := c.GetCachedOptionChain(ctx, "AAPL"); err != nil {
 		t.Fatal(err)
 	}
 	if e := expiryCalls.Load(); e != 2 {
@@ -150,7 +150,7 @@ func TestGetOptionChain(t *testing.T) {
 	}
 }
 
-func TestGetOptionChainSharedFetch(t *testing.T) {
+func TestGetCachedOptionChainSharedFetch(t *testing.T) {
 	var expiryCalls, chainCalls atomic.Int32
 	gate := make(chan struct{})
 	c := newTestClient(t, optionChainHandler(t, &expiryCalls, &chainCalls, gate))
@@ -162,7 +162,7 @@ func TestGetOptionChainSharedFetch(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			quotes, err := c.GetOptionChain(context.Background(), "AAPL")
+			quotes, err := c.GetCachedOptionChain(context.Background(), "AAPL")
 			if err == nil && len(quotes) != 4 {
 				err = fmt.Errorf("got %d quotes, want 4", len(quotes))
 			}
@@ -172,7 +172,7 @@ func TestGetOptionChainSharedFetch(t *testing.T) {
 	// A caller that gives up doesn't fail the shared fetch.
 	cctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := c.GetOptionChain(cctx, "AAPL"); !errors.Is(err, context.Canceled) {
+	if _, err := c.GetCachedOptionChain(cctx, "AAPL"); !errors.Is(err, context.Canceled) {
 		t.Errorf("canceled caller err = %v, want context.Canceled", err)
 	}
 	close(gate)
@@ -188,7 +188,7 @@ func TestGetOptionChainSharedFetch(t *testing.T) {
 	}
 }
 
-func TestGetOptionChainErrorNotCached(t *testing.T) {
+func TestGetCachedOptionChainErrorNotCached(t *testing.T) {
 	var calls atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/market/optionexpiredate", func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +197,7 @@ func TestGetOptionChainErrorNotCached(t *testing.T) {
 	})
 	c := newTestClient(t, mux)
 	for i := 0; i < 2; i++ {
-		if _, err := c.GetOptionChain(context.Background(), "AAPL"); err == nil {
+		if _, err := c.GetCachedOptionChain(context.Background(), "AAPL"); err == nil {
 			t.Fatal("want an error")
 		}
 	}
