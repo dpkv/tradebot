@@ -124,6 +124,9 @@ func (f *ConfigFlags) AccountName() string { return f.account }
 
 func (f *ConfigFlags) ProductID() string { return f.product }
 
+// FeePct is the --fee-pct the grid was adjusted for.
+func (f *ConfigFlags) FeePct() decimal.Decimal { return f.grid.FeePct() }
+
 // Config builds the greeler config the flags describe and checks it with
 // greeler.CheckConfig, the same check the server makes.
 func (f *ConfigFlags) Config() (*gobs.GreelConfig, error) {

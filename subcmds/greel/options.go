@@ -4,6 +4,8 @@ package greel
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -36,8 +38,12 @@ func (v optionsValue) Set(s string) error {
 
 // printLevels prints one line per grid level, prefixed with prefix.
 func printLevels(prefix string, cfg *gobs.GreelConfig) {
+	fprintLevels(os.Stdout, prefix, cfg)
+}
+
+func fprintLevels(w io.Writer, prefix string, cfg *gobs.GreelConfig) {
 	for i, p := range cfg.GridLevels {
-		fmt.Printf("%slevel-%d: size %s buy %s (cancel %s) sell %s (cancel %s)\n", prefix, i,
+		fmt.Fprintf(w, "%slevel-%d: size %s buy %s (cancel %s) sell %s (cancel %s)\n", prefix, i,
 			p.Buy.Size, p.Buy.Price.StringFixed(4), p.Buy.Cancel.StringFixed(4), p.Sell.Price.StringFixed(4), p.Sell.Cancel.StringFixed(4))
 	}
 }
