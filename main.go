@@ -19,6 +19,7 @@ import (
 	subcmdsetrade "github.com/bvk/tradebot/subcmds/etrade"
 	"github.com/bvk/tradebot/subcmds/exchange"
 	"github.com/bvk/tradebot/subcmds/fix"
+	"github.com/bvk/tradebot/subcmds/greel"
 	"github.com/bvk/tradebot/subcmds/job"
 	"github.com/bvk/tradebot/subcmds/limiter"
 	"github.com/bvk/tradebot/subcmds/looper"
@@ -122,6 +123,14 @@ func main() {
 		new(waller.Summary),
 	}
 
+	greelerCmds := []cli.Command{
+		new(greel.GreelerAdd),
+	}
+
+	greelLadderCmds := []cli.Command{
+		new(greel.LadderAdd),
+	}
+
 	watcherCmds := []cli.Command{
 		new(watcher.Add),
 		new(watcher.Print),
@@ -176,6 +185,8 @@ func main() {
 		cli.NewGroup("looper", "Manage buy-sell loops", looperCmds...),
 		cli.NewGroup("waller", "Manage trades in a price range", wallerCmds...),
 		cli.NewGroup("watcher", "Simulate trades in a price range", watcherCmds...),
+		cli.NewGroup("greeler", "Manage greel jobs (grid plus option wheel)", greelerCmds...),
+		cli.NewGroup("greelladder", "Manage ladders of greel jobs", greelLadderCmds...),
 		cli.NewGroup("exchange", "View/query exchange directly", exchangeCmds...),
 		cli.NewGroup("coinbase", "Coinbase exchange operations", coinbaseCmds...),
 		cli.NewGroup("coinex", "CoinEx exchange operations", coinexCmds...),
