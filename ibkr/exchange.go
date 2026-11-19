@@ -222,29 +222,83 @@ func (v *Exchange) GetOrder(ctx context.Context, productID string, serverID stri
 }
 
 // fetchCommission calls the trades API and sets order.Commission and
-// order.FillObservedAt from the matching execution record. trade_time_r is
+// order.FillObservedAt from the order's execution records. trade_time_r is
 // the authoritative fill timestamp reported by the broker — it can differ
 // from LastExecutionTimeMilli (the orders API's last order-book event, which
 // FinishedAt otherwise falls back to) by hours, since a resting limit order
 // can be accepted long before it fills. Logs and returns on any error or a
 // missing match; the provisional FillObservedAt set by the caller and a zero
 // commission are non-fatal.
+//
+// The gateway's trades endpoint answers the first request after its cached
+// result goes stale, or after the days parameter changes, with an empty list
+// while it loads executions; an identical request shortly after returns them.
+// So this always asks for the full 7-day lookback (which also covers fills
+// first observed after an ET day boundary or a restart) and polls a few
+// times. On the first miss it also calls /iserver/accounts, which the gateway
+// may require once per session before serving account endpoints.
 func (v *Exchange) fetchCommission(ctx context.Context, order *internal.Order) {
-	trades, err := v.client.GetTrades(ctx, 1)
-	if err != nil {
-		slog.Warn("ibkr: could not fetch trades for commission", "clientOrderID", order.ClientOrderID, "err", err)
-		return
+	if order.FilledQty.IsZero() {
+		return // cancelled without any fill, so no executions to look up
 	}
-	for _, t := range trades {
-		if t.OrderRef == order.ClientOrderID {
-			order.Commission = t.Commission
-			if t.TradeTimeMilli != 0 {
-				order.FillObservedAt = t.TradeTimeMilli
-			}
+	for attempt := 1; ; attempt++ {
+		trades, err := v.client.GetTrades(ctx, 7)
+		if err != nil {
+			slog.Warn("ibkr: could not fetch trades for commission", "clientOrderID", order.ClientOrderID, "attempt", attempt, "err", err)
 			return
 		}
+		if applyExecutions(order, trades) {
+			return
+		}
+		if attempt == commissionLookupAttempts {
+			slog.Warn("ibkr: no trade found for commission", "clientOrderID", order.ClientOrderID, "attempts", attempt, "numTrades", len(trades))
+			return
+		}
+		if attempt == 1 {
+			if _, err := v.client.ListAccounts(ctx); err != nil {
+				slog.Warn("ibkr: could not list accounts before retrying trades (ignored)", "clientOrderID", order.ClientOrderID, "err", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(commissionLookupDelay):
+		}
 	}
-	slog.Warn("ibkr: no trade found for commission", "clientOrderID", order.ClientOrderID)
+}
+
+// commissionLookupAttempts and commissionLookupDelay bound how long
+// fetchCommission polls the trades endpoint for an order's executions. The
+// delay is a variable so tests can shorten it.
+const commissionLookupAttempts = 3
+
+var commissionLookupDelay = time.Second
+
+// applyExecutions sets order.Commission to the total commission over all of
+// the order's executions in trades — a partially filled order has one
+// execution record per fill — and order.FillObservedAt to the latest
+// execution time. Returns false, leaving order unchanged, if trades has no
+// execution for the order.
+func applyExecutions(order *internal.Order, trades []*APITrade) bool {
+	found := false
+	var commission decimal.Decimal
+	var lastMilli int64
+	for _, t := range trades {
+		if t.OrderRef != order.ClientOrderID {
+			continue
+		}
+		found = true
+		commission = commission.Add(t.Commission)
+		lastMilli = max(lastMilli, t.TradeTimeMilli)
+	}
+	if !found {
+		return false
+	}
+	order.Commission = commission
+	if lastMilli != 0 {
+		order.FillObservedAt = lastMilli
+	}
+	return true
 }
 
 // markFillObserved stamps FillObservedAt and fetches the commission (and the
