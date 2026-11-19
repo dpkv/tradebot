@@ -33,10 +33,15 @@ type PlaceOrder struct {
 	marketSession string
 	clientOrderID string
 	preview       bool
-
-	// fset is kept so the checks can tell which flags were set explicitly.
-	fset *flag.FlagSet
 }
+
+// Equity order defaults. The flags themselves default to empty, so an
+// option order can tell they were set; the cli package may call Command more
+// than once, so the parsed FlagSet can't be kept for flag.FlagSet.Visit.
+const (
+	defaultOrderTerm     = "GOOD_UNTIL_CANCEL"
+	defaultMarketSession = "REGULAR"
+)
 
 func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset := flag.NewFlagSet("place-order", flag.ContinueOnError)
@@ -46,12 +51,11 @@ func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset.StringVar(&c.side, "side", "", "order side: BUY or SELL for equities; BUY_OPEN, SELL_OPEN, BUY_CLOSE or SELL_CLOSE for options")
 	fset.StringVar(&c.qty, "qty", "", "quantity to order (whole contracts for options)")
 	fset.StringVar(&c.limitPrice, "limit-price", "", "limit price (per share for options)")
-	fset.StringVar(&c.orderTerm, "order-term", "GOOD_UNTIL_CANCEL", "order term: GOOD_UNTIL_CANCEL or GOOD_FOR_DAY (equities only; options are always GOOD_FOR_DAY)")
-	fset.StringVar(&c.marketSession, "market-session", "REGULAR", "market session: REGULAR or EXTENDED (equities only; options are always REGULAR)")
+	fset.StringVar(&c.orderTerm, "order-term", "", "order term: GOOD_UNTIL_CANCEL (default) or GOOD_FOR_DAY; equities only, options are always GOOD_FOR_DAY")
+	fset.StringVar(&c.marketSession, "market-session", "", "market session: REGULAR (default) or EXTENDED; equities only, options are always REGULAR")
 	fset.StringVar(&c.clientOrderID, "client-order-id", "", "client order ID (numeric string); omitted if not set")
 	fset.StringVar(&c.accountID, "account-id", "", "E*TRADE account ID (picked automatically if there is only one account)")
 	fset.BoolVar(&c.preview, "preview", false, "only preview the order with E*TRADE and print its estimate; nothing is placed")
-	c.fset = fset
 	return "place-order", fset, cli.CmdFunc(c.run)
 }
 
@@ -181,6 +185,12 @@ func (c *PlaceOrder) check() error {
 		if isOptionAction(c.side) {
 			return fmt.Errorf("--side %s is for option orders; use --contract instead of --symbol", c.side)
 		}
+		if c.orderTerm == "" {
+			c.orderTerm = defaultOrderTerm
+		}
+		if c.marketSession == "" {
+			c.marketSession = defaultMarketSession
+		}
 		return nil
 	}
 
@@ -191,12 +201,11 @@ func (c *PlaceOrder) check() error {
 		return fmt.Errorf("--side for an option order must be one of %s", strings.Join(optionActions, ", "))
 	}
 	var bad []string
-	if c.fset != nil {
-		c.fset.Visit(func(f *flag.Flag) {
-			if f.Name == "order-term" || f.Name == "market-session" {
-				bad = append(bad, "--"+f.Name)
-			}
-		})
+	if c.orderTerm != "" {
+		bad = append(bad, "--order-term")
+	}
+	if c.marketSession != "" {
+		bad = append(bad, "--market-session")
 	}
 	if len(bad) != 0 {
 		return fmt.Errorf("%s cannot be used with --contract: option orders are always GOOD_FOR_DAY in the REGULAR session", strings.Join(bad, " and "))

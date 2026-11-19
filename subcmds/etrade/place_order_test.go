@@ -14,6 +14,7 @@ func TestPlaceOrderCheck(t *testing.T) {
 	}{
 		// Equity orders, as before.
 		{[]string{"--symbol", "AAPL", "--side", "BUY", "--qty", "10", "--limit-price", "180"}, ""},
+		{[]string{"--contract", "AAPL261218P00200000", "--side", "SELL_OPEN", "--qty", "1", "--limit-price", "1.25", "--order-term", "GOOD_FOR_DAY", "--market-session", "REGULAR"}, "--order-term and --market-session cannot be used"},
 		{[]string{"--symbol", "AAPL", "--side", "sell", "--qty", "10", "--limit-price", "180", "--order-term", "GOOD_FOR_DAY", "--market-session", "EXTENDED"}, ""},
 		{[]string{"--symbol", "AAPL", "--side", "SELL_OPEN", "--qty", "10", "--limit-price", "180"}, "is for option orders"},
 
@@ -38,6 +39,9 @@ func TestPlaceOrderCheck(t *testing.T) {
 			t.Fatalf("%v: parse: %v", tc.args, err)
 		}
 		err := c.check()
+		if err == nil && c.symbol != "" && (c.orderTerm == "" || c.marketSession == "") {
+			t.Errorf("%v: equity defaults not applied: term %q, session %q", tc.args, c.orderTerm, c.marketSession)
+		}
 		switch {
 		case tc.wantErr == "" && err != nil:
 			t.Errorf("%v: err = %v, want nil", tc.args, err)
