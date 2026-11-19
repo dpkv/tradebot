@@ -176,8 +176,8 @@ no job names.
 
 `waller` has `add`, `list`, `get`, `print`, `query`, `upgrade`, `simulate`
 and `summary`. The `greeler` and `greelladder` groups get all of them but
-`simulate`, each working like waller's (`get`, `print`, `list`, `upgrade`
-and `summary` read the database directly through `cmdutil.DBFlags`;
+`simulate` and `upgrade`, each working like waller's (`get`, `print`,
+`list` and `summary` read the database directly through `cmdutil.DBFlags`;
 `query` needs no server):
 
 - `list`: job keys under `/greelers/` or `/greelladders/`. `greeler list`
@@ -195,14 +195,14 @@ and `summary` read the database directly through `cmdutil.DBFlags`;
   zones, the contracts the grid can cover, and the worst-case put exposure
   (contracts × 100 × the lowest buy price). The ladder version prints this
   per greel and in total.
-- `upgrade <uid>...`: load and save, to rewrite old state in the current
-  form.
 - `summary`: waller summary's flags and formats (`table`, `json`,
   `template`), over greelers or ladders, using `greeler.Summary` and
   `greelladder.Summary`, with the premium columns added.
 
 No `simulate`: a prices file has no option prices, so it could replay
-only the grid half of a greel job.
+only the grid half of a greel job. No `upgrade`: greel state has only its
+V1 form and no greel job exists yet, so there is nothing old to rewrite;
+it can follow with the first V2.
 
 ---
 
@@ -221,12 +221,12 @@ only the grid half of a greel job.
 - `subcmds/waller/spec.go`: export the pair generator.
 - `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
   checks, and conversion to `gobs.GreelConfig`.
-- `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the seven
+- `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the six
   commands for each group.
 - `main.go`: `greeler` and `greelladder` command groups.
 
 Planned as seven PRs: `CheckConfig`, `CheckBands` and `Cut`; API and
-server; the shared flags; `add` for both; `list`, `get`, `print`, `upgrade`; `query`;
+server; the shared flags; `add` for both; `list`, `get`, `print`; `query`;
 `summary`.
 
 ---
@@ -256,5 +256,6 @@ server; the shared flags; `add` for both; `list`, `get`, `print`, `upgrade`; `qu
 7. **`--dry-run` validates locally with those checks and prints the
    grid** (scenario 6).
 8. **`--name` is required;** ladder greelers get no job names (scenario 7).
-9. **Parity with waller, except `simulate`:** `add`, `list`, `get`,
-   `print`, `query`, `upgrade` and `summary` for both groups (scenario 8).
+9. **Parity with waller, except `simulate` and `upgrade`:** `add`,
+   `list`, `get`, `print`, `query` and `summary` for both groups
+   (scenario 8).
