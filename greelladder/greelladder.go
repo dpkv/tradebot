@@ -86,11 +86,8 @@ func New(uid, accountName, productID string, bands []*gobs.GreelConfig) (*GreelL
 	if err := checkUID(uid); err != nil {
 		return nil, err
 	}
-	if accountName == "" || productID == "" {
-		return nil, fmt.Errorf("greel ladder product or account name is empty")
-	}
-	if len(bands) == 0 {
-		return nil, fmt.Errorf("greel ladder has no bands")
+	if err := CheckBands(accountName, productID, bands); err != nil {
+		return nil, err
 	}
 	cfg := &gobs.GreelLadderConfig{
 		ProductID:    productID,
@@ -99,21 +96,9 @@ func New(uid, accountName, productID string, bands []*gobs.GreelConfig) (*GreelL
 	}
 	var greelers []*greeler.Greeler
 	for i, band := range bands {
-		if band == nil {
-			return nil, fmt.Errorf("greel ladder band %d is nil", i)
-		}
-		b := *band
-		if b.ProductID == "" {
-			b.ProductID = productID
-		}
-		if b.AccountName == "" {
-			b.AccountName = b.ExchangeName
-		}
-		if b.AccountName == "" {
-			b.AccountName = accountName
-		}
+		b := fillBand(band, accountName, productID)
 		gid := path.Join(uid, fmt.Sprintf("greeler-%06d", i))
-		g, err := greeler.New(gid, &b)
+		g, err := greeler.New(gid, b)
 		if err != nil {
 			return nil, fmt.Errorf("greel ladder band %d: %w", i, err)
 		}
@@ -121,6 +106,47 @@ func New(uid, accountName, productID string, bands []*gobs.GreelConfig) (*GreelL
 		cfg.GreelerIDs = append(cfg.GreelerIDs, gid)
 	}
 	return newLadder(uid, cfg, greelers)
+}
+
+// CheckBands reports whether New would accept bands for a ladder trading
+// productID on accountName, without a uid or an exchange, so clients can
+// check bands before sending them.
+func CheckBands(accountName, productID string, bands []*gobs.GreelConfig) error {
+	if accountName == "" || productID == "" {
+		return fmt.Errorf("greel ladder product or account name is empty")
+	}
+	if len(bands) == 0 {
+		return fmt.Errorf("greel ladder has no bands")
+	}
+	for i, band := range bands {
+		if band == nil {
+			return fmt.Errorf("greel ladder band %d is nil", i)
+		}
+		b := fillBand(band, accountName, productID)
+		if b.ProductID != productID || b.AccountName != accountName {
+			return fmt.Errorf("greel ladder band %d trades %s on %s, want %s on %s", i, b.ProductID, b.AccountName, productID, accountName)
+		}
+		if err := greeler.CheckConfig(b); err != nil {
+			return fmt.Errorf("greel ladder band %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// fillBand returns a copy of band with an empty product and account taken
+// from the ladder's.
+func fillBand(band *gobs.GreelConfig, accountName, productID string) *gobs.GreelConfig {
+	b := *band
+	if b.ProductID == "" {
+		b.ProductID = productID
+	}
+	if b.AccountName == "" {
+		b.AccountName = b.ExchangeName
+	}
+	if b.AccountName == "" {
+		b.AccountName = accountName
+	}
+	return &b
 }
 
 func newLadder(uid string, cfg *gobs.GreelLadderConfig, greelers []*greeler.Greeler) (*GreelLadder, error) {

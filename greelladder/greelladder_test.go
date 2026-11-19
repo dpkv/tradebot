@@ -62,6 +62,7 @@ func band(from int) *gobs.GreelConfig {
 		FarPct:        d("10"),
 		HysteresisPct: d("3"),
 		DwellTime:     time.Hour,
+		WheelKnobs:    testKnobs(),
 	}
 }
 
@@ -92,6 +93,17 @@ func TestNewRejectsInvalidInput(t *testing.T) {
 		if _, err := New(tc.uid, "fake", "AAPL", tc.bands); err == nil {
 			t.Errorf("%s: New succeeded", name)
 		}
+		if tc.uid != "not-a-uuid" {
+			if err := CheckBands("fake", "AAPL", tc.bands); err == nil {
+				t.Errorf("%s: CheckBands succeeded", name)
+			}
+		}
+	}
+	if err := CheckBands("", "AAPL", []*gobs.GreelConfig{band(100)}); err == nil {
+		t.Errorf("CheckBands accepted an empty account")
+	}
+	if err := CheckBands("fake", "AAPL", []*gobs.GreelConfig{band(100), band(110)}); err != nil {
+		t.Errorf("CheckBands rejected valid bands: %v", err)
 	}
 }
 
@@ -649,4 +661,9 @@ func TestLoadFunc(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// testKnobs filter nothing and re-price at optlimiter's defaults.
+func testKnobs() *gobs.WheelKnobs {
+	return &gobs.WheelKnobs{RepriceStep: d("0.2"), RepriceInterval: 2 * time.Minute}
 }

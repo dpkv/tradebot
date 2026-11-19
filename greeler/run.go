@@ -334,7 +334,7 @@ func (v *Greeler) constraint(optionType string) *optpos.Constraint {
 		OptionType: optionType,
 		Exclude:    v.exclude,
 
-		ContractSize: contractShares,
+		ContractSize: ContractShares,
 	}
 	if optionType == "PUT" {
 		c.MaxStrike = v.bottom()
