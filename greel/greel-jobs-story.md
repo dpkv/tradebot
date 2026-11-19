@@ -70,9 +70,12 @@ config error reads the same everywhere and the rules have one copy.
 
 The risk gates are ladder options (`max-contracts`, `max-put-exposure`),
 and options change only while a job isn't running
-(`server/jobs.go` `doJobSetOption`). Without them at creation, a new ladder
-starts running with no limits, and the only way to set them is pause, set,
-resume, with a window in between where it can write contracts unlimited.
+(`server/jobs.go` `doJobSetOption`). An unset limit means no limit
+(`greelladder/gates.go`), and the create resumes the job at once. Without
+options at creation, a new ladder runs ungated from the create until
+someone pauses it to set the limits; if the spot is already far from a
+band and the dwell time is short, a band can flip and write a contract in
+that gap. Nothing runs while the ladder is paused.
 risk-gates-story scenario 5 left this open because no creation subcommand
 existed.
 
