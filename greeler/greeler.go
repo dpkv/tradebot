@@ -29,9 +29,9 @@ import (
 
 const DefaultKeyspace = "/greelers/"
 
-// contractShares is the shares one contract covers; a greeler's levels must
+// ContractShares is the shares one contract covers; a greeler's levels must
 // add up to at least this much.
-var contractShares = decimal.NewFromInt(100)
+var ContractShares = decimal.NewFromInt(100)
 
 // position is what the greeler needs from an optpos.Position.
 type position interface {
@@ -167,41 +167,7 @@ func (v *Greeler) check() error {
 	if err := checkUID(v.uid); err != nil {
 		return err
 	}
-	if v.cfg.ProductID == "" || v.cfg.AccountName == "" {
-		return fmt.Errorf("greeler product or account name is empty")
-	}
-	if len(v.levels) == 0 {
-		return fmt.Errorf("greeler has no grid levels")
-	}
-	var total decimal.Decimal
-	for i, p := range v.levels {
-		if err := p.Check(); err != nil {
-			return fmt.Errorf("grid level %d is invalid: %w", i, err)
-		}
-		// A level is either all cash or all shares between cycles, which is
-		// what all-or-nothing qualification counts on.
-		if !p.Sell.Size.Equal(p.Buy.Size) {
-			return fmt.Errorf("grid level %d sell size %s differs from buy size %s", i, p.Sell.Size, p.Buy.Size)
-		}
-		if i > 0 && !p.Buy.Price.GreaterThan(v.levels[i-1].Buy.Price) {
-			return fmt.Errorf("grid level %d is not above level %d", i, i-1)
-		}
-		total = total.Add(p.Buy.Size)
-	}
-	if total.LessThan(contractShares) {
-		return fmt.Errorf("grid levels hold %s shares, want at least %s for one contract", total, contractShares)
-	}
-	g, f, h := v.cfg.GridPct, v.cfg.FarPct, v.cfg.HysteresisPct
-	if !g.IsPositive() || !f.GreaterThan(g) {
-		return fmt.Errorf("zone percentages need 0 < grid (%s) < far (%s)", g, f)
-	}
-	if h.IsNegative() || !h.LessThan(f) {
-		return fmt.Errorf("hysteresis %s must be within [0, far %s)", h, f)
-	}
-	if v.cfg.DwellTime < 0 {
-		return fmt.Errorf("dwell time %s is negative", v.cfg.DwellTime)
-	}
-	return nil
+	return CheckConfig(v.cfg)
 }
 
 func (v *Greeler) newGridEpoch(now time.Time) *epoch {
@@ -271,7 +237,7 @@ func (v *Greeler) exposure(optionType string) decimal.Decimal {
 	if optionType != "PUT" {
 		return decimal.Zero
 	}
-	return v.bottom().Mul(contractShares)
+	return v.bottom().Mul(ContractShares)
 }
 
 // HeldContract is the contract ID the current position is selling or

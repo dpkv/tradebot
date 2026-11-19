@@ -339,6 +339,7 @@ func testConfig() *gobs.GreelConfig {
 		FarPct:        d("10"),
 		HysteresisPct: d("3"),
 		DwellTime:     time.Hour,
+		WheelKnobs:    testKnobs(),
 	}
 }
 
@@ -488,23 +489,58 @@ func holdingsOf(t *testing.T, v *Greeler) []string {
 
 func TestNewRejectsInvalidConfig(t *testing.T) {
 	for name, edit := range map[string]func(c *gobs.GreelConfig){
-		"too few shares":  func(c *gobs.GreelConfig) { c.GridLevels = c.GridLevels[:3] },
-		"unequal sizes":   func(c *gobs.GreelConfig) { c.GridLevels[1].Sell.Size = d("20") },
-		"not ascending":   func(c *gobs.GreelConfig) { c.GridLevels[1], c.GridLevels[2] = c.GridLevels[2], c.GridLevels[1] },
-		"far below grid":  func(c *gobs.GreelConfig) { c.FarPct = d("4") },
-		"hysteresis wide": func(c *gobs.GreelConfig) { c.HysteresisPct = d("10") },
-		"no product":      func(c *gobs.GreelConfig) { c.ProductID = "" },
-		"no selector":     func(c *gobs.GreelConfig) { c.ContractSelector = "nonesuch" },
-		"nil level":       func(c *gobs.GreelConfig) { c.GridLevels[2] = nil },
+		"too few shares":   func(c *gobs.GreelConfig) { c.GridLevels = c.GridLevels[:3] },
+		"unequal sizes":    func(c *gobs.GreelConfig) { c.GridLevels[1].Sell.Size = d("20") },
+		"not ascending":    func(c *gobs.GreelConfig) { c.GridLevels[1], c.GridLevels[2] = c.GridLevels[2], c.GridLevels[1] },
+		"far below grid":   func(c *gobs.GreelConfig) { c.FarPct = d("4") },
+		"hysteresis wide":  func(c *gobs.GreelConfig) { c.HysteresisPct = d("10") },
+		"no product":       func(c *gobs.GreelConfig) { c.ProductID = "" },
+		"no selector":      func(c *gobs.GreelConfig) { c.ContractSelector = "nonesuch" },
+		"nil level":        func(c *gobs.GreelConfig) { c.GridLevels[2] = nil },
+		"no knobs":         func(c *gobs.GreelConfig) { c.WheelKnobs = nil },
+		"negative min dte": func(c *gobs.GreelConfig) { c.WheelKnobs.MinDTE = -1 },
+		"max dte below min": func(c *gobs.GreelConfig) {
+			c.WheelKnobs.MinDTE, c.WheelKnobs.MaxDTE = 30, 20
+		},
+		"negative delta":    func(c *gobs.GreelConfig) { c.WheelKnobs.TargetDelta = d("-0.1") },
+		"negative yield":    func(c *gobs.GreelConfig) { c.WheelKnobs.MinPremiumYield = d("-0.1") },
+		"negative interest": func(c *gobs.GreelConfig) { c.WheelKnobs.MinOpenInterest = d("-1") },
+		"negative spread":   func(c *gobs.GreelConfig) { c.WheelKnobs.MaxSpreadPct = d("-1") },
+		"zero step":         func(c *gobs.GreelConfig) { c.WheelKnobs.RepriceStep = d("0") },
+		"step above one":    func(c *gobs.GreelConfig) { c.WheelKnobs.RepriceStep = d("1.5") },
+		"zero interval":     func(c *gobs.GreelConfig) { c.WheelKnobs.RepriceInterval = 0 },
 	} {
 		c := testConfig()
 		edit(c)
+		if err := CheckConfig(c); err == nil {
+			t.Errorf("%s: CheckConfig succeeded", name)
+		}
 		if _, err := New(uuid.NewString(), c); err == nil {
 			t.Errorf("%s: New succeeded", name)
 		}
 	}
+	if err := CheckConfig(nil); err == nil {
+		t.Errorf("CheckConfig accepted a nil config")
+	}
 	if _, err := New("not-a-uuid", testConfig()); err == nil {
 		t.Errorf("New accepted a uid without an uuid")
+	}
+}
+
+func TestCheckConfigAcceptsMeaningfulZeros(t *testing.T) {
+	c := testConfig()
+	c.HysteresisPct = d("0")
+	c.DwellTime = 0
+	c.ContractSelector = ""
+	c.WheelKnobs.MinDTE, c.WheelKnobs.MaxDTE = 20, 0 // no upper bound
+	c.WheelKnobs.RepriceStep = d("1")
+	c.ExchangeName, c.AccountName = "", "fake"
+	if err := CheckConfig(c); err != nil {
+		t.Fatal(err)
+	}
+	c.AccountName, c.ExchangeName = "", "fake" // older configs
+	if err := CheckConfig(c); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -603,7 +639,7 @@ func TestSetOption(t *testing.T) {
 func TestSaveLoad(t *testing.T) {
 	e := newTestEnv(t)
 	c := testConfig()
-	c.WheelKnobs = &gobs.WheelKnobs{MinDTE: 20, MaxDTE: 45, RepriceInterval: time.Minute}
+	c.WheelKnobs = &gobs.WheelKnobs{MinDTE: 20, MaxDTE: 45, RepriceStep: d("0.2"), RepriceInterval: time.Minute}
 	v := e.newGreeler(c)
 	if _, err := v.SetOption("freeze", "wheel"); err != nil {
 		t.Fatal(err)
@@ -1502,4 +1538,9 @@ func TestRunNeedsOptionsExchange(t *testing.T) {
 	if err := v.Run(context.Background(), &rt); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("Run = %v, want os.ErrInvalid", err)
 	}
+}
+
+// testKnobs filter nothing and re-price at optlimiter's defaults.
+func testKnobs() *gobs.WheelKnobs {
+	return &gobs.WheelKnobs{RepriceStep: d("0.2"), RepriceInterval: 2 * time.Minute}
 }
