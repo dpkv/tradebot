@@ -7,22 +7,15 @@ import (
 	"sync"
 
 	"github.com/bvk/tradebot/etrade/internal"
-	"github.com/shopspring/decimal"
+	"github.com/bvk/tradebot/gobs"
 )
 
 // orderPlacementInfo holds the parameters of a PlaceOrder request. Used by
 // goCancelFailedCreates to match the order in the open-orders list when the
 // server order ID is unknown (E*TRADE omits clientOrderId from list responses).
-// Fields are exported so gob can serialize them when embedded in orderEntry.
-type orderPlacementInfo struct {
-	RequestTimeMilli int64
-	Side             string
-	Price            decimal.Decimal
-	Qty              decimal.Decimal
-	PriceType        string
-	OrderTerm        string
-	MarketSession    string
-}
+// The durable type lives in the gobs package (the on-disk schema); this alias
+// keeps the in-package call sites terse.
+type orderPlacementInfo = gobs.ETradeOrderPlacementInfo
 
 // clientIDStatus tracks the state of a single order keyed by the client order
 // UUID. It is protected by its own mutex because LimitBuy/LimitSell,
@@ -44,6 +37,11 @@ type clientIDStatus struct {
 	// placement holds the original request parameters, set before PlaceOrder is
 	// called and used for recovery matching if the call times out or crashes.
 	placement orderPlacementInfo
+
+	// keepDBEntry, when true, tells goWatchOrderUpdates not to delete the DB
+	// entry when the order reaches a terminal state. Set for a failed-create that
+	// was matched to an open order and is retained as an audit record.
+	keepDBEntry bool
 }
 
 func absInt64(v int64) int64 {

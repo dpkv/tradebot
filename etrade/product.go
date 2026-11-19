@@ -30,15 +30,9 @@ import (
 )
 
 // orderEntry is the value persisted in the database for each order we place,
-// keyed by the client order UUID. ServerOrderID is 0 until PlaceOrder returns
-// successfully. Placement is written before PlaceOrder is called so that if
-// the process crashes before the server order ID is known, startup
-// reconciliation can match the order in the open-orders list by parameters.
-type orderEntry struct {
-	ServerOrderID int64
-	AccountID     string
-	Placement     orderPlacementInfo
-}
+// keyed by the client order UUID. The durable type lives in the gobs package
+// (the on-disk schema); this alias keeps the in-package call sites terse.
+type orderEntry = gobs.ETradeOrderEntry
 
 // Product implements exchange.Product for a single E*TRADE equity symbol.
 type Product struct {
@@ -155,14 +149,14 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 
 	lifeCtx, lifeCancel := context.WithCancelCause(context.Background())
 	p := &Product{
-		lifeCtx:             lifeCtx,
-		lifeCancel:          lifeCancel,
-		db:                  db,
-		client:              client,
-		symbol:              symbol,
-		failedCreatesCh:     make(chan uuid.UUID, 100),
-		productInfo:         oldInfo,
-		productAckReason:    checkProductNeedsAck(oldInfo, newInfo),
+		lifeCtx:          lifeCtx,
+		lifeCancel:       lifeCancel,
+		db:               db,
+		client:           client,
+		symbol:           symbol,
+		failedCreatesCh:  make(chan uuid.UUID, 100),
+		productInfo:      oldInfo,
+		productAckReason: checkProductNeedsAck(oldInfo, newInfo),
 	}
 	p.etradeOrderID.Store(time.Now().UnixNano())
 
@@ -185,6 +179,10 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 		}
 		if e.AccountID == "" {
 			return fmt.Errorf("etrade: database has an order status entry without account id")
+		}
+		if e.Resolved() {
+			// Retained failed-create audit record; do not reconcile or track it.
+			return nil
 		}
 		if _, ok := p.account2serverIDMap.Load(e.AccountID); !ok {
 			slog.Warn("etrade: database has an order status with unrecognized account id", "account-id", e.AccountID)
@@ -254,8 +252,9 @@ func NewProduct(ctx context.Context, db kv.Database, client *Client, symbol stri
 			if found == nil {
 				// Not in open orders: either never created, or filled/cancelled
 				// before we could check. Remove the entry.
-				slog.Warn("etrade: startup: order with unknown server ID not found in open orders; removing", "symbol", symbol, "account-id", entry.AccountID, "uid", uid)
-				if err := p.dbDeleteEntry(ctx, uid); err != nil {
+				slog.Warn("etrade: startup: order with unknown server ID not found in open orders; assuming not created", "symbol", symbol, "account-id", entry.AccountID, "uid", uid)
+				entry.AssumedNotCreated = true
+				if err := p.dbSetEntry(ctx, uid, entry); err != nil {
 					lifeCancel(err)
 					return nil, err
 				}
@@ -318,7 +317,13 @@ func (p *Product) GetOrderUpdates(accountID string) (*topic.Receiver[exchange.Or
 		}
 		uid, ok := p.accountOrders(accountID).Load(o.OrderID)
 		if !ok {
-			return o
+			// We cannot resolve this order's ClientUUID yet (e.g. an in-flight
+			// poll published a just-placed order before PlaceLimitOrder stored
+			// the serverID->UUID mapping). Drop the update rather than emit it
+			// with a nil UUID: a nil UUID fails SimpleOrder.AddUpdate's identity
+			// check (os.ErrInvalid) in the limiter. The order stays tracked, so
+			// the next poll cycle re-delivers it once the mapping is known.
+			return nil
 		}
 		clone := *o
 		clone.ClientUUID = uid
@@ -332,12 +337,14 @@ func (p *Product) GetPriceUpdates() (*topic.Receiver[exchange.PriceUpdate], erro
 	return topic.SubscribeFunc(p.client.getSymbolPriceTopic(p.symbol), fn, 1, true)
 }
 
-// sleepUntilExtendedHoursOpen waits until 7am ET (when E*TRADE extended hours
-// trading opens). Called when extended hours are closed and we need to retry.
-func (p *Product) sleepUntilExtendedHoursOpen(ctx context.Context) error {
+// nextExtendedHoursOpen returns the next time E*TRADE extended-hours trading
+// opens (7am ET), skipping weekends. Used to tell the caller when to retry an
+// order rejected because the extended-hours session is closed.
+func nextExtendedHoursOpen() time.Time {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {
-		return fmt.Errorf("could not load NY timezone: %w", err)
+		// Timezone database unavailable; retry in an hour as a safe fallback.
+		return time.Now().Add(time.Hour)
 	}
 	now := time.Now().In(loc)
 	year, month, day := now.Date()
@@ -352,16 +359,7 @@ func (p *Product) sleepUntilExtendedHoursOpen(ctx context.Context) error {
 	case time.Sunday:
 		nextOpen = nextOpen.Add(24 * time.Hour)
 	}
-	waitDur := nextOpen.Sub(now)
-	slog.Warn("etrade: extended hours closed, sleeping until 7am ET", "wake-at", nextOpen, "wait", waitDur)
-	select {
-	case <-time.After(waitDur):
-		return nil
-	case <-ctx.Done():
-		return context.Cause(ctx)
-	case <-p.lifeCtx.Done():
-		return context.Cause(p.lifeCtx)
-	}
+	return nextOpen
 }
 
 // roundLimitPrice rounds a limit price to the precision E*TRADE requires:
@@ -463,14 +461,16 @@ func (p *Product) PlaceLimitOrder(ctx context.Context, accountID string, clientO
 			break
 		}
 		if errors.Is(err, ErrExtendedHoursClosed) {
-			// Extended hours window is closed. Sleep until 7am ET and retry.
-			if sleepErr := p.sleepUntilExtendedHoursOpen(ctx); sleepErr != nil {
-				// No order was created (E*TRADE rejected at preview). Delete
-				// the DB entry directly rather than going through failedCreatesCh.
-				p.dbDeleteEntry(p.lifeCtx, clientOrderUUID)
-				return nil, sleepErr
+			// Extended-hours session is closed. Do not block here — the order was
+			// rejected at preview (not created), so delete the entry and return a
+			// RetryAfter so the caller waits interruptibly and re-evaluates with
+			// fresh market data when the session reopens. The client already wraps
+			// the error with the reopen time; wrap only if some path did not.
+			p.dbDeleteEntry(p.lifeCtx, clientOrderUUID)
+			if _, ok := exchange.RetryAfterTime(err); ok {
+				return nil, err
 			}
-			continue
+			return nil, &exchange.RetryAfter{At: nextExtendedHoursOpen(), Err: err}
 		}
 		// Other error: order may or may not have been created on E*TRADE.
 		// goCancelFailedCreates will resolve this and clean up the DB entry.
@@ -606,15 +606,28 @@ func (p *Product) goWatchOrderUpdates(ctx context.Context) {
 			cstatus.mu.Lock()
 			cstatus.order = &owned
 			done := order.IsDone()
+			keep := cstatus.keepDBEntry
 			cstatus.mu.Unlock()
 
-			if done {
+			if done && !keep {
 				if err := p.dbDeleteEntry(ctx, uid); err != nil {
 					slog.Warn("etrade: could not delete completed order entry", "symbol", p.symbol, "account-id", order.AccountID, "uid", uid, "err", err)
 				}
 			}
 		}
 	}
+}
+
+// nextRetry decides when to retry a failed reconciliation step. When err (or an
+// error it wraps) carries a RetryAfter deadline — e.g. the extended-hours
+// session is closed — it returns that time and resets the backoff, so the
+// reconciler waits until the session reopens instead of hammering the exchange.
+// Otherwise it falls back to a capped exponential backoff.
+func nextRetry(err error, backoff int) (at time.Time, nextBackoff int) {
+	if t, ok := exchange.RetryAfterTime(err); ok {
+		return t, 0
+	}
+	return time.Now().Add(time.Second << backoff), min(backoff+1, 6)
 }
 
 // goCancelFailedCreates handles orders whose PlaceOrder call returned an error.
@@ -638,23 +651,48 @@ func (p *Product) goCancelFailedCreates(ctx context.Context) {
 	retryMap := make(map[uuid.UUID]time.Time)
 	retryBackoff := 0
 
+	var wakeTimer *time.Timer
+	defer func() {
+		if wakeTimer != nil {
+			wakeTimer.Stop()
+		}
+	}()
+
 	for {
-		// If any retries are due, re-inject one into the channel.
+		// If any retries are due, re-inject one into the channel. Otherwise, if
+		// there are retries scheduled in the future, arm a timer for the earliest
+		// so the loop wakes and re-evaluates (a RetryAfter deadline can be hours
+		// out, e.g. waiting for extended hours to reopen).
 		var retryCh chan uuid.UUID
 		var retryUID uuid.UUID
+		var wakeCh <-chan time.Time
 		if len(retryMap) > 0 {
 			now := time.Now()
+			var earliest time.Time
 			for uid, at := range retryMap {
 				if !at.After(now) {
 					retryUID, retryCh = uid, p.failedCreatesCh
 					break
 				}
+				if earliest.IsZero() || at.Before(earliest) {
+					earliest = at
+				}
+			}
+			if retryCh == nil && !earliest.IsZero() {
+				if wakeTimer != nil {
+					wakeTimer.Stop()
+				}
+				wakeTimer = time.NewTimer(time.Until(earliest))
+				wakeCh = wakeTimer.C
 			}
 		}
 
 		select {
 		case <-ctx.Done():
 			return
+
+		case <-wakeCh:
+			// A scheduled retry is (about to be) due; loop to re-evaluate.
 
 		case retryCh <- retryUID:
 			delete(retryMap, retryUID)
@@ -678,29 +716,32 @@ func (p *Product) goCancelFailedCreates(ctx context.Context) {
 			}
 			openOrders, err := p.client.ListOpenOrders(ctx, cstatus.accountID)
 			if err != nil {
+				at, nb := nextRetry(err, retryBackoff)
 				if !os.IsTimeout(err) {
 					slog.Error("etrade: could not list open orders in goCancelFailedCreates (will retry)",
-						"clientOrderUUID", uid, "err", err, "retryAfter", time.Second<<retryBackoff)
+						"clientOrderUUID", uid, "err", err, "retryAt", at)
 				}
-				retryMap[uid] = time.Now().Add(time.Second << retryBackoff)
-				retryBackoff = min(retryBackoff+1, 6)
+				retryMap[uid] = at
+				retryBackoff = nb
 				continue
 			}
+			slog.Info("etrade: fetched open orders to reconcile failed creates", "open-count", len(openOrders))
 
 			found := matchOpenOrder(openOrders, cstatus.accountID, p.symbol, placement)
-
 			if found == nil {
-				// Order was not created (or already filled before we checked).
-				// Leave cstatus.err set from the original PlaceOrder failure and
-				// remove the persisted entry since there is no order to track.
+				// No matching open order. Leave cstatus.err set from the original
+				// PlaceOrder failure and RETAIN the entry (flagged) as an audit
+				// record rather than deleting it.
 				retryBackoff = 0
 				slog.Warn("etrade: failed-create order not found in open orders; assuming not created",
 					"clientOrderUUID", uid, "side", placement.Side, "price", placement.Price, "qty", placement.Qty)
-				if err := p.dbDeleteEntry(ctx, uid); err != nil {
-					slog.Error("etrade: could not delete unrecovered order entry (will retry)",
-						"clientOrderUUID", uid, "err", err, "retryAfter", time.Second<<retryBackoff)
-					retryMap[uid] = time.Now().Add(time.Second << retryBackoff)
-					retryBackoff = min(retryBackoff+1, 6)
+				entry := &orderEntry{AccountID: cstatus.accountID, Placement: placement, AssumedNotCreated: true}
+				if err := p.dbSetEntry(ctx, uid, entry); err != nil {
+					at, nb := nextRetry(err, retryBackoff)
+					slog.Error("etrade: could not flag assumed-not-created order entry (will retry)",
+						"clientOrderUUID", uid, "err", err, "retryAt", at)
+					retryMap[uid] = at
+					retryBackoff = nb
 					continue
 				}
 				continue
@@ -708,33 +749,39 @@ func (p *Product) goCancelFailedCreates(ctx context.Context) {
 
 			// Order was created. Update the DB entry with the server order ID so
 			// that a crash during cancellation can be recovered on next startup.
-			if err := p.dbSetEntry(ctx, uid, &orderEntry{AccountID: cstatus.accountID, ServerOrderID: found.OrderID, Placement: placement}); err != nil {
+			if err := p.dbSetEntry(ctx, uid, &orderEntry{AccountID: cstatus.accountID, ServerOrderID: found.OrderID, Placement: placement, MatchedOrderID: found.OrderID}); err != nil {
+				at, nb := nextRetry(err, retryBackoff)
 				slog.Error("etrade: could not persist server order ID for failed-create (will retry)",
-					"clientOrderUUID", uid, "orderID", found.OrderID, "err", err, "retryAfter", time.Second<<retryBackoff)
-				retryMap[uid] = time.Now().Add(time.Second << retryBackoff)
-				retryBackoff = min(retryBackoff+1, 6)
+					"clientOrderUUID", uid, "orderID", found.OrderID, "err", err, "retryAt", at)
+				retryMap[uid] = at
+				retryBackoff = nb
 				continue
 			}
 			p.accountOrders(cstatus.accountID).Store(found.OrderID, uid)
 
+			// Retain the entry as a matched audit record: mark it so
+			// goWatchOrderUpdates does not delete it when the cancel completes.
+			cstatus.mu.Lock()
+			cstatus.keepDBEntry = true
+			cstatus.mu.Unlock()
+
 			// Cancel the order and start tracking it so goRefreshOrders polls for
-			// the final CANCELLED state; goWatchOrderUpdates removes the DB entry
-			// when that update arrives.
+			// the final CANCELLED state.
 			p.client.TrackOrder(cstatus.accountID, found.OrderID)
 			if err := p.client.CancelOrder(ctx, cstatus.accountID, found.OrderID); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
+					at, nb := nextRetry(err, retryBackoff)
 					slog.Error("etrade: could not cancel failed-create order (will retry)",
 						"clientOrderUUID", uid, "orderID", found.OrderID, "err", err,
-						"retryAfter", time.Second<<retryBackoff)
-					retryMap[uid] = time.Now().Add(time.Second << retryBackoff)
-					retryBackoff = min(retryBackoff+1, 6)
+						"retryAt", at)
+					retryMap[uid] = at
+					retryBackoff = nb
 					continue
 				}
 				// os.ErrNotExist means the order disappeared (filled or already
-				// cancelled). Remove the entry since the order is conclusively done.
-				if err := p.dbDeleteEntry(ctx, uid); err != nil {
-					slog.Warn("etrade: could not delete disappeared order entry", "clientOrderUUID", uid, "err", err)
-				}
+				// cancelled). The entry is retained as a matched failed-create
+				// audit record (MatchedOrderID was persisted above).
+				slog.Warn("etrade: failed-create matched order already gone (filled/cancelled); entry retained", "clientOrderUUID", uid, "orderID", found.OrderID)
 			}
 
 			retryBackoff = 0

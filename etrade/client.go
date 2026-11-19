@@ -3,6 +3,7 @@
 package etrade
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
@@ -29,6 +30,7 @@ import (
 	"github.com/bvk/tradebot/ctxutil"
 	"github.com/bvk/tradebot/etrade/autologin"
 	"github.com/bvk/tradebot/etrade/internal"
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/syncmap"
 	"github.com/shopspring/decimal"
@@ -38,6 +40,11 @@ import (
 type Credentials = autologin.Credentials
 
 var ErrExtendedHoursClosed = errors.New("etrade: extended hours trading service is unavailable (7am-8pm ET)")
+
+// ErrCancelRejected indicates E*TRADE rejected an order cancel request (e.g. a
+// freshly-placed extended-hours order that is not yet cancelable). The cancel
+// did not take effect; the order is still working.
+var ErrCancelRejected = errors.New("etrade: order cancel was rejected")
 
 // Response envelope types — unexported, used only in this file for JSON unmarshaling.
 
@@ -232,6 +239,15 @@ type Client struct {
 	wg sync.WaitGroup
 
 	reloginMutex sync.Mutex
+	// relogin backoff state, guarded by reloginMutex. lastReloginAt and
+	// lastReloginErr record the previous login attempt so the burst of relogin
+	// calls a single expired token triggers across all polling goroutines is
+	// coalesced into one attempt per backoff window. reloginFailures counts
+	// consecutive failures and grows the window exponentially (see
+	// reloginBackoff).
+	lastReloginAt   time.Time
+	lastReloginErr  error
+	reloginFailures int
 
 	opts  Options
 	creds atomic.Pointer[Credentials]
@@ -582,7 +598,10 @@ func (c *Client) handleHTTPError(ctx context.Context, resp *http.Response, apiPa
 		// Check for E*TRADE error codes in any responses (delivered in XML body).
 		if strings.Contains(string(body), "<code>1513</code>") {
 			slog.Warn("etrade: extended hours service unavailable", "path", apiPath)
-			return false, ErrExtendedHoursClosed
+			// Carry the next extended-hours open time so callers (the limiter's
+			// create path and the background reconciler) can wait interruptibly
+			// until the session reopens instead of hammering the exchange.
+			return false, &exchange.RetryAfter{At: nextExtendedHoursOpen(), Err: ErrExtendedHoursClosed}
 		}
 		slog.Error("etrade: unexpected HTTP status", "path", apiPath, "status", resp.StatusCode, "body", string(body))
 		return false, fmt.Errorf("etrade: %s returned HTTP %d", apiPath, resp.StatusCode)
@@ -989,11 +1008,25 @@ func (c *Client) CancelOrder(ctx context.Context, accountID string, orderID int6
 			}
 			return err
 		}
+		// TEMPORARY (remove after cancel investigation, ~Nov 11 2026): log the
+		// full cancel response body regardless of HTTP status, to understand why
+		// some cancels sit in "Cancel Requested" until the order expires. We read
+		// the body here and restore it so the status handling below is unaffected.
+		body, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		httpResp.Body = io.NopCloser(bytes.NewReader(body))
+		slog.Info("etrade: cancel response body", "orderID", orderID, "status", httpResp.StatusCode, "body", string(body))
 		if httpResp.StatusCode == http.StatusOK {
-			io.Copy(io.Discard, httpResp.Body)
-			httpResp.Body.Close()
+			if err := cancelRejectionError(orderID, body); err != nil {
+				slog.Warn("etrade: order cancel was rejected", "orderID", orderID, "err", err)
+				return err
+			}
 			return nil
 		}
+		// A non-200 cancel (e.g. 400 code 5001 "currently being executed or
+		// rejected") is already surfaced as an error by handleHTTPError; unlike a
+		// 200 body it never masquerades as success, so it needs no separate
+		// rejection detection here.
 		retry, err := c.handleHTTPError(ctx, httpResp, apiPath)
 		httpResp.Body.Close()
 		if err != nil {
@@ -1003,6 +1036,44 @@ func (c *Client) CancelOrder(ctx context.Context, accountID string, orderID int6
 			continue
 		}
 	}
+}
+
+// cancelRejectionError inspects a 200 cancel response body for a rejection.
+// E*TRADE may reject a cancel while still returning HTTP 200, carrying the
+// reason as an ERROR message in the JSON response, or (occasionally) as an XML
+// <code>…</code> error body. Returns ErrCancelRejected (with the reason) when
+// the cancel did not take effect, or nil when it was accepted.
+func cancelRejectionError(orderID int64, body []byte) error {
+	// E*TRADE's PUT .../orders/cancel envelope. A rejected cancel can still come
+	// back as HTTP 200 with the reason as an ERROR message (type is "ERROR",
+	// "WARNING" or "INFO").
+	type cancelResponse struct {
+		CancelOrderResponse struct {
+			OrderID  int64 `json:"orderId"`
+			Messages *struct {
+				Message []struct {
+					Code        int    `json:"code"`
+					Description string `json:"description"`
+					Type        string `json:"type"`
+				} `json:"Message"`
+			} `json:"Messages"`
+		} `json:"CancelOrderResponse"`
+	}
+
+	var resp cancelResponse
+	if err := json.Unmarshal(body, &resp); err == nil && resp.CancelOrderResponse.Messages != nil {
+		for _, m := range resp.CancelOrderResponse.Messages.Message {
+			if strings.EqualFold(m.Type, "ERROR") {
+				return fmt.Errorf("%w: order %d: [%d] %s", ErrCancelRejected, orderID, m.Code, m.Description)
+			}
+		}
+	}
+	// E*TRADE sometimes returns error details as an XML <code>…</code> body even
+	// with a 200 status.
+	if strings.Contains(string(body), "<code>") {
+		return fmt.Errorf("%w: order %d: %s", ErrCancelRejected, orderID, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func (c *Client) makeTaxLotID(accountID, symbol, lotDetailURL string, orderNo int64) (gobs.TaxLotID, error) {
@@ -1201,9 +1272,17 @@ func (c *Client) goRenewToken(ctx context.Context) {
 			if errors.Is(err, context.Cause(ctx)) {
 				return
 			}
-			slog.Error("etrade: token renewal failed; re-run 'setup etrade' to reauthorize", "err", err)
-			c.lifeCancel(err)
-			return
+			// A renewal failure is recoverable and must not tear down the
+			// client. Cancelling lifeCtx here kills every E*TRADE goroutine at
+			// once -- price/balance/order polling, portfolio tracking, and the
+			// relogin loop itself -- leaving the client permanently dormant
+			// until a daemon restart (a single transient network timeout did
+			// exactly this on 2026-11-15). Instead log and retry on the next
+			// tick: a transient error clears by itself, and a genuinely
+			// expired/invalid token is restored by the 401-triggered relogin or
+			// the hourly goLogin, both of which stay alive now.
+			slog.Warn("etrade: token renewal failed (will retry)", "err", err)
+			continue
 		}
 		slog.Info("etrade: access token renewed")
 	}
@@ -1572,10 +1651,85 @@ func (c *Client) goLogin(ctx context.Context) {
 	}
 }
 
+const (
+	// reloginSuccessCooldown is how long a successful login suppresses further
+	// login attempts, so the burst of 401 callers that triggered it reuse the
+	// freshly stored credentials instead of each launching another login.
+	reloginSuccessCooldown = time.Minute
+	// reloginBackoffBase and reloginBackoffMax bound the exponential backoff
+	// applied after consecutive failed logins (e.g. a midnight session rollover
+	// whose login is blocked on manual MFA), so attempts drop from every few
+	// seconds to a few an hour.
+	reloginBackoffBase = time.Minute
+	reloginBackoffMax  = 30 * time.Minute
+)
+
+// relogin refreshes the E*TRADE credentials by running the login flow. It is
+// rate limited: concurrent callers are serialized by reloginMutex, and a caller
+// that arrives within the backoff window of the previous attempt returns that
+// attempt's result instead of launching another browser login. This coalesces
+// the burst of 401s a single expired token produces across every polling
+// goroutine, which otherwise relogins back-to-back and, when the login needs
+// manual MFA, becomes a continuous retry storm.
 func (c *Client) relogin(ctx context.Context) error {
 	c.reloginMutex.Lock()
 	defer c.reloginMutex.Unlock()
 
+	if !c.lastReloginAt.IsZero() && time.Since(c.lastReloginAt) < c.reloginBackoff() {
+		return c.lastReloginErr
+	}
+
+	err := c.performLogin(ctx)
+	c.lastReloginAt = time.Now()
+	c.lastReloginErr = err
+	if err != nil {
+		c.reloginFailures++
+	} else {
+		c.reloginFailures = 0
+	}
+	return err
+}
+
+// reloginBackoff returns the minimum interval that must elapse after the last
+// login attempt before another is launched: a short cooldown after a success,
+// or an exponentially growing delay (capped at reloginBackoffMax) after
+// consecutive failures.
+func (c *Client) reloginBackoff() time.Duration {
+	if c.reloginFailures == 0 {
+		return reloginSuccessCooldown
+	}
+	d := reloginBackoffBase
+	for i := 1; i < c.reloginFailures && d < reloginBackoffMax; i++ {
+		d *= 2
+	}
+	if d > reloginBackoffMax {
+		return reloginBackoffMax
+	}
+	return d
+}
+
+// logLoginOutput emits the login subprocess's captured stdout+stderr into the
+// normal slog stream, one record per non-empty line, so the real reason for a
+// failure (e.g. an MFA challenge the unattended flow cannot answer) is visible
+// in the daemon logs instead of being hidden behind a bare "exit status 1".
+// Lines are logged at Error level when the login failed, so they land in the
+// ERROR log alongside the failure, and at Info otherwise.
+func logLoginOutput(ctx context.Context, output string, failed bool) {
+	level := slog.LevelInfo
+	if failed {
+		level = slog.LevelError
+	}
+	for line := range strings.SplitSeq(strings.TrimRight(output, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		slog.Log(ctx, level, "etrade login subprocess output", "line", line)
+	}
+}
+
+// performLogin runs the login subprocess and swaps in the refreshed
+// credentials. It must be called with reloginMutex held (via relogin).
+func (c *Client) performLogin(ctx context.Context) error {
 	if c.opts.DisplayRunner == nil {
 		return fmt.Errorf("etrade: a X11 display server is required for automated logins")
 	}
@@ -1596,7 +1750,18 @@ func (c *Client) relogin(ctx context.Context) error {
 	slog.Info("starting etrade autologin", "environ", environ)
 	cmd := exec.CommandContext(ctx, cmdline[0], cmdline[1:]...)
 	cmd.Env = environ
-	if err := c.opts.DisplayRunner.RunWithDisplay(cmd); err != nil {
+	// Capture the subprocess's combined stdout+stderr and surface it through
+	// slog; otherwise its output -- including the real failure reason, such as
+	// an MFA challenge the unattended flow cannot answer -- is written to the
+	// daemon's inherited fds and lost behind a bare "exit status 1". Pointing
+	// both streams at one buffer is safe: os/exec serializes the writes when
+	// Stdout == Stderr.
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := c.opts.DisplayRunner.RunWithDisplay(cmd)
+	logLoginOutput(ctx, output.String(), err != nil)
+	if err != nil {
 		slog.Error("etrade: could not perform unattended login", "err", err)
 		return err
 	}
