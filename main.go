@@ -128,6 +128,7 @@ func main() {
 		new(greel.GreelerList),
 		new(greel.GreelerGet),
 		new(greel.GreelerPrint),
+		new(greel.GreelerQuery),
 	}
 
 	greelLadderCmds := []cli.Command{
@@ -135,6 +136,7 @@ func main() {
 		new(greel.LadderList),
 		new(greel.LadderGet),
 		new(greel.LadderPrint),
+		new(greel.LadderQuery),
 	}
 
 	watcherCmds := []cli.Command{
