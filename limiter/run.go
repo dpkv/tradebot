@@ -129,7 +129,25 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 			}
 			flushCh = time.After(time.Minute)
 
-		case update := <-orderUpdatesCh:
+		case update, ok := <-orderUpdatesCh:
+			if !ok {
+				// The product's order-updates stream closed (e.g. the exchange
+				// connection was torn down). Stop cleanly so the job can be
+				// resumed with fresh subscriptions, instead of spinning on a
+				// permanently-ready closed channel.
+				if cause := context.Cause(ctx); cause != nil {
+					return cause
+				}
+				return fmt.Errorf("limiter order updates stream closed unexpectedly: %w", os.ErrClosed)
+			}
+			if update == nil {
+				// A nil OrderUpdate signals an update the exchange transform chose
+				// to drop (e.g. an order for a different account, or one whose
+				// ClientUUID is not yet resolved). topic.SubscribeFunc forwards the
+				// nil rather than filtering it, so skip it here instead of
+				// dereferencing it.
+				continue
+			}
 			dirty++
 			order, err := v.updateOrderMap(update)
 			if err != nil {
@@ -142,7 +160,18 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 				activeOrderID = ""
 			}
 
-		case ticker := <-tickerCh:
+		case ticker, ok := <-tickerCh:
+			if !ok {
+				// The product's price-updates stream closed; stop cleanly rather
+				// than spin on a closed channel.
+				if cause := context.Cause(ctx); cause != nil {
+					return cause
+				}
+				return fmt.Errorf("limiter price updates stream closed unexpectedly: %w", os.ErrClosed)
+			}
+			if ticker == nil {
+				continue
+			}
 			now := time.Now()
 			tickerPrice, _ := ticker.PricePoint()
 
@@ -164,7 +193,10 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 					if activeOrderID == "" {
 						id, err := v.create(localCtx, rt)
 						if err != nil {
-							return err
+							if werr := v.awaitRetry(ctx, err); werr != nil {
+								return werr
+							}
+							continue
 						}
 						dirty++
 						activeOrderID = id
@@ -192,7 +224,10 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 					if activeOrderID == "" {
 						id, err := v.create(localCtx, rt)
 						if err != nil {
-							return err
+							if werr := v.awaitRetry(ctx, err); werr != nil {
+								return werr
+							}
+							continue
 						}
 						dirty++
 						activeOrderID = id
@@ -208,11 +243,17 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 		return err
 	}
 
-	// If the product supports tax lots, fetch the tax lot metadata and save
-	// it into the database. Exchanges may have time limits for how long they
-	// hold metadata for the completed orders, so we should save it locally.
+	// If the product supports tax lots, fetch the tax lot metadata and save it
+	// into the database. Exchanges may have time limits for how long they hold
+	// metadata for the completed orders, so we should save it locally.
+	//
+	// Resolve only when the tax lots are not already stored: this method runs on
+	// every resume, and re-resolving each time would both waste API calls and
+	// clobber any manual reconciliation of the stored lots (e.g. when a sell
+	// consumed a different physical lot than the exchange attributes to this
+	// buy's order id). This matches the guard in Looper.fixBuyTaxLots.
 	if v.IsBuy() {
-		if taxLotResolver, ok := rt.Product.(exchange.TaxLotResolver); ok {
+		if taxLotResolver, ok := rt.Product.(exchange.TaxLotResolver); ok && len(v.TaxLotIDs()) == 0 {
 			serverIDs := v.ServerOrderIDs()
 			lots, size, err := taxLotResolver.ResolveTaxLots(ctx, serverIDs)
 			if err != nil {
@@ -279,6 +320,29 @@ func (v *Limiter) CancelLive(ctx context.Context, rt *trader.Runtime) error {
 	return kv.WithReadWriter(context.WithoutCancel(ctx), rt.Database, v.Save)
 }
 
+// awaitRetry handles a create error that requests a delayed retry (e.g. a
+// closed trading session). If err carries an exchange.RetryAfter time, it waits
+// until then — interruptibly — and returns nil so the caller re-evaluates on the
+// next tick with fresh data; otherwise it returns err unchanged. Returns the
+// context cause if the wait is interrupted (job paused/canceled).
+func (v *Limiter) awaitRetry(ctx context.Context, err error) error {
+	at, ok := exchange.RetryAfterTime(err)
+	if !ok {
+		return err
+	}
+	d := time.Until(at)
+	slog.Warn("limiter waiting for exchange session to reopen before retrying", "limiter", v, "point", v.point, "retry-at", at, "wait", d, "reason", err)
+	if d <= 0 {
+		return nil
+	}
+	select {
+	case <-time.After(d):
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+}
+
 func (v *Limiter) create(ctx context.Context, rt *trader.Runtime) (string, error) {
 	offset := v.idgen.Offset()
 	clientOrderID := v.idgen.NextID()
@@ -332,7 +396,7 @@ func (v *Limiter) cancel(ctx context.Context, product exchange.Product, activeOr
 		slog.Error("cancel limit order has failed", "limiter", v, "point", v.point, "order-id", activeOrderID, "err", err)
 		return err
 	}
-	for {
+	for i, from := 0, time.Now(); true; i++ {
 		detail, err := product.Get(ctx, activeOrderID)
 		if err != nil {
 			slog.Warn("could not fetch canceled order (will retry)", "order-id", activeOrderID, "err", err)
@@ -344,12 +408,16 @@ func (v *Limiter) cancel(ctx context.Context, product exchange.Product, activeOr
 			time.Sleep(time.Second)
 			continue
 		}
+		if i > 0 {
+			slog.Info("canceled order is now done", "limiter", v, "point", v.point, "order-id", activeOrderID, "order-status", detail.OrderStatus(), "retries", i, "waited", time.Since(from))
+		}
 		if _, err := v.updateOrderMap(detail); err != nil {
 			slog.Error("could not update limiter state with canceled order update", "limiter", v, "point", v.point, "order-id", activeOrderID, "err", err)
 			return err
 		}
-		return nil
+		break
 	}
+	return nil
 }
 
 func (v *Limiter) fetchOrderMap(ctx context.Context, product exchange.Product) (nupdated int, status error) {
