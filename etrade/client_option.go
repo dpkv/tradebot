@@ -342,26 +342,67 @@ const (
 // is rounded. action is one of the Option* order actions. Returns the
 // E*TRADE-assigned order ID.
 func (c *Client) PlaceOptionLimitOrder(ctx context.Context, accountID string, k *contract, action string, qty, limitPrice decimal.Decimal, clientOrderID string) (int64, error) {
-	switch action {
-	case OptionBuyOpen, OptionSellOpen, OptionBuyClose, OptionSellClose:
-	default:
-		return 0, fmt.Errorf("etrade: invalid option order action %q: %w", action, os.ErrInvalid)
-	}
-	if !qty.IsPositive() || !qty.Equal(qty.Truncate(0)) {
-		return 0, fmt.Errorf("etrade: option order quantity %s must be a positive whole number: %w", qty, os.ErrInvalid)
-	}
-	if !limitPrice.IsPositive() {
-		return 0, fmt.Errorf("etrade: option order limit price %s must be positive: %w", limitPrice, os.ErrInvalid)
-	}
-
-	creds := c.creds.Load()
-	accountIDKey, err := creds.GetAccountIDKey(accountID)
+	orderDetail, err := optionOrderDetail(k, action, qty, limitPrice)
 	if err != nil {
 		return 0, err
 	}
+	accountPath, err := c.accountPath(accountID)
+	if err != nil {
+		return 0, err
+	}
+	return c.previewAndPlace(ctx, accountPath, "OPTN", clientOrderID, orderDetail)
+}
+
+// PlaceOptionOrder is PlaceOptionLimitOrder for a contract named by its
+// compact OSI contract ID, e.g. "AAPL261218P00200000". An ID that doesn't
+// parse fails with os.ErrInvalid before any request.
+func (c *Client) PlaceOptionOrder(ctx context.Context, accountID, contractID, action string, qty, limitPrice decimal.Decimal, clientOrderID string) (int64, error) {
+	k, err := parseContractID(contractID)
+	if err != nil {
+		return 0, err
+	}
+	return c.PlaceOptionLimitOrder(ctx, accountID, k, action, qty, limitPrice, clientOrderID)
+}
+
+// PreviewOptionOrder runs only the preview step for the order that
+// PlaceOptionOrder would place with the same arguments. Nothing is placed.
+func (c *Client) PreviewOptionOrder(ctx context.Context, accountID, contractID, action string, qty, limitPrice decimal.Decimal, clientOrderID string) (*OrderPreview, error) {
+	k, err := parseContractID(contractID)
+	if err != nil {
+		return nil, err
+	}
+	orderDetail, err := optionOrderDetail(k, action, qty, limitPrice)
+	if err != nil {
+		return nil, err
+	}
+	accountPath, err := c.accountPath(accountID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.previewOrder(ctx, accountPath, "OPTN", clientOrderID, orderDetail)
+	if err != nil {
+		return nil, err
+	}
+	return newOrderPreview(resp), nil
+}
+
+// optionOrderDetail checks and builds the order detail of an option limit
+// order, shared by placing and previewing it.
+func optionOrderDetail(k *contract, action string, qty, limitPrice decimal.Decimal) (*placeOrderDetail, error) {
+	switch action {
+	case OptionBuyOpen, OptionSellOpen, OptionBuyClose, OptionSellClose:
+	default:
+		return nil, fmt.Errorf("etrade: invalid option order action %q: %w", action, os.ErrInvalid)
+	}
+	if !qty.IsPositive() || !qty.Equal(qty.Truncate(0)) {
+		return nil, fmt.Errorf("etrade: option order quantity %s must be a positive whole number: %w", qty, os.ErrInvalid)
+	}
+	if !limitPrice.IsPositive() {
+		return nil, fmt.Errorf("etrade: option order limit price %s must be positive: %w", limitPrice, os.ErrInvalid)
+	}
 
 	strike := k.Strike
-	orderDetail := placeOrderDetail{
+	return &placeOrderDetail{
 		PriceType:     "LIMIT",
 		OrderTerm:     "GOOD_FOR_DAY",
 		MarketSession: "REGULAR",
@@ -380,9 +421,7 @@ func (c *Client) PlaceOptionLimitOrder(ctx context.Context, accountID string, k 
 			QuantityType: "QUANTITY",
 			Quantity:     qty,
 		}},
-	}
-	accountPath := "/v1/accounts/" + url.PathEscape(accountIDKey)
-	return c.previewAndPlace(ctx, accountPath, "OPTN", clientOrderID, &orderDetail)
+	}, nil
 }
 
 // maxTransactionsPerPage is the largest page E*TRADE serves for the
