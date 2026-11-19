@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,30 +25,42 @@ type PlaceOrder struct {
 	secretsPath   string
 	accountID     string
 	symbol        string
+	contract      string
 	side          string
 	qty           string
 	limitPrice    string
 	orderTerm     string
 	marketSession string
 	clientOrderID string
+	preview       bool
 }
+
+// Equity order defaults. The flags themselves default to empty, so an
+// option order can tell they were set; the cli package may call Command more
+// than once, so the parsed FlagSet can't be kept for flag.FlagSet.Visit.
+const (
+	defaultOrderTerm     = "GOOD_UNTIL_CANCEL"
+	defaultMarketSession = "REGULAR"
+)
 
 func (c *PlaceOrder) Command() (string, *flag.FlagSet, cli.CmdFunc) {
 	fset := flag.NewFlagSet("place-order", flag.ContinueOnError)
 	fset.StringVar(&c.secretsPath, "secrets-file", filepath.Join(defaults.DataDir(), "secrets.json"), "path to secrets.json file")
 	fset.StringVar(&c.symbol, "symbol", "", "equity ticker symbol (e.g. AAPL)")
-	fset.StringVar(&c.side, "side", "", "order side: BUY or SELL")
-	fset.StringVar(&c.qty, "qty", "", "quantity to order")
-	fset.StringVar(&c.limitPrice, "limit-price", "", "limit price")
-	fset.StringVar(&c.orderTerm, "order-term", "GOOD_UNTIL_CANCEL", "order term: GOOD_UNTIL_CANCEL or GOOD_FOR_DAY")
-	fset.StringVar(&c.marketSession, "market-session", "REGULAR", "market session: REGULAR or EXTENDED")
+	fset.StringVar(&c.contract, "contract", "", "option contract ID (e.g. AAPL261218P00200000), to place an option order instead of an equity order")
+	fset.StringVar(&c.side, "side", "", "order side: BUY or SELL for equities; BUY_OPEN, SELL_OPEN, BUY_CLOSE or SELL_CLOSE for options")
+	fset.StringVar(&c.qty, "qty", "", "quantity to order (whole contracts for options)")
+	fset.StringVar(&c.limitPrice, "limit-price", "", "limit price (per share for options)")
+	fset.StringVar(&c.orderTerm, "order-term", "", "order term: GOOD_UNTIL_CANCEL (default) or GOOD_FOR_DAY; equities only, options are always GOOD_FOR_DAY")
+	fset.StringVar(&c.marketSession, "market-session", "", "market session: REGULAR (default) or EXTENDED; equities only, options are always REGULAR")
 	fset.StringVar(&c.clientOrderID, "client-order-id", "", "client order ID (numeric string); omitted if not set")
 	fset.StringVar(&c.accountID, "account-id", "", "E*TRADE account ID (picked automatically if there is only one account)")
+	fset.BoolVar(&c.preview, "preview", false, "only preview the order with E*TRADE and print its estimate; nothing is placed")
 	return "place-order", fset, cli.CmdFunc(c.run)
 }
 
 func (c *PlaceOrder) Purpose() string {
-	return "Place a limit order on E*TRADE."
+	return "Place an equity or option limit order on E*TRADE."
 }
 
 func (c *PlaceOrder) run(ctx context.Context, args []string) error {
@@ -57,17 +70,8 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 	if c.secretsPath == "" {
 		return fmt.Errorf("--secrets-file flag is required")
 	}
-	if c.symbol == "" {
-		return fmt.Errorf("--symbol flag is required")
-	}
-	if c.side == "" {
-		return fmt.Errorf("--side flag is required (BUY or SELL)")
-	}
-	if c.qty == "" {
-		return fmt.Errorf("--qty flag is required")
-	}
-	if c.limitPrice == "" {
-		return fmt.Errorf("--limit-price flag is required")
+	if err := c.check(); err != nil {
+		return err
 	}
 
 	qty, err := decimal.NewFromString(c.qty)
@@ -109,7 +113,27 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 		clientOrderID = fmt.Sprintf("%d", time.Now().UnixMilli())
 	}
 
-	orderID, err := client.PlaceLimitOrder(ctx, c.accountID, c.symbol, c.side, qty, limitPrice, clientOrderID, c.orderTerm, c.marketSession, nil)
+	if c.preview {
+		var preview *etrade.OrderPreview
+		if c.contract != "" {
+			preview, err = client.PreviewOptionOrder(ctx, c.accountID, c.contract, strings.ToUpper(c.side), qty, limitPrice, clientOrderID)
+		} else {
+			preview, err = client.PreviewLimitOrder(ctx, c.accountID, c.symbol, c.side, qty, limitPrice, clientOrderID, c.orderTerm, c.marketSession)
+		}
+		if err != nil {
+			return fmt.Errorf("could not preview order: %w", err)
+		}
+		js, _ := json.MarshalIndent(preview, "", "  ")
+		fmt.Printf("%s\n", js)
+		return nil
+	}
+
+	var orderID int64
+	if c.contract != "" {
+		orderID, err = client.PlaceOptionOrder(ctx, c.accountID, c.contract, strings.ToUpper(c.side), qty, limitPrice, clientOrderID)
+	} else {
+		orderID, err = client.PlaceLimitOrder(ctx, c.accountID, c.symbol, c.side, qty, limitPrice, clientOrderID, c.orderTerm, c.marketSession, nil)
+	}
 	if err != nil {
 		return fmt.Errorf("could not place order: %w", err)
 	}
@@ -123,5 +147,68 @@ func (c *PlaceOrder) run(ctx context.Context, args []string) error {
 
 	js, _ := json.MarshalIndent(order, "", "  ")
 	fmt.Printf("%s\n", js)
+	return nil
+}
+
+// optionActions are the --side values of an option order.
+var optionActions = []string{etrade.OptionBuyOpen, etrade.OptionSellOpen, etrade.OptionBuyClose, etrade.OptionSellClose}
+
+func isOptionAction(side string) bool {
+	for _, a := range optionActions {
+		if strings.EqualFold(side, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// check validates the flags that pick and shape the order, before anything
+// is read or sent.
+func (c *PlaceOrder) check() error {
+	switch {
+	case c.symbol == "" && c.contract == "":
+		return fmt.Errorf("one of --symbol (equity) or --contract (option) is required")
+	case c.symbol != "" && c.contract != "":
+		return fmt.Errorf("--symbol and --contract cannot be used together")
+	}
+	if c.side == "" {
+		return fmt.Errorf("--side flag is required")
+	}
+	if c.qty == "" {
+		return fmt.Errorf("--qty flag is required")
+	}
+	if c.limitPrice == "" {
+		return fmt.Errorf("--limit-price flag is required")
+	}
+
+	if c.symbol != "" {
+		if isOptionAction(c.side) {
+			return fmt.Errorf("--side %s is for option orders; use --contract instead of --symbol", c.side)
+		}
+		if c.orderTerm == "" {
+			c.orderTerm = defaultOrderTerm
+		}
+		if c.marketSession == "" {
+			c.marketSession = defaultMarketSession
+		}
+		return nil
+	}
+
+	if _, err := etrade.ContractQuoteSymbol(c.contract); err != nil {
+		return fmt.Errorf("invalid --contract value %q: %w", c.contract, err)
+	}
+	if !isOptionAction(c.side) {
+		return fmt.Errorf("--side for an option order must be one of %s", strings.Join(optionActions, ", "))
+	}
+	var bad []string
+	if c.orderTerm != "" {
+		bad = append(bad, "--order-term")
+	}
+	if c.marketSession != "" {
+		bad = append(bad, "--market-session")
+	}
+	if len(bad) != 0 {
+		return fmt.Errorf("%s cannot be used with --contract: option orders are always GOOD_FOR_DAY in the REGULAR session", strings.Join(bad, " and "))
+	}
 	return nil
 }
