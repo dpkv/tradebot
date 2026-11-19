@@ -42,7 +42,10 @@ func (v decimalValue) Set(s string) error {
 // and the wheel knobs. A ladder takes the same flags and cuts the result
 // with greelladder.Cut.
 type ConfigFlags struct {
-	fset *flag.FlagSet
+	// given records the required flags given on the command line. The cli
+	// package sets flag values without flag.FlagSet.Parse, so FlagSet.Visit
+	// can't tell.
+	given map[string]bool
 
 	account string
 	product string
@@ -73,8 +76,29 @@ var requiredFlags = []string{
 	"min-open-interest", "max-spread-pct", "reprice-step", "reprice-interval",
 }
 
+// trackedValue records in given when its flag is set.
+type trackedValue struct {
+	flag.Value
+	name  string
+	given map[string]bool
+}
+
+func (v *trackedValue) Set(s string) error {
+	if err := v.Value.Set(s); err != nil {
+		return err
+	}
+	v.given[v.name] = true
+	return nil
+}
+
 func (f *ConfigFlags) SetFlags(fset *flag.FlagSet) {
-	f.fset = fset
+	f.given = make(map[string]bool)
+	defer func() {
+		for _, name := range requiredFlags {
+			fl := fset.Lookup(name)
+			fl.Value = &trackedValue{Value: fl.Value, name: name, given: f.given}
+		}
+	}()
 	fset.StringVar(&f.account, "account", "", "options account name for the job (required)")
 	fset.StringVar(&f.product, "product", "", "underlying stock product id (required)")
 
@@ -103,14 +127,12 @@ func (f *ConfigFlags) ProductID() string { return f.product }
 // Config builds the greeler config the flags describe and checks it with
 // greeler.CheckConfig, the same check the server makes.
 func (f *ConfigFlags) Config() (*gobs.GreelConfig, error) {
-	if f.fset == nil {
+	if f.given == nil {
 		return nil, fmt.Errorf("config flags are not registered (unexpected)")
 	}
-	set := make(map[string]bool)
-	f.fset.Visit(func(fl *flag.Flag) { set[fl.Name] = true })
 	var missing []string
 	for _, name := range requiredFlags {
-		if !set[name] {
+		if !f.given[name] {
 			missing = append(missing, "--"+name)
 		}
 	}
