@@ -12,6 +12,7 @@ import (
 
 	"github.com/bvk/tradebot/greeler"
 	"github.com/bvk/tradebot/greelladder"
+	"github.com/bvk/tradebot/job"
 	"github.com/bvk/tradebot/kvutil"
 	"github.com/bvkgo/kv"
 	"github.com/bvkgo/kv/kvmemdb"
@@ -64,11 +65,18 @@ func testBackup(t *testing.T) (file, greelerUID, ladderUID string) {
 	}
 	ctx := context.Background()
 	db := kvmemdb.New()
+	runner := job.NewRunner(db)
 	save := func(ctx context.Context, rw kv.ReadWriter) error {
 		if err := g.Save(ctx, rw); err != nil {
 			return err
 		}
-		return l.Save(ctx, rw)
+		if err := runner.Add(ctx, rw, g.UID(), "Greeler"); err != nil {
+			return err
+		}
+		if err := l.Save(ctx, rw); err != nil {
+			return err
+		}
+		return runner.Add(ctx, rw, l.UID(), "GreelLadder")
 	}
 	if err := kv.WithReadWriter(ctx, db, save); err != nil {
 		t.Fatal(err)
