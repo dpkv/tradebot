@@ -157,7 +157,63 @@ type previewOrderResponseWrapper struct {
 }
 
 type previewOrderResponse struct {
-	PreviewIds []previewOrderID `json:"PreviewIds"`
+	PreviewIds      []previewOrderID     `json:"PreviewIds"`
+	TotalOrderValue decimal.Decimal      `json:"totalOrderValue"`
+	TotalCommission decimal.Decimal      `json:"totalCommission"`
+	Order           []previewOrderResult `json:"Order"`
+}
+
+// previewOrderResult is the part of each previewed order that a preview
+// reports back: E*TRADE's estimates and any warnings.
+type previewOrderResult struct {
+	EstimatedCommission  decimal.Decimal `json:"estimatedCommission"`
+	EstimatedTotalAmount decimal.Decimal `json:"estimatedTotalAmount"`
+	Messages             struct {
+		Message []previewMessage `json:"Message"`
+	} `json:"messages"`
+}
+
+type previewMessage struct {
+	Description string          `json:"description"`
+	Code        json.RawMessage `json:"code"`
+	Type        string          `json:"type"`
+}
+
+// OrderPreview is what E*TRADE answers to an order preview, which places
+// nothing: the estimated value and commission, and any warnings or errors
+// about the order.
+type OrderPreview struct {
+	PreviewID       int64           `json:"previewId"`
+	TotalOrderValue decimal.Decimal `json:"totalOrderValue"`
+	TotalCommission decimal.Decimal `json:"totalCommission"`
+	Messages        []OrderMessage  `json:"messages,omitempty"`
+}
+
+// OrderMessage is one message E*TRADE attached to a previewed order.
+type OrderMessage struct {
+	Type        string `json:"type,omitempty"`
+	Code        string `json:"code,omitempty"`
+	Description string `json:"description"`
+}
+
+// newOrderPreview converts a preview response. E*TRADE sends message codes
+// as numbers, but a string is kept as is.
+func newOrderPreview(resp *previewOrderResponse) *OrderPreview {
+	p := &OrderPreview{
+		PreviewID:       resp.PreviewIds[0].PreviewID,
+		TotalOrderValue: resp.TotalOrderValue,
+		TotalCommission: resp.TotalCommission,
+	}
+	for _, o := range resp.Order {
+		for _, m := range o.Messages.Message {
+			code := string(m.Code)
+			if unquoted, err := strconv.Unquote(code); err == nil {
+				code = unquoted
+			}
+			p.Messages = append(p.Messages, OrderMessage{Type: m.Type, Code: code, Description: m.Description})
+		}
+	}
+	return p
 }
 
 type previewOrderID struct {
@@ -917,24 +973,59 @@ func (c *Client) GetOrder(ctx context.Context, accountID string, orderID int64) 
 // "REGULAR" or "EXTENDED"; orderTerm must be consistent with it
 // ("GOOD_UNTIL_CANCEL" for REGULAR, "GOOD_FOR_DAY" for EXTENDED).
 func (c *Client) PlaceLimitOrder(ctx context.Context, accountID, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm, marketSession string, plots []*placeOrderLot) (int64, error) {
-	creds := c.creds.Load()
-	accountIDKey, err := creds.GetAccountIDKey(accountID)
+	accountPath, err := c.accountPath(accountID)
 	if err != nil {
 		return -1, err
 	}
+	orderDetail, err := equityOrderDetail(symbol, side, qty, limitPrice, orderTerm, marketSession, plots)
+	if err != nil {
+		return -1, err
+	}
+	return c.previewAndPlace(ctx, accountPath, "EQ", clientOrderID, orderDetail)
+}
 
+// PreviewLimitOrder runs only the preview step for the equity limit order
+// that PlaceLimitOrder would place with the same arguments, without tax lots.
+// Nothing is placed.
+func (c *Client) PreviewLimitOrder(ctx context.Context, accountID, symbol, side string, qty, limitPrice decimal.Decimal, clientOrderID, orderTerm, marketSession string) (*OrderPreview, error) {
+	accountPath, err := c.accountPath(accountID)
+	if err != nil {
+		return nil, err
+	}
+	orderDetail, err := equityOrderDetail(symbol, side, qty, limitPrice, orderTerm, marketSession, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.previewOrder(ctx, accountPath, "EQ", clientOrderID, orderDetail)
+	if err != nil {
+		return nil, err
+	}
+	return newOrderPreview(resp), nil
+}
+
+// accountPath returns the REST path prefix for an account's orders.
+func (c *Client) accountPath(accountID string) (string, error) {
+	creds := c.creds.Load()
+	accountIDKey, err := creds.GetAccountIDKey(accountID)
+	if err != nil {
+		return "", err
+	}
+	return "/v1/accounts/" + url.PathEscape(accountIDKey), nil
+}
+
+// equityOrderDetail builds the order detail of an equity limit order, shared
+// by placing and previewing it.
+func equityOrderDetail(symbol, side string, qty, limitPrice decimal.Decimal, orderTerm, marketSession string, plots []*placeOrderLot) (*placeOrderDetail, error) {
 	var plotsWrapper *placeOrderLots
 	if len(plots) != 0 {
 		if !strings.EqualFold(side, "sell") {
-			return -1, fmt.Errorf("etrade: tax lots are supported only on sell side")
+			return nil, fmt.Errorf("etrade: tax lots are supported only on sell side")
 		}
 		plotsWrapper = &placeOrderLots{
 			Lot: plots,
 		}
 	}
-
-	accountPath := "/v1/accounts/" + url.PathEscape(accountIDKey)
-	orderDetail := placeOrderDetail{
+	return &placeOrderDetail{
 		PriceType:     "LIMIT",
 		OrderTerm:     orderTerm,
 		MarketSession: marketSession,
@@ -946,9 +1037,7 @@ func (c *Client) PlaceLimitOrder(ctx context.Context, accountID, symbol, side st
 			Quantity:     qty,
 			Lots:         plotsWrapper,
 		}},
-	}
-
-	return c.previewAndPlace(ctx, accountPath, "EQ", clientOrderID, &orderDetail)
+	}, nil
 }
 
 // previewAndPlace runs E*TRADE's two-step order flow for one order detail:
@@ -956,19 +1045,9 @@ func (c *Client) PlaceLimitOrder(ctx context.Context, accountID, symbol, side st
 // orderType is "EQ" or "OPTN". Returns the E*TRADE-assigned order ID.
 func (c *Client) previewAndPlace(ctx context.Context, accountPath, orderType, clientOrderID string, orderDetail *placeOrderDetail) (int64, error) {
 	// Step 1: preview (required by E*TRADE — skipping causes error code 101).
-	previewReq := previewOrderRequestWrapper{
-		PreviewOrderRequest: previewOrderRequest{
-			ClientOrderID: clientOrderID,
-			OrderType:     orderType,
-			Order:         []placeOrderDetail{*orderDetail},
-		},
-	}
-	var previewResp previewOrderResponseWrapper
-	if err := doPostJSON(ctx, c, accountPath+"/orders/preview", &previewReq, &previewResp); err != nil {
-		return 0, fmt.Errorf("etrade: preview order failed: %w", err)
-	}
-	if len(previewResp.PreviewOrderResponse.PreviewIds) == 0 {
-		return 0, fmt.Errorf("etrade: preview order response contained no PreviewIds")
+	preview, err := c.previewOrder(ctx, accountPath, orderType, clientOrderID, orderDetail)
+	if err != nil {
+		return 0, err
 	}
 
 	// Step 2: place using the preview ID obtained above.
@@ -976,7 +1055,7 @@ func (c *Client) previewAndPlace(ctx context.Context, accountPath, orderType, cl
 		PlaceOrderRequest: placeOrderRequest{
 			ClientOrderID: clientOrderID,
 			OrderType:     orderType,
-			PreviewIds:    previewResp.PreviewOrderResponse.PreviewIds,
+			PreviewIds:    preview.PreviewIds,
 			Order:         []placeOrderDetail{*orderDetail},
 		},
 	}
@@ -988,6 +1067,26 @@ func (c *Client) previewAndPlace(ctx context.Context, accountPath, orderType, cl
 		return 0, fmt.Errorf("etrade: place order response contained no OrderIds")
 	}
 	return resp.PlaceOrderResponse.OrderIds[0].OrderID, nil
+}
+
+// previewOrder runs POST /orders/preview for one order detail, which places
+// nothing. The response always has at least one preview ID.
+func (c *Client) previewOrder(ctx context.Context, accountPath, orderType, clientOrderID string, orderDetail *placeOrderDetail) (*previewOrderResponse, error) {
+	previewReq := previewOrderRequestWrapper{
+		PreviewOrderRequest: previewOrderRequest{
+			ClientOrderID: clientOrderID,
+			OrderType:     orderType,
+			Order:         []placeOrderDetail{*orderDetail},
+		},
+	}
+	var previewResp previewOrderResponseWrapper
+	if err := doPostJSON(ctx, c, accountPath+"/orders/preview", &previewReq, &previewResp); err != nil {
+		return nil, fmt.Errorf("etrade: preview order failed: %w", err)
+	}
+	if len(previewResp.PreviewOrderResponse.PreviewIds) == 0 {
+		return nil, fmt.Errorf("etrade: preview order response contained no PreviewIds")
+	}
+	return &previewResp.PreviewOrderResponse, nil
 }
 
 // CancelOrder requests cancellation of an order via
