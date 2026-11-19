@@ -97,7 +97,7 @@ tradebot greeler add --name aapl-greel \
   --profit-margin-pct 3 --buy-size 50 \
   --grid-pct 5 --far-pct 12 --hysteresis-pct 2 --dwell-time 48h \
   --target-delta 0.3 --min-dte 21 --max-dte 45 \
-  --min-premium-yield 0.5 --min-open-interest 100 --max-spread-pct 10 \
+  --min-premium-yield-pct 0.5 --min-open-interest 100 --max-spread-pct 10 \
   --reprice-step 0.25 --reprice-interval 5m
 
 tradebot greelladder add --name aapl-ladder \
@@ -112,8 +112,9 @@ by every greel command that takes a config (`add` and `query`):
 - **Zones:** `--grid-pct`, `--far-pct`, `--hysteresis-pct`, `--dwell-time`
   (a Go duration), `--contract-selector`.
 - **Wheel:** `--target-delta`, `--min-dte`, `--max-dte`,
-  `--min-premium-yield`, `--min-open-interest`, `--max-spread-pct`,
-  `--reprice-step`, `--reprice-interval`.
+  `--min-premium-yield-pct` (a percent of the strike, stored as a
+  fraction), `--min-open-interest`, `--max-spread-pct`, `--reprice-step`,
+  `--reprice-interval`.
 
 `--account` and `--product` are required; there is no default account,
 since only an options account works.
@@ -218,7 +219,7 @@ it can follow with the first V2.
 - `greelladder/cut.go`: `Cut(cfg) ([]*gobs.GreelConfig, error)`, the
   one-contract cutting rule, used by the client's `add`, `--dry-run` and
   `query`.
-- `subcmds/waller/spec.go`: export the pair generator.
+- `subcmds/waller/spec.go`: reused as is; `waller.Spec` is the grid flag set.
 - `subcmds/greel/flags.go`: the grid, zone and wheel flag sets, their
   checks, and conversion to `gobs.GreelConfig`.
 - `subcmds/greel/greeler_*.go`, `subcmds/greel/ladder_*.go`: the six
