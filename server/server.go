@@ -169,6 +169,8 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 	t.handlerMap[api.LoopPath] = httpPostJSONHandler(t.doLoop)
 	t.handlerMap[api.WallPath] = httpPostJSONHandler(t.doWall)
 	t.handlerMap[api.WatchPath] = httpPostJSONHandler(t.doWatch)
+	t.handlerMap[api.GreelPath] = httpPostJSONHandler(t.doGreel)
+	t.handlerMap[api.GreelLadderPath] = httpPostJSONHandler(t.doGreelLadder)
 
 	t.handlerMap[api.ExchangeGetOrderPath] = httpPostJSONHandler(t.doExchangeGetOrder)
 	t.handlerMap[api.ExchangeGetProductPath] = httpPostJSONHandler(t.doGetProduct)
