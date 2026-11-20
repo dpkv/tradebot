@@ -612,6 +612,14 @@ func (r *runner) armLevels(ctx context.Context, now time.Time, e *epoch, holding
 		if n := len(ls); n > 0 && ls[n-1].PendingSize().IsPositive() {
 			last := ls[n-1]
 			if !(v.retireOpt && last.IsBuy() && last.FilledSize().IsZero()) {
+				if !r.lotResumedSell(ctx, now, i, last) {
+					// Its order, if any, went out without lots: cancel it
+					// rather than leave it working unwatched.
+					if last.HasLiveOrders() {
+						r.startCancel(i, last)
+					}
+					continue
+				}
 				r.start(i, last)
 			} else if last.HasLiveOrders() {
 				// A retired greeler doesn't resume a buy that hasn't filled.
@@ -636,7 +644,16 @@ func (r *runner) armLevels(ctx context.Context, now time.Time, e *epoch, holding
 			continue
 		}
 
-		l, err := r.addLimiter(ctx, e, i, &pt)
+		var lots []gobs.TaxLotID
+		if pt.Side() == "SELL" {
+			var ok bool
+			if lots, ok = r.sellLots(ctx, i, nil); !ok {
+				r.retryAt[i] = now.Add(retryDelay)
+				continue
+			}
+		}
+
+		l, err := r.addLimiter(ctx, e, i, &pt, lots)
 		if err != nil {
 			slog.Warn("could not add a limiter (will retry)", "greeler", v, "level", i, "err", err)
 			r.retryAt[i] = now.Add(retryDelay)
@@ -646,9 +663,10 @@ func (r *runner) armLevels(ctx context.Context, now time.Time, e *epoch, holding
 	}
 }
 
-// addLimiter names a new limiter in the current epoch and saves both
-// records before the limiter can place an order.
-func (r *runner) addLimiter(ctx context.Context, e *epoch, level int, pt *point.Point) (*limiter.Limiter, error) {
+// addLimiter names a new limiter in the current epoch, with the tax lots
+// a sell names, and saves both records before the limiter can place an
+// order.
+func (r *runner) addLimiter(ctx context.Context, e *epoch, level int, pt *point.Point, lots []gobs.TaxLotID) (*limiter.Limiter, error) {
 	v := r.v
 	v.mu.Lock()
 	uid := path.Join(v.uid, fmt.Sprintf("epoch-%06d/level-%03d/%s-%06d", len(v.epochs)-1, level, strings.ToLower(pt.Side()), len(e.LevelLimiterIDs[level])))
@@ -657,6 +675,9 @@ func (r *runner) addLimiter(ctx context.Context, e *epoch, level int, pt *point.
 	l, err := limiter.New(uid, v.cfg.AccountName, v.cfg.ProductID, pt)
 	if err != nil {
 		return nil, err
+	}
+	if len(lots) != 0 {
+		l.SetTaxLotIDs(lots)
 	}
 	v.mu.Lock()
 	e.LevelLimiterIDs[level] = append(e.LevelLimiterIDs[level], uid)

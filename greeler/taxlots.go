@@ -3,10 +3,15 @@
 package greeler
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
+	"time"
 
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/limiter"
+	"github.com/bvkgo/kv"
 	"github.com/shopspring/decimal"
 )
 
@@ -133,4 +138,77 @@ func (v *Greeler) assignment(ei int, e *epoch) (*gobs.AssignmentFact, error) {
 		return nil, fmt.Errorf("greeler %s epoch %d position is not loaded", v.uid, ei)
 	}
 	return nil, fmt.Errorf("greeler %s epoch %d position is assigned without a fact", v.uid, ei)
+}
+
+// sellLots is the tax lots level's next sell names, stop being the sell
+// when it is resumed. On a product that resolves tax lots, it first
+// resolves the lots of any source buy that lacks them, and reports false
+// if some are still missing: the level skips its sell this time. Shares
+// with no lots to name sell without any.
+func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter) ([]gobs.TaxLotID, bool) {
+	v := r.v
+	src, err := v.sellSources(level, stop)
+	if err != nil {
+		slog.Error("could not find the buys a sell closes (will retry)", "greeler", v, "level", level, "err", err)
+		return nil, false
+	}
+	if src.unlotted {
+		slog.Info("level holds shares with no tax lots to name; selling by the account's default lot method", "greeler", v, "level", level)
+		return nil, true
+	}
+	resolver, ok := r.rt.Product.(exchange.TaxLotResolver)
+	if !ok {
+		return src.lots(), true
+	}
+	missing := src.missing()
+	for _, b := range missing {
+		lots, size, err := resolver.ResolveTaxLots(ctx, b.ServerOrderIDs())
+		if err != nil {
+			slog.Error("could not resolve a buy's tax lots (will retry)", "greeler", v, "level", level, "limiter", b, "err", err)
+			continue
+		}
+		if wanted := b.FilledSize(); !size.Equal(wanted) || len(lots) == 0 {
+			slog.Error("a buy's tax lots resolved to an unexpected size (will retry)", "greeler", v, "level", level, "limiter", b, "wanted", wanted, "got", size)
+			continue
+		}
+		b.SetTaxLotIDs(lots)
+		if err := kv.WithReadWriter(ctx, r.rt.Database, b.Save); err != nil {
+			slog.Error("could not save a buy's tax lots (will retry)", "greeler", v, "level", level, "limiter", b, "err", err)
+			b.SetTaxLotIDs(nil)
+			continue
+		}
+	}
+	if len(src.missing()) != 0 {
+		return nil, false
+	}
+	return src.lots(), true
+}
+
+// lotResumedSell gives level's unfinished limiter l the level's tax lots
+// if it is a sell that has none and hasn't filled anything, and saves it.
+// A sell that has filled keeps going without lots: its fills went by the
+// default lot method, so the buys' lots may no longer add up to what is
+// left. It reports false, and sets the level's retry, if l should not run
+// this time.
+func (r *runner) lotResumedSell(ctx context.Context, now time.Time, level int, l *limiter.Limiter) bool {
+	if l.IsBuy() || len(l.TaxLotIDs()) != 0 || !l.FilledSize().IsZero() {
+		return true
+	}
+	lots, ok := r.sellLots(ctx, level, l)
+	if !ok {
+		r.retryAt[level] = now.Add(retryDelay)
+		return false
+	}
+	if len(lots) == 0 {
+		return true
+	}
+	l.SetTaxLotIDs(lots)
+	if err := kv.WithReadWriter(ctx, r.rt.Database, l.Save); err != nil {
+		slog.Warn("could not save a resumed sell's tax lots (will retry)", "greeler", r.v, "level", level, "limiter", l, "err", err)
+		l.SetTaxLotIDs(nil)
+		r.retryAt[level] = now.Add(retryDelay)
+		return false
+	}
+	slog.Info("gave a resumed sell its level's tax lots", "greeler", r.v, "level", level, "limiter", l, "lots", len(lots))
+	return true
 }
