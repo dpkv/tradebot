@@ -3,6 +3,7 @@
 package internal
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,87 @@ import (
 // GET /v1/api/iserver/account/orders.
 type APIOrdersResponse struct {
 	Orders []*APIOrder `json:"orders"`
+	// Snapshot is false while the gateway is still loading the list, in
+	// which case Orders is empty or incomplete. The first request with a new
+	// filter returns false. Nil if the response has no snapshot field.
+	Snapshot *bool `json:"snapshot"`
+}
+
+// APIOrderStatus is the JSON returned by
+// GET /v1/api/iserver/account/order/status/{orderId}. Unlike the orders
+// list, it answers for any order the gateway still knows, but it has no
+// client order id (order_ref). Numbers are JSON strings, e.g. "100.0".
+type APIOrderStatus struct {
+	OrderID      int64  `json:"order_id"`
+	ConID        int    `json:"conid"`
+	Symbol       string `json:"symbol"`
+	SecType      string `json:"sec_type"`
+	Side         string `json:"side"` // "B" or "S"
+	OrderStatus  string `json:"order_status"`
+	CumFill      string `json:"cum_fill"`
+	TotalSize    string `json:"total_size"`
+	LimitPrice   string `json:"limit_price"`
+	AveragePrice string `json:"average_price"` // absent until the order has a fill
+	// CancelReason starts with "Rejected by System" for an order IBKR
+	// refused. The numeric order_ccp_status here doesn't match the orders
+	// list's "Rejected", so this is used instead.
+	CancelReason string `json:"order_cancellation_by_system_reason"`
+}
+
+// NewOrderFromAPIStatus converts an APIOrderStatus into a flat Order. The
+// result's ClientOrderID is empty because the endpoint doesn't return it.
+func NewOrderFromAPIStatus(a *APIOrderStatus) (*Order, error) {
+	parse := func(name, s string) (decimal.Decimal, error) {
+		if s == "" {
+			return decimal.Zero, nil
+		}
+		d, err := decimal.NewFromString(s)
+		if err != nil {
+			return decimal.Zero, fmt.Errorf("ibkr: order %d: invalid %s %q: %w", a.OrderID, name, s, err)
+		}
+		return d, nil
+	}
+	filled, err := parse("cum_fill", a.CumFill)
+	if err != nil {
+		return nil, err
+	}
+	total, err := parse("total_size", a.TotalSize)
+	if err != nil {
+		return nil, err
+	}
+	limit, err := parse("limit_price", a.LimitPrice)
+	if err != nil {
+		return nil, err
+	}
+	avg, err := parse("average_price", a.AveragePrice)
+	if err != nil {
+		return nil, err
+	}
+
+	side := strings.ToUpper(a.Side)
+	switch side {
+	case "B":
+		side = "BUY"
+	case "S":
+		side = "SELL"
+	}
+	var ccpStatus string
+	if strings.HasPrefix(a.CancelReason, "Rejected") {
+		ccpStatus = "Rejected"
+	}
+	return &Order{
+		OrderID:      a.OrderID,
+		ConID:        a.ConID,
+		Symbol:       a.Symbol,
+		SecType:      a.SecType,
+		Side:         side,
+		Status:       a.OrderStatus,
+		CCPStatus:    ccpStatus,
+		LimitPrice:   limit,
+		OrderedQty:   total,
+		FilledQty:    filled,
+		AvgFillPrice: avg,
+	}, nil
 }
 
 // APIOrder is the per-order JSON structure from the IBKR CP API orders list.

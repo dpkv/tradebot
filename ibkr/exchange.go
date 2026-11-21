@@ -104,6 +104,13 @@ func (v *Exchange) persistOrder(ctx context.Context, order *internal.Order) {
 	if v.datastore == nil {
 		return
 	}
+	if order.ClientOrderID == "" {
+		// Orders are keyed by client order id. One built from the order
+		// status endpoint can lack it; the bot didn't place such an order
+		// or can't match it to one, so there is nothing to save it under.
+		slog.Warn("ibkr: not persisting order without a client order id", "orderID", order.OrderID, "status", order.Status)
+		return
+	}
 	if err := v.datastore.SaveOrder(ctx, order); err != nil {
 		slog.Warn("ibkr: could not persist order", "clientOrderID", order.ClientOrderID, "err", err)
 		return
@@ -218,7 +225,78 @@ func (v *Exchange) GetOrder(ctx context.Context, productID string, serverID stri
 			return o, nil
 		}
 	}
-	return nil, fmt.Errorf("ibkr: order %q not found in live orders: %w", serverID, os.ErrNotExist)
+	if o, ok := v.findOrderByServerID(orderID); ok {
+		return o, nil
+	}
+	o, err := v.lookupOrderStatus(ctx, orderID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("ibkr: order %q not found in live orders: %w", serverID, err)
+	}
+	if o.ClientOrderID != "" {
+		v.markFillObserved(ctx, o)
+	}
+	return o, nil
+}
+
+// lookupOrderStatus gets an order's status from the gateway's single-order
+// endpoint and merges it into known, the bot's last snapshot of the order
+// (nil if it has none). It is for orders missing from the orders list,
+// which the gateway caps at 1000 entries. The endpoint has no client order
+// id; if known doesn't supply it, it is recovered from the order's
+// executions, which exist only if the order had a fill. So the returned
+// order's ClientOrderID is empty for an unknown order without fills.
+// Returns an error wrapping os.ErrNotExist if the gateway doesn't know the
+// order.
+func (v *Exchange) lookupOrderStatus(ctx context.Context, orderID int64, known *internal.Order) (*internal.Order, error) {
+	status, err := v.client.GetOrderStatus(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	order := status
+	if known != nil {
+		merged := *known
+		merged.Status = status.Status
+		if status.CCPStatus != "" {
+			merged.CCPStatus = status.CCPStatus
+		}
+		if status.FilledQty.GreaterThan(merged.FilledQty) {
+			merged.FilledQty = status.FilledQty
+			merged.AvgFillPrice = status.AvgFillPrice
+		}
+		order = &merged
+	}
+	if order.ClientOrderID == "" && order.FilledQty.IsPositive() {
+		order.ClientOrderID = v.clientOrderIDFromTrades(ctx, orderID)
+	}
+	return order, nil
+}
+
+// clientOrderIDFromTrades returns the client order id (order_ref) on
+// orderID's executions from the last 7 days, or "" if there are none. It
+// polls like fetchCommission does, because the trades endpoint can answer
+// with an empty list while it loads.
+func (v *Exchange) clientOrderIDFromTrades(ctx context.Context, orderID int64) string {
+	for attempt := 1; ; attempt++ {
+		trades, err := v.client.GetTrades(ctx, 7)
+		if err != nil {
+			slog.Warn("ibkr: could not fetch trades to find client order id", "orderID", orderID, "attempt", attempt, "err", err)
+			return ""
+		}
+		for _, t := range trades {
+			if t.OrderID == orderID && t.OrderRef != "" {
+				return t.OrderRef
+			}
+		}
+		if attempt == commissionLookupAttempts {
+			slog.Warn("ibkr: no trade found to recover client order id", "orderID", orderID, "attempts", attempt, "numTrades", len(trades))
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(commissionLookupDelay):
+		}
+	}
 }
 
 // fetchCommission calls the trades API and sets order.Commission and

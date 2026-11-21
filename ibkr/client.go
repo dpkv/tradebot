@@ -12,8 +12,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -545,34 +547,120 @@ func (c *Client) GetTradesRaw(ctx context.Context, days int) ([]byte, error) {
 	return raw, nil
 }
 
-// GetOrders fetches all live orders from the gateway and converts them to the
-// flat Order type. The gateway's orders endpoint can return 503 while the
-// session's order cache is cold; this retries up to 5 times with a 2-second
-// delay before giving up.
+// The orders list is fetched as two filtered requests. The gateway returns
+// at most 1000 orders per request and leaves out the newest ones past that,
+// so on a day with many cancelled or rejected orders an unfiltered request
+// misses working orders. Working orders stay few (IBKR allows 15 per side
+// per contract), so the first list is complete in practice; only the
+// cancelled list can overflow. Status names must be snake_case: the
+// gateway rejects some CamelCase ones (e.g. PendingSubmit) with 400.
+const (
+	openAndFilledFilter = "inactive,pending_submit,pre_submitted,submitted,pending_cancel,warn_state,filled"
+	cancelledFilter     = "cancelled"
+)
+
+// errOrdersNotReady means the gateway kept answering with snapshot=false,
+// so the orders list it returned was incomplete.
+var errOrdersNotReady = errors.New("ibkr: orders list is still loading")
+
+// ordersRetryDelay is the wait between orders list requests that returned
+// 503 or snapshot=false. It is a variable so tests can shorten it.
+var ordersRetryDelay = 2 * time.Second
+
+// GetOrders fetches the orders the gateway has for the current session —
+// working, filled and cancelled — and converts them to the flat Order type.
+// It returns an error rather than a list it knows is incomplete.
 func (c *Client) GetOrders(ctx context.Context) ([]*internal.Order, error) {
+	open, err := c.getOrdersFiltered(ctx, openAndFilledFilter)
+	if err != nil {
+		return nil, err
+	}
+	cancelled, err := c.getOrdersFiltered(ctx, cancelledFilter)
+	if err != nil {
+		return nil, err
+	}
+	return mergeOrders(open, cancelled), nil
+}
+
+// getOrdersFiltered fetches the orders list for one status filter. The
+// gateway answers 503 while the session's order cache is cold, and
+// snapshot=false with an empty or partial list while it loads a filter it
+// hasn't served recently; both are retried up to 5 times.
+func (c *Client) getOrdersFiltered(ctx context.Context, filter string) ([]*internal.Order, error) {
 	const maxRetries = 5
-	const retryDelay = 2 * time.Second
-	var resp internal.APIOrdersResponse
+	path := "/v1/api/iserver/account/orders?filters=" + filter
 	for attempt := range maxRetries {
-		err := c.doRequest(ctx, http.MethodGet, "/v1/api/iserver/account/orders", nil, &resp)
-		if err == nil {
-			break
+		var resp internal.APIOrdersResponse
+		err := c.doRequest(ctx, http.MethodGet, path, nil, &resp)
+		if err == nil && resp.Snapshot != nil && !*resp.Snapshot {
+			err = fmt.Errorf("%w (filter %q)", errOrdersNotReady, filter)
 		}
-		if !errors.Is(err, errServiceUnavailable) || attempt == maxRetries-1 {
+		if err == nil {
+			orders := make([]*internal.Order, 0, len(resp.Orders))
+			for _, a := range resp.Orders {
+				orders = append(orders, internal.NewOrderFromAPI(a))
+			}
+			return orders, nil
+		}
+		retryable := errors.Is(err, errServiceUnavailable) || errors.Is(err, errOrdersNotReady)
+		if !retryable || attempt == maxRetries-1 {
 			return nil, err
 		}
-		slog.Warn("ibkr: orders endpoint returned 503 (will retry)", "attempt", attempt+1, "err", err)
+		if errors.Is(err, errOrdersNotReady) {
+			slog.Info("ibkr: orders list is still loading (will retry)", "filter", filter, "attempt", attempt+1)
+		} else {
+			slog.Warn("ibkr: orders endpoint returned 503 (will retry)", "filter", filter, "attempt", attempt+1, "err", err)
+		}
 		select {
 		case <-ctx.Done():
 			return nil, context.Cause(ctx)
-		case <-time.After(retryDelay):
+		case <-time.After(ordersRetryDelay):
 		}
 	}
-	orders := make([]*internal.Order, 0, len(resp.Orders))
-	for _, a := range resp.Orders {
-		orders = append(orders, internal.NewOrderFromAPI(a))
+	panic("unreachable")
+}
+
+// mergeOrders combines orders lists into one with a single entry per order.
+// An order that changed status between the requests can be in two lists;
+// the done copy is the later state, so it is kept.
+func mergeOrders(lists ...[]*internal.Order) []*internal.Order {
+	index := make(map[int64]int)
+	var merged []*internal.Order
+	for _, list := range lists {
+		for _, o := range list {
+			if i, ok := index[o.OrderID]; ok {
+				if !merged[i].IsDone() && o.IsDone() {
+					merged[i] = o
+				}
+				continue
+			}
+			index[o.OrderID] = len(merged)
+			merged = append(merged, o)
+		}
 	}
-	return orders, nil
+	return merged
+}
+
+// GetOrderStatus fetches one order from
+// GET /v1/api/iserver/account/order/status/{orderId}, which answers for
+// orders missing from the orders list. The returned order has no
+// ClientOrderID; the endpoint doesn't report it. Returns an error wrapping
+// os.ErrNotExist if the gateway doesn't know the order.
+func (c *Client) GetOrderStatus(ctx context.Context, orderID int64) (*internal.Order, error) {
+	path := "/v1/api/iserver/account/order/status/" + strconv.FormatInt(orderID, 10)
+	var resp internal.APIOrderStatus
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		// The gateway answers an unknown order id with 503 and
+		// {"error":"Order <id> is not found"}, not with 404.
+		if errors.Is(err, errNotFound) || (errors.Is(err, errServiceUnavailable) && strings.Contains(err.Error(), "is not found")) {
+			return nil, fmt.Errorf("ibkr: order %d not found by order status: %w", orderID, os.ErrNotExist)
+		}
+		return nil, err
+	}
+	if resp.OrderID != orderID {
+		return nil, fmt.Errorf("ibkr: order status for %d returned order %d", orderID, resp.OrderID)
+	}
+	return internal.NewOrderFromAPIStatus(&resp)
 }
 
 // unsubscribeMarketData calls the gateway's unsubscribe endpoint to drop the

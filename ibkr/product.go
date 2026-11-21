@@ -4,6 +4,7 @@ package ibkr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -271,7 +272,6 @@ func (p *Product) findOrder(ctx context.Context, orderID int64) (*internal.Order
 
 	// Slow path: poll the live gateway.
 	const maxMisses = 3
-	const missRetryDelay = 2 * time.Second
 	for attempt := 0; ; attempt++ {
 		orders, err := p.client.GetOrders(ctx)
 		if err != nil {
@@ -282,33 +282,89 @@ func (p *Product) findOrder(ctx context.Context, orderID int64) (*internal.Order
 				if attempt > 0 {
 					slog.Warn("ibkr: order found in live orders list after retry — earlier miss(es) were a stale/incomplete snapshot, not a real cancellation", "orderID", orderID, "attempt", attempt+1)
 				}
-				if cid := o.ClientID(); cid != uuid.Nil {
-					cstatus, _ := p.clientIDStatusMap.LoadOrStore(cid, newClientIDStatus())
-					cstatus.mu.Lock()
-					cstatus.order = o
-					cstatus.mu.Unlock()
-				}
+				p.cacheOrder(o)
 				return o, nil
 			}
 		}
 
-		if attempt+1 >= maxMisses {
-			slog.Warn("ibkr: order not found in live orders list after all retries — treating as not-found", "orderID", orderID, "attempts", attempt+1)
-			break
+		// Persisted orders are done orders this bot already observed
+		// (filled orders drop off the gateway cache).
+		if o, ok := p.exchange.findOrderByServerID(orderID); ok {
+			return o, nil
 		}
-		slog.Warn("ibkr: order not found in live orders list (will retry)", "orderID", orderID, "attempt", attempt+1)
+
+		// The cancelled list can overflow the gateway's 1000-order limit, so
+		// ask for the order itself before concluding it is gone.
+		o, err := p.lookupMissingOrder(ctx, orderID)
+		if err == nil {
+			return o, nil
+		}
+		if errors.Is(err, errDoneWithoutFill) {
+			return nil, os.ErrNotExist
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+
+		if attempt+1 >= maxMisses {
+			slog.Warn("ibkr: order not found in live orders list or by order status after all retries — treating as not-found", "orderID", orderID, "attempts", attempt+1)
+			return nil, os.ErrNotExist
+		}
+		slog.Warn("ibkr: order not found in live orders list or by order status (will retry)", "orderID", orderID, "attempt", attempt+1)
 		select {
 		case <-ctx.Done():
 			return nil, context.Cause(ctx)
 		case <-time.After(missRetryDelay):
 		}
 	}
+}
 
-	// Last resort: check persisted orders (filled orders drop off the gateway cache).
-	if o, ok := p.exchange.findOrderByServerID(orderID); ok {
-		return o, nil
+// missRetryDelay is the wait between findOrder's attempts to find an order
+// that is missing from the orders list. It is a variable so tests can
+// shorten it.
+var missRetryDelay = 2 * time.Second
+
+// errDoneWithoutFill means the gateway reports an order as done with no
+// fill, but its client order id can't be recovered (there are no
+// executions to take it from). Callers treat the order as not found, which
+// records it as cancelled without a fill — what it is.
+var errDoneWithoutFill = errors.New("ibkr: order is done without a fill and its client order id is unknown")
+
+// lookupMissingOrder gets an order that is missing from the orders list
+// from the gateway's order status endpoint. It never reports an order the
+// gateway says is working as missing: if such an order's client order id
+// can't be recovered, it returns an error instead of os.ErrNotExist, so the
+// caller retries rather than placing a duplicate. Returns an error wrapping
+// os.ErrNotExist if the gateway doesn't know the order, or
+// errDoneWithoutFill (see above).
+func (p *Product) lookupMissingOrder(ctx context.Context, orderID int64) (*internal.Order, error) {
+	o, err := p.exchange.lookupOrderStatus(ctx, orderID, nil)
+	if err != nil {
+		return nil, err
 	}
-	return nil, os.ErrNotExist
+	if o.ClientOrderID == "" {
+		if o.IsDone() && o.FilledQty.IsZero() {
+			slog.Warn("ibkr: order missing from orders list is done without a fill", "orderID", orderID, "status", o.Status)
+			return nil, errDoneWithoutFill
+		}
+		return nil, fmt.Errorf("ibkr: order %d is %s at ibkr (filled %s) but missing from the orders list, and its client order id is unknown", orderID, o.Status, o.FilledQty)
+	}
+	slog.Warn("ibkr: order missing from orders list was found by order status", "orderID", orderID, "status", o.Status, "filled", o.FilledQty)
+	p.cacheOrder(o)
+	return o, nil
+}
+
+// cacheOrder makes order the current snapshot for its client id, so later
+// lookups take findOrder's fast path.
+func (p *Product) cacheOrder(order *internal.Order) {
+	cid := order.ClientID()
+	if cid == uuid.Nil {
+		return
+	}
+	cstatus, _ := p.clientIDStatusMap.LoadOrStore(cid, newClientIDStatus())
+	cstatus.mu.Lock()
+	cstatus.order = order
+	cstatus.mu.Unlock()
 }
 
 // Get returns the current state of an order by server ID. When a cancel has
@@ -358,7 +414,50 @@ func (p *Product) Get(ctx context.Context, serverID string) (exchange.OrderDetai
 		return nil, os.ErrNotExist
 	}
 
-	return p.synthesizeCancelled(orderID, count, cancelAt)
+	// The orders list still doesn't show the order as done. Ask the gateway
+	// for the order itself instead of assuming the cancel worked: the
+	// cancelled list can overflow its 1000-order limit, and a cancel can
+	// fail to take effect.
+	status, err := p.exchange.lookupOrderStatus(ctx, orderID, order)
+	if errors.Is(err, os.ErrNotExist) {
+		// The gateway doesn't know the order at all, so there is nothing
+		// left to cancel.
+		return p.synthesizeCancelled(orderID, count, cancelAt)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !status.IsDone() {
+		// Still working a minute after the cancel request: send it again.
+		slog.Warn("ibkr: order still working after cancel; cancelling again", "orderID", orderID, "status", status.Status, "retries", count, "elapsed", time.Since(cancelAt).Round(time.Second))
+		if err := p.client.CancelOrder(ctx, orderID); err != nil {
+			return nil, err
+		}
+		entry.mu.Lock()
+		entry.at, entry.missCount = time.Now(), 0
+		entry.mu.Unlock()
+		return status, nil
+	}
+	if status.ClientOrderID == "" {
+		// Done, but neither the bot nor the order's executions know its
+		// client order id, so it can't be matched to a limiter's order.
+		return p.synthesizeCancelled(orderID, count, cancelAt)
+	}
+	slog.Warn("ibkr: cancelled order missing from orders list was found by order status", "orderID", orderID, "status", status.Status, "filled", status.FilledQty)
+	p.exchange.markFillObserved(ctx, status)
+	p.publishOrder(status)
+	p.pendingCancels.Delete(orderID)
+	return status, nil
+}
+
+// publishOrder makes order the current snapshot for its client id and
+// publishes it to the symbol's orders topic, so goWatchOrderUpdates and any
+// limiter waiting on order updates see it.
+func (p *Product) publishOrder(order *internal.Order) {
+	p.cacheOrder(order)
+	if err := p.client.GetSymbolOrdersTopic(p.symbol).Send(order); err != nil {
+		slog.Warn("ibkr: could not publish order update", "orderID", order.OrderID, "err", err)
+	}
 }
 
 // synthesizeCancelled builds a fake "Cancelled" order snapshot, updates the
