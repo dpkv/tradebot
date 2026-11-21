@@ -20,7 +20,7 @@ const SaveClientIDOffsetSize = 10
 
 // CancelOffsetTimeout is the minimum age of an order before it may be cancelled
 // when the cancel price is breached (reduces cancel churn).
-const CancelOffsetTimeout = 24 * time.Hour
+const CancelOffsetTimeout = time.Hour
 
 func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 	v.runtimeLock.Lock()
