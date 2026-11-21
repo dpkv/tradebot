@@ -20,6 +20,9 @@ const (
 	ETradeTaxLotIDPrefix = "https://api.etrade.com/v1/accounts/"
 )
 
+// Equal reports whether v and other name the same lot. For E*TRADE IDs it
+// compares the account's lot path and the AccountID, Symbol, OrderNo and
+// PositionLotID values, and ignores Qty, so parts of one lot are equal.
 func (v TaxLotID) Equal(other TaxLotID) bool {
 	if v == other {
 		return true
@@ -33,13 +36,30 @@ func (v TaxLotID) Equal(other TaxLotID) bool {
 			if aq != nil && bq != nil {
 				return a.Scheme == b.Scheme &&
 					a.Host == b.Host && a.Path == b.Path &&
-					aq.Get("Account") == bq.Get("Account") &&
+					aq.Get("AccountID") == bq.Get("AccountID") &&
 					aq.Get("Symbol") == bq.Get("Symbol") &&
-					aq.Get("OrderNo") == bq.Get("OrderNo")
+					aq.Get("OrderNo") == bq.Get("OrderNo") &&
+					aq.Get("PositionLotID") == bq.Get("PositionLotID")
 			}
 		}
 	}
 	return false
+}
+
+// WithQty is v capped to qty shares, for a sell that takes only part of
+// the lot. Only E*TRADE IDs carry a cap; others come back unchanged.
+func (v TaxLotID) WithQty(qty decimal.Decimal) TaxLotID {
+	if !strings.HasPrefix(string(v), ETradeTaxLotIDPrefix) {
+		return v
+	}
+	u, err := url.Parse(string(v))
+	if err != nil {
+		return v
+	}
+	q := u.Query()
+	q.Set("Qty", qty.String())
+	u.RawQuery = q.Encode()
+	return TaxLotID(u.String())
 }
 
 type Order struct {

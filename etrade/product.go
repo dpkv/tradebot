@@ -402,15 +402,12 @@ func (p *Product) PlaceLimitOrder(ctx context.Context, accountID string, clientO
 		if !strings.EqualFold(side, "sell") {
 			return nil, fmt.Errorf("etrade: tax lots are supported only on sell side")
 		}
-		lots, err := p.client.ResolveTaxLotIDs(ctx, taxLotIDs)
+		groups, err := p.client.resolveTaxLotGroups(ctx, taxLotIDs)
 		if err != nil {
 			return nil, err
 		}
 		var sum decimal.Decimal
-		for _, l := range lots {
-			plots = append(plots, &placeOrderLot{ID: l.PositionLotID, Size: l.RemainingQty})
-			sum = sum.Add(l.RemainingQty)
-		}
+		plots, sum = planLotDraws(groups, size)
 		if !sum.Equal(size) {
 			return nil, fmt.Errorf("etrade: sell with lots size %s did not match lots quantity %s: %w", size, sum, exchange.ErrTaxLotsMismatch)
 		}
@@ -828,17 +825,15 @@ func (p *Product) AcknowledgeProduct(ctx context.Context, reason string) error {
 	return nil
 }
 
-// TaxLotsSize is the shares the lots still hold, as PlaceLimitOrder counts
-// them.
+// TaxLotsSize is the shares the lots can give a sell, as PlaceLimitOrder
+// counts them before any trimming: each lot's remaining quantity, capped
+// by its ID's Qty.
 func (p *Product) TaxLotsSize(ctx context.Context, taxLotIDs []gobs.TaxLotID) (decimal.Decimal, error) {
-	lots, err := p.client.ResolveTaxLotIDs(ctx, taxLotIDs)
+	groups, err := p.client.resolveTaxLotGroups(ctx, taxLotIDs)
 	if err != nil {
 		return decimal.Zero, err
 	}
-	var sum decimal.Decimal
-	for _, l := range lots {
-		sum = sum.Add(l.RemainingQty)
-	}
+	_, sum, _ := lotDraws(groups)
 	return sum, nil
 }
 

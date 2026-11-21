@@ -1179,6 +1179,19 @@ func (c *Client) makeTaxLotID(accountID, symbol, lotDetailURL string, orderNo in
 	if orderNo <= 0 {
 		return "", fmt.Errorf("etrade: server order no must not be zero or -ve")
 	}
+	return c.makeLotID(accountID, symbol, lotDetailURL, "OrderNo", orderNo)
+}
+
+// makePositionTaxLotID names one lot by E*TRADE's lot ID, for a lot with
+// no order number of ours, such as shares an assignment brought in.
+func (c *Client) makePositionTaxLotID(accountID, symbol, lotDetailURL string, positionLotID int64) (gobs.TaxLotID, error) {
+	if positionLotID <= 0 {
+		return "", fmt.Errorf("etrade: position lot id must not be zero or -ve")
+	}
+	return c.makeLotID(accountID, symbol, lotDetailURL, "PositionLotID", positionLotID)
+}
+
+func (c *Client) makeLotID(accountID, symbol, lotDetailURL, key string, n int64) (gobs.TaxLotID, error) {
 	if !strings.HasPrefix(lotDetailURL, gobs.ETradeTaxLotIDPrefix) {
 		return "", fmt.Errorf("etrade: lot detail url %q has invalid/unexpected prefix", lotDetailURL)
 	}
@@ -1196,47 +1209,93 @@ func (c *Client) makeTaxLotID(accountID, symbol, lotDetailURL string, orderNo in
 	values := make(url.Values)
 	values.Set("AccountID", accountID)
 	values.Set("Symbol", symbol)
-	values.Set("OrderNo", strconv.FormatInt(orderNo, 10))
+	values.Set(key, strconv.FormatInt(n, 10))
 	taxLotURL.RawQuery = values.Encode()
 	return gobs.TaxLotID(taxLotURL.String()), nil
 }
 
-func (c *Client) parseTaxLotID(id gobs.TaxLotID) (accountID, symbol, lotDetailURL string, orderNo int64, err error) {
+// taxLotRef is what a tax lot ID names: the lots of one order in a
+// position, or one lot by E*TRADE's own lot ID, and at most how many shares
+// a sell draws from them.
+type taxLotRef struct {
+	accountID, symbol, lotDetailURL string
+
+	orderNo       int64           // 0 when positionLotID names the lot
+	positionLotID int64           // 0 when orderNo names the lots
+	qty           decimal.Decimal // 0 to draw the whole remaining quantity
+}
+
+// matches reports whether l is one of the lots r names.
+func (r *taxLotRef) matches(l *positionLot) bool {
+	if r.positionLotID != 0 {
+		return l.PositionLotID == r.positionLotID
+	}
+	return l.OrderNo == r.orderNo
+}
+
+// parseTaxLotRef parses a tax lot ID without checking it against the
+// client's accounts and symbols.
+func parseTaxLotRef(id gobs.TaxLotID) (*taxLotRef, error) {
 	if !strings.HasPrefix(string(id), gobs.ETradeTaxLotIDPrefix) {
-		return "", "", "", -1, fmt.Errorf("etrade: tax lot id %q has invalid/unexpected prefix", id)
+		return nil, fmt.Errorf("etrade: tax lot id %q has invalid/unexpected prefix", id)
 	}
 	taxLotURL, err := url.Parse(string(id))
 	if err != nil {
-		return "", "", "", -1, err
+		return nil, err
 	}
 	values := taxLotURL.Query()
-	accountID = values.Get("AccountID")
-	symbol = values.Get("Symbol")
-	orderNo, err = strconv.ParseInt(values.Get("OrderNo"), 10, 64)
-	if err != nil {
-		return "", "", "", -1, err
+	r := &taxLotRef{accountID: values.Get("AccountID"), symbol: values.Get("Symbol")}
+	if v := values.Get("PositionLotID"); v != "" {
+		if r.positionLotID, err = strconv.ParseInt(v, 10, 64); err != nil {
+			return nil, err
+		}
+		if r.positionLotID <= 0 {
+			return nil, fmt.Errorf("etrade: position lot id %d is invalid", r.positionLotID)
+		}
 	}
-	if orderNo <= 0 {
-		return "", "", "", -1, fmt.Errorf("etrade: server order no %d is invalid", orderNo)
+	if v := values.Get("OrderNo"); v != "" {
+		if r.orderNo, err = strconv.ParseInt(v, 10, 64); err != nil {
+			return nil, err
+		}
 	}
-	creds := c.creds.Load()
-	if _, err := creds.GetAccountIDKey(accountID); err != nil {
-		return "", "", "", -1, err
+	if r.positionLotID == 0 && r.orderNo <= 0 {
+		return nil, fmt.Errorf("etrade: server order no %d is invalid", r.orderNo)
 	}
-	if _, ok := c.symbolPriceTopicMap.Load(symbol); !ok {
-		return "", "", "", -1, fmt.Errorf("etrade: tax lot refers to invalid/unwatched symbol %q", symbol)
+	if v := values.Get("Qty"); v != "" {
+		if r.qty, err = decimal.NewFromString(v); err != nil {
+			return nil, err
+		}
+		if !r.qty.IsPositive() {
+			return nil, fmt.Errorf("etrade: tax lot quantity %s is invalid", r.qty)
+		}
 	}
 	taxLotURL.RawQuery = ""
-	return accountID, symbol, taxLotURL.String(), orderNo, nil
+	r.lotDetailURL = taxLotURL.String()
+	return r, nil
+}
+
+func (c *Client) parseTaxLotID(id gobs.TaxLotID) (*taxLotRef, error) {
+	r, err := parseTaxLotRef(id)
+	if err != nil {
+		return nil, err
+	}
+	creds := c.creds.Load()
+	if _, err := creds.GetAccountIDKey(r.accountID); err != nil {
+		return nil, err
+	}
+	if _, ok := c.symbolPriceTopicMap.Load(r.symbol); !ok {
+		return nil, fmt.Errorf("etrade: tax lot refers to invalid/unwatched symbol %q", r.symbol)
+	}
+	return r, nil
 }
 
 func (c *Client) GetTaxLotDetail(ctx context.Context, taxLotID gobs.TaxLotID) ([]*positionLot, error) {
 	var lots []*positionLot
-	accountID, symbol, lotDetailURL, orderNo, err := c.parseTaxLotID(taxLotID)
+	ref, err := c.parseTaxLotID(taxLotID)
 	if err != nil {
 		return nil, err
 	}
-	detailURL, err := url.Parse(lotDetailURL)
+	detailURL, err := url.Parse(ref.lotDetailURL)
 	if err != nil {
 		return nil, err
 	}
@@ -1245,13 +1304,13 @@ func (c *Client) GetTaxLotDetail(ctx context.Context, taxLotID gobs.TaxLotID) ([
 		return nil, fmt.Errorf("etrade: could not fetch lots from %q: %w", taxLotID, err)
 	}
 	for _, v := range posWrapper.PositionLotsResponse.PositionLots {
-		if v.OrderNo != orderNo {
+		if !ref.matches(v) {
 			continue
 		}
 		// Attach account id and symbol to each position lot.
-		v.LotsDetails = lotDetailURL
-		v.AccountID = accountID
-		v.Symbol = symbol
+		v.LotsDetails = ref.lotDetailURL
+		v.AccountID = ref.accountID
+		v.Symbol = ref.symbol
 		lots = append(lots, v)
 	}
 	return lots, nil
@@ -1578,7 +1637,11 @@ func (c *Client) updatePortfolio(lots []*positionLot) {
 	// held.
 	byURL := make(map[string][]*positionLot)
 	for _, v := range lots {
+		// A lot with no order number (shares an assignment brought in, say)
+		// stays in its position's list, where a PositionLotID finds it, but
+		// can't be in the by-order index.
 		if v.OrderNo == 0 {
+			byURL[v.LotsDetails] = append(byURL[v.LotsDetails], v)
 			continue
 		}
 		symbolMap, ok := c.portfolioMap.Load(v.AccountID)
@@ -1604,42 +1667,94 @@ func (c *Client) updatePortfolio(lots []*positionLot) {
 }
 
 func (c *Client) ResolveTaxLotIDs(ctx context.Context, taxLotIDs []gobs.TaxLotID) ([]*positionLot, error) {
-	var missing []int
-	// Check for the position lot ids in the cache.
-	var lots []*positionLot
-	for i, taxLotID := range taxLotIDs {
-		_, _, lotDetailURL, orderNo, err := c.parseTaxLotID(taxLotID)
-		if err != nil {
-			return nil, err
-		}
-		ps, ok := c.lotDetailMap.Load(lotDetailURL)
-		if !ok {
-			missing = append(missing, i)
-			continue
-		}
-		for _, p := range ps {
-			if p.OrderNo == orderNo {
-				lots = append(lots, p)
-			}
-		}
+	groups, err := c.resolveTaxLotGroups(ctx, taxLotIDs)
+	if err != nil {
+		return nil, err
 	}
-	// Fetch missing lot ids with an explicit request.
-	for _, index := range missing {
-		_, _, _, orderNo, err := c.parseTaxLotID(taxLotIDs[index])
-		if err != nil {
-			return nil, err
-		}
-		ps, err := c.GetTaxLotDetail(ctx, taxLotIDs[index])
-		if err != nil {
-			return nil, err
-		}
-		for _, p := range ps {
-			if p.OrderNo == orderNo {
-				lots = append(lots, p)
-			}
-		}
+	var lots []*positionLot
+	for _, g := range groups {
+		lots = append(lots, g.lots...)
 	}
 	return lots, nil
+}
+
+// taxLotGroup is the lots one tax lot ID resolved to.
+type taxLotGroup struct {
+	ref  *taxLotRef
+	lots []*positionLot
+}
+
+// resolveTaxLotGroups resolves each tax lot ID, in order, from the lot cache
+// or, for a position the cache doesn't have, with an explicit request.
+func (c *Client) resolveTaxLotGroups(ctx context.Context, taxLotIDs []gobs.TaxLotID) ([]*taxLotGroup, error) {
+	groups := make([]*taxLotGroup, len(taxLotIDs))
+	for i, taxLotID := range taxLotIDs {
+		ref, err := c.parseTaxLotID(taxLotID)
+		if err != nil {
+			return nil, err
+		}
+		ps, ok := c.lotDetailMap.Load(ref.lotDetailURL)
+		if !ok {
+			if ps, err = c.GetTaxLotDetail(ctx, taxLotID); err != nil {
+				return nil, err
+			}
+		}
+		g := &taxLotGroup{ref: ref}
+		for _, p := range ps {
+			if ref.matches(p) {
+				g.lots = append(g.lots, p)
+			}
+		}
+		groups[i] = g
+	}
+	return groups, nil
+}
+
+// lotDraws is how many shares a sell may draw from each lot of groups: a
+// lot gives its remaining quantity, and the lots of a group with a Qty give
+// no more than it all together. capped reports whether any group has a
+// Qty.
+func lotDraws(groups []*taxLotGroup) (plots []*placeOrderLot, sum decimal.Decimal, capped bool) {
+	for _, g := range groups {
+		left := g.ref.qty
+		if left.IsPositive() {
+			capped = true
+		}
+		for _, l := range g.lots {
+			q := l.RemainingQty
+			if g.ref.qty.IsPositive() {
+				q = decimal.Min(q, left)
+				left = left.Sub(q)
+			}
+			if !q.IsPositive() {
+				continue
+			}
+			plots = append(plots, &placeOrderLot{ID: l.PositionLotID, Size: q})
+			sum = sum.Add(q)
+		}
+	}
+	return plots, sum, capped
+}
+
+// planLotDraws is lotDraws for a sell of size. If some group has a Qty and
+// the draws add up to more than size, the last draws are trimmed down to
+// it, as for a sell that has partly filled. Lots without a Qty are never
+// trimmed, so their total must match size exactly, as before Qty existed.
+// It returns the draws and their total.
+func planLotDraws(groups []*taxLotGroup, size decimal.Decimal) ([]*placeOrderLot, decimal.Decimal) {
+	plots, sum, capped := lotDraws(groups)
+	if !capped {
+		return plots, sum
+	}
+	for i := len(plots) - 1; i >= 0 && sum.GreaterThan(size); i-- {
+		cut := decimal.Min(sum.Sub(size), plots[i].Size)
+		plots[i].Size = plots[i].Size.Sub(cut)
+		sum = sum.Sub(cut)
+		if plots[i].Size.IsZero() {
+			plots = plots[:i]
+		}
+	}
+	return plots, sum
 }
 
 const (
