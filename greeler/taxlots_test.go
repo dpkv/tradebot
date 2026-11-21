@@ -190,7 +190,66 @@ func TestSellSourcesCallAssignment(t *testing.T) {
 	b = newLotsBuilder(t)
 	b1 := b.limiter("BUY", "25", "25", "lot-1")
 	b.assigned("-10", false)
-	b.check("partly called", nil, true, []*limiter.Limiter{b1}, "lot-1")
+	b.check("partly called", nil, false, []*limiter.Limiter{b1}, "lot-1")
+	if s, _ := b.v.sellSources(0, nil); !s.called {
+		t.Error("partly called level isn't marked called")
+	}
+	b.limiter("SELL", "15", "15")
+	if s, _ := b.v.sellSources(0, nil); s.called || len(s.buys) != 0 {
+		t.Errorf("after the sell: called %v buys %v", s.called, s.buys)
+	}
+}
+
+// checkerStock is a product that only checks lots: it reports size for
+// any lots it is asked about, and records them.
+type checkerStock struct {
+	*fakeStock
+	size  decimal.Decimal
+	asked []gobs.TaxLotID
+}
+
+func (p *checkerStock) ResolveTaxLots(ctx context.Context, serverIDs []string) ([]gobs.TaxLotID, decimal.Decimal, error) {
+	return nil, decimal.Zero, errors.New("not used")
+}
+
+func (p *checkerStock) TaxLotsSize(ctx context.Context, lots []gobs.TaxLotID) (decimal.Decimal, error) {
+	p.asked = lots
+	return p.size, nil
+}
+
+// TestCalledLevelLots: a partly called level names what is left of its
+// buys' lots, each capped to the sell's size, if they still cover it.
+func TestCalledLevelLots(t *testing.T) {
+	lot := gobs.ETradeTaxLotIDPrefix + "KEY/portfolio/42?AccountID=1&OrderNo=7&Symbol=AAPL"
+	capped := gobs.TaxLotID(lot).WithQty(d("15"))
+	for _, tc := range []struct {
+		what  string
+		held  string
+		lots  []gobs.TaxLotID
+		plain bool // a product with no checker
+	}{
+		{what: "covered", held: "15", lots: []gobs.TaxLotID{capped}},
+		{what: "more than covered", held: "25", lots: []gobs.TaxLotID{capped}},
+		{what: "short", held: "10"},
+		{what: "no checker", held: "0", plain: true},
+	} {
+		b := newLotsBuilder(t)
+		b.limiter("BUY", "25", "25", lot)
+		b.assigned("-10", false)
+		e := newTestEnv(t)
+		cs := &checkerStock{fakeStock: e.stock, size: d(tc.held)}
+		if !tc.plain {
+			e.rt.Product = cs
+		}
+		r := b.v.newRunner(context.Background(), e.rt, e.ex)
+		lots, ok := r.sellLots(context.Background(), 0, nil, d("15"))
+		if !ok || !slices.Equal(lots, tc.lots) {
+			t.Errorf("%s: lots %v ok %v, want %v", tc.what, lots, ok, tc.lots)
+		}
+		if !tc.plain && (len(cs.asked) != 1 || cs.asked[0] != capped) {
+			t.Errorf("%s: checked %v", tc.what, cs.asked)
+		}
+	}
 }
 
 func TestSellSourcesNeedsPositions(t *testing.T) {
