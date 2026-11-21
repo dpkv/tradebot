@@ -52,7 +52,7 @@ func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newTestExchange(t *testing.T, g *fakeGateway) *Exchange {
+func newTestExchange(t *testing.T, g http.Handler) *Exchange {
 	old := commissionLookupDelay
 	commissionLookupDelay = time.Millisecond
 	t.Cleanup(func() { commissionLookupDelay = old })

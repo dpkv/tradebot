@@ -4,6 +4,7 @@ package ibkr
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"runtime/debug"
@@ -169,9 +170,25 @@ func (p *Product) LimitSell(ctx context.Context, clientID uuid.UUID, size, price
 	return p.placeOrder(ctx, clientID, "SELL", size, price)
 }
 
+// errIfRejected returns an exchange.ErrRejected error when order is an order
+// IBKR refused. Callers use it before handing back an order they found by
+// client ID: a rejected order still shows up in the gateway's orders list
+// (as "Cancelled") under the client ID of the failed attempt, and returning
+// it as if it were placed made the limiter treat the rejection as a
+// completed order and immediately place another one.
+func errIfRejected(order *internal.Order, clientID uuid.UUID) error {
+	if order == nil || !order.IsRejected() {
+		return nil
+	}
+	return fmt.Errorf("ibkr: order %d with client id %s was rejected by ibkr: %w", order.OrderID, clientID, exchange.ErrRejected)
+}
+
 func (p *Product) placeOrder(ctx context.Context, clientID uuid.UUID, side string, size, price decimal.Decimal) (_ exchange.Order, status error) {
 	// Check persisted orders first — crash recovery path.
 	if order, ok := p.exchange.findOrder(clientID); ok {
+		if err := errIfRejected(order, clientID); err != nil {
+			return nil, err
+		}
 		cstatus, _ := p.clientIDStatusMap.LoadOrStore(clientID, newClientIDStatus())
 		cstatus.mu.Lock()
 		cstatus.order = order
@@ -189,6 +206,12 @@ func (p *Product) placeOrder(ctx context.Context, clientID uuid.UUID, side strin
 			return nil, cstatus.err
 		}
 		if cstatus.order != nil {
+			// goWatchOrderUpdates replaces a cached PlaceOrder error with the
+			// order once it shows up in the orders list, which includes
+			// rejected orders.
+			if err := errIfRejected(cstatus.order, clientID); err != nil {
+				return nil, err
+			}
 			return cstatus.order, nil
 		}
 		// PlaceOrder is still in flight from another goroutine — fall through

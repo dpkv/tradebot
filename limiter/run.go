@@ -22,6 +22,16 @@ const SaveClientIDOffsetSize = 10
 // when the cancel price is breached (reduces cancel churn).
 const CancelOffsetTimeout = time.Hour
 
+// Delays before placing an order again after the exchange rejects one. The
+// delay doubles after each rejection in a row, up to the maximum. A rejection
+// such as IBKR's limit of 15 working orders per side lasts until another
+// order fills or is cancelled, so retrying right away only adds another
+// rejected order.
+const (
+	minRejectBackoff = time.Minute
+	maxRejectBackoff = 15 * time.Minute
+)
+
 func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 	v.runtimeLock.Lock()
 	defer v.runtimeLock.Unlock()
@@ -97,6 +107,30 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 		return err
 	}
 
+	// tryCreate places a new order unless the last attempt was rejected and its
+	// backoff hasn't passed yet. It returns an empty id when no order was
+	// placed. A rejection doesn't end the job: the limiter keeps running and
+	// tries again later with a new client order id.
+	var retryCreateAt time.Time
+	var rejectBackoff time.Duration
+	tryCreate := func(now time.Time) (string, error) {
+		if now.Before(retryCreateAt) {
+			return "", nil
+		}
+		id, err := v.create(localCtx, rt)
+		if errors.Is(err, exchange.ErrRejected) {
+			rejectBackoff = min(max(2*rejectBackoff, minRejectBackoff), maxRejectBackoff)
+			retryCreateAt = now.Add(rejectBackoff)
+			slog.Warn("limit order was rejected by the exchange; will retry later", "limiter", v, "point", v.point, "retry-in", rejectBackoff, "err", err)
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		rejectBackoff = 0
+		return id, nil
+	}
+
 	for p := v.PendingSize(); !p.IsZero(); p = v.PendingSize() {
 		select {
 		case <-ctx.Done():
@@ -159,13 +193,15 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 				}
 				if inRange {
 					if activeOrderID == "" {
-						id, err := v.create(localCtx, rt)
+						id, err := tryCreate(now)
 						if err != nil {
 							return err
 						}
-						dirty++
-						activeOrderID = id
-						activeOrderAt = now
+						if id != "" {
+							dirty++
+							activeOrderID = id
+							activeOrderAt = now
+						}
 					} else {
 						slog.Debug("limiter sell: price in range, waiting for active order to complete", "limiter", v, "price", tickerPrice, "active-order", activeOrderID, "order-age", time.Since(activeOrderAt))
 					}
@@ -193,13 +229,15 @@ func (v *Limiter) Run(ctx context.Context, rt *trader.Runtime) error {
 				}
 				if inRange {
 					if activeOrderID == "" {
-						id, err := v.create(localCtx, rt)
+						id, err := tryCreate(now)
 						if err != nil {
 							return err
 						}
-						dirty++
-						activeOrderID = id
-						activeOrderAt = now
+						if id != "" {
+							dirty++
+							activeOrderID = id
+							activeOrderAt = now
+						}
 					} else {
 						slog.Debug("limiter buy: price in range, waiting for active order to complete", "limiter", v, "price", tickerPrice, "active-order", activeOrderID, "order-age", time.Since(activeOrderAt))
 					}
@@ -269,6 +307,12 @@ func (v *Limiter) create(ctx context.Context, rt *trader.Runtime) (string, error
 		latency = time.Since(s)
 	}
 	if err != nil {
+		if errors.Is(err, exchange.ErrRejected) {
+			// The exchange refused the order, so the client order id is used
+			// up: retrying with it would only return the same rejection.
+			slog.Error("create limit order was rejected by the exchange; client order id is not reused", "limiter", v, "point", v.point, "client-order-id", clientOrderID, "offset", offset, "latency", latency, "err", err)
+			return "", err
+		}
 		if rt.Exchange.CanDedupOnClientUUID() {
 			v.idgen.RevertID()
 			slog.Error("create limit order has failed; client order id is reverted", "limiter", v, "point", v.point, "client-order-id", clientOrderID, "offset", offset, "latency", latency, "err", err)

@@ -40,6 +40,10 @@ type APIOrder struct {
 	// Note: the placement request uses "cOID" but the list response returns "order_ref".
 	ClientOrderID   string `json:"order_ref"`
 	ListingExchange string `json:"listingExchange"`
+	// CCPStatus is the order's status at IBKR's order server. It is "Rejected"
+	// for orders IBKR refused (e.g., the 15 working orders per side limit),
+	// which Status still reports as "Cancelled".
+	CCPStatus string `json:"order_ccp_status"`
 
 	// Unused fields — decoded for completeness but not used by the bot.
 
@@ -75,6 +79,10 @@ type Order struct {
 	Side    string // "BUY" or "SELL"
 
 	Status string // IBKR status, e.g. "Filled", "Submitted", "Cancelled"
+	// CCPStatus is IBKR's order server status (order_ccp_status). It tells a
+	// rejected order apart from a cancelled one, since both have Status
+	// "Cancelled". Empty for orders saved before this field existed.
+	CCPStatus string
 
 	LastExecutionTimeMilli int64
 	// FillObservedAt is the wall-clock time (Unix millis) when this bot first
@@ -140,6 +148,11 @@ func (o *Order) IsDone() bool {
 	return false
 }
 
+// IsRejected reports whether IBKR refused the order instead of accepting it.
+func (o *Order) IsRejected() bool {
+	return strings.EqualFold(o.CCPStatus, "Rejected")
+}
+
 func (o *Order) OrderStatus() string {
 	return o.Status
 }
@@ -166,6 +179,7 @@ func NewOrderFromAPI(a *APIOrder) *Order {
 		SecType:                a.SecType,
 		Side:                   strings.ToUpper(a.Side),
 		Status:                 a.Status,
+		CCPStatus:              a.CCPStatus,
 		LastExecutionTimeMilli: a.LastExecutionTime,
 		LimitPrice:             a.Price,
 		OrderedQty:             a.TotalSize,

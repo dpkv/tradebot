@@ -157,6 +157,9 @@ func (p *OptionsProduct) LimitSellToClose(ctx context.Context, clientID uuid.UUI
 func (p *OptionsProduct) placeOrder(ctx context.Context, clientID uuid.UUID, side string, qty, price decimal.Decimal) (_ exchange.Order, status error) {
 	// Check persisted orders first — crash recovery path.
 	if order, ok := p.exchange.findOrder(clientID); ok {
+		if err := errIfRejected(order, clientID); err != nil {
+			return nil, err
+		}
 		cstatus, _ := p.clientIDStatusMap.LoadOrStore(clientID, newClientIDStatus())
 		cstatus.mu.Lock()
 		cstatus.order = order
@@ -173,6 +176,9 @@ func (p *OptionsProduct) placeOrder(ctx context.Context, clientID uuid.UUID, sid
 			return nil, cstatus.err
 		}
 		if cstatus.order != nil {
+			if err := errIfRejected(cstatus.order, clientID); err != nil {
+				return nil, err
+			}
 			return cstatus.order, nil
 		}
 	}

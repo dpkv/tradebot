@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/ibkr/internal"
 	"github.com/bvk/tradebot/syncmap"
 	"github.com/shopspring/decimal"
@@ -436,10 +437,10 @@ func (c *Client) placeOrderWithSecType(ctx context.Context, ticker string, conid
 				replyID = r.ID
 			}
 			if r.Error != "" {
-				return 0, fmt.Errorf("ibkr: order rejected: %s (status=%s)", r.Error, r.OrderStatus)
+				return 0, fmt.Errorf("ibkr: order rejected: %s (status=%s): %w", r.Error, r.OrderStatus, exchange.ErrRejected)
 			}
 			if r.Text != "" {
-				return 0, fmt.Errorf("ibkr: order rejected: %s (status=%s)", r.Text, r.OrderStatus)
+				return 0, fmt.Errorf("ibkr: order rejected: %s (status=%s): %w", r.Text, r.OrderStatus, exchange.ErrRejected)
 			}
 		}
 		if replyID == "" {

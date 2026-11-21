@@ -16,6 +16,11 @@ import (
 
 var ErrNoFund = errors.New("insufficient fund")
 
+// ErrRejected means the exchange refused an order outright (e.g., a broker
+// risk limit). The client order ID used for the attempt is considered used
+// and must not be reused for a retry.
+var ErrRejected = errors.New("order rejected by exchange")
+
 type Order interface {
 	ServerID() string
 	ClientID() uuid.UUID
