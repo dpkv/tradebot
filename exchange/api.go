@@ -19,6 +19,11 @@ import (
 var (
 	ErrNoFund   = errors.New("insufficient fund")
 	ErrNeedsAck = errors.New("needs user acknowledgment")
+
+	// ErrTaxLotsMismatch is returned by LimitSellTaxLots when the named lots
+	// no longer hold the shares the sell is for, say because another sale
+	// took some of them.
+	ErrTaxLotsMismatch = errors.New("tax lots don't match the sell size")
 )
 
 // RetryAfter wraps an error that should not be retried before At — e.g. an
@@ -191,6 +196,12 @@ type TaxLotResolver interface {
 
 type TaxLotSeller interface {
 	LimitSellTaxLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []gobs.TaxLotID) (Order, error)
+}
+
+// TaxLotChecker reports how many shares the given lots still hold, so a
+// caller can tell before a sell whether the lots still cover it.
+type TaxLotChecker interface {
+	TaxLotsSize(ctx context.Context, lots []gobs.TaxLotID) (decimal.Decimal, error)
 }
 
 // OptionsAccount is implemented by accounts that support options trading.

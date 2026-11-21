@@ -121,11 +121,21 @@ A sell that already has lots is resumed unchanged.
 
 If a lot was sold from outside the greeler (by hand, or by another job's
 untargeted sell), E*TRADE's lots no longer add up to the order size and
-`PlaceLimitOrder` refuses the order. The limiter returns that error and
-the greeler retries it every `retryDelay`, logging each time, which is how
-looper behaves too. The operator fixes it by hand; the greeler does not
-silently fall back to the default method, since that is the mistake this
-story removes.
+`PlaceLimitOrder` refuses the order.
+
+The common way this happens is a call assignment. E*TRADE picks the
+assigned shares by the account's lot method (lowest cost first, say), and
+those are often the cheaper lots of a sibling greel or a looper in the same
+account, not the called greel's own. Retrying forever would leave that
+sibling's shares unsold.
+
+So (revised 2026-11-20, replacing the first version's "no fallback") the
+greeler checks before it names lots: on a product that is an
+`exchange.TaxLotChecker`, if the lots no longer hold the sell's size, the
+sell goes out without lots, logged and sent as a message. If the lots are
+taken while a sell is working, its next order fails with
+`exchange.ErrTaxLotsMismatch`; the greeler drops the sell's lots, sends the
+same message, and retries it without them.
 
 ### 7. What doesn't change
 
@@ -174,5 +184,6 @@ Two units, each its own PR into greel-v1:
    (scenario 4).
 5. **Existing lot-less sells get lots only if they haven't filled yet**
    (scenario 5).
-6. **No fallback to the default lot method when named lots don't match;**
-   the limiter retries and logs, as looper does (scenario 6).
+6. **A sell whose named lots no longer cover it sells by the default lot
+   method and sends a message** (scenario 6; revised from "no fallback"
+   after call assignments were seen to take siblings' lots).
