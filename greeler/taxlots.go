@@ -19,12 +19,15 @@ import (
 // the broker lots of the buys the level took in since it was last flat.
 
 // sources is what one level's sell closes: the buys behind the level's
-// holding, and whether part of that holding has no lots we can name (it
-// came from a put assignment, or a call assignment left the level partly
-// held), in which case the sell names none.
+// holding, whether part of that holding has no lots we can name (it came
+// from a put assignment), in which case the sell names none, and whether a
+// call assignment left the level partly held, in which case the broker
+// chose which of the buys' lots went and the sell names only what is left
+// of them (greel/assignment-lots-story.md scenario 5).
 type sources struct {
 	buys     []*limiter.Limiter
 	unlotted bool
+	called   bool
 }
 
 // lots is every tax lot of the source buys, in order.
@@ -107,7 +110,7 @@ func (v *Greeler) sellSources(level int, stop *limiter.Limiter) (*sources, error
 			} else {
 				sub(part)
 				if held.IsPositive() {
-					s.unlotted = true
+					s.called = true
 				}
 			}
 		}
@@ -160,6 +163,9 @@ func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter,
 	}
 	resolver, ok := r.rt.Product.(exchange.TaxLotResolver)
 	if !ok {
+		if src.called {
+			return nil, true
+		}
 		return src.lots(), true
 	}
 	missing := src.missing()
@@ -184,6 +190,9 @@ func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter,
 		return nil, false
 	}
 	lots := src.lots()
+	if src.called {
+		return r.calledLots(ctx, level, lots, size)
+	}
 	if checker, ok := r.rt.Product.(exchange.TaxLotChecker); ok && len(lots) != 0 {
 		held, err := checker.TaxLotsSize(ctx, lots)
 		if err != nil {
@@ -196,6 +205,34 @@ func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter,
 		}
 	}
 	return lots, true
+}
+
+// calledLots is the lots a level that a call assignment left partly held
+// names for its sell of size: its buys' lots, each capped to size, so the
+// sell draws what is left of them and the broker trims the rest. If they
+// no longer hold size shares between them, or the product can't tell, the
+// sell names none.
+func (r *runner) calledLots(ctx context.Context, level int, lots []gobs.TaxLotID, size decimal.Decimal) ([]gobs.TaxLotID, bool) {
+	v := r.v
+	checker, ok := r.rt.Product.(exchange.TaxLotChecker)
+	if !ok || len(lots) == 0 {
+		slog.Info("level was partly called away and its lots can't be checked; selling by the account's default lot method", "greeler", v, "level", level)
+		return nil, true
+	}
+	capped := make([]gobs.TaxLotID, len(lots))
+	for i, l := range lots {
+		capped[i] = l.WithQty(size)
+	}
+	held, err := checker.TaxLotsSize(ctx, capped)
+	if err != nil {
+		slog.Error("could not check a sell's tax lots (will retry)", "greeler", v, "level", level, "err", err)
+		return nil, false
+	}
+	if held.LessThan(size) {
+		r.lotsGone(ctx, level, size, &held)
+		return nil, true
+	}
+	return capped, true
 }
 
 // lotsGone reports that level's lots no longer hold its sell's size
