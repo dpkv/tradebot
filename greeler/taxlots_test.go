@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -219,10 +220,11 @@ type lotStock struct {
 	resolveOK bool
 	resolves  int
 	sells     [][]gobs.TaxLotID // the lots of each sell placed
+	taken     map[gobs.TaxLotID]bool
 }
 
 func newLotStock(s *fakeStock) *lotStock {
-	return &lotStock{fakeStock: s, resolveOK: true}
+	return &lotStock{fakeStock: s, resolveOK: true, taken: make(map[gobs.TaxLotID]bool)}
 }
 
 func (p *lotStock) ResolveTaxLots(ctx context.Context, serverIDs []string) ([]gobs.TaxLotID, decimal.Decimal, error) {
@@ -245,8 +247,42 @@ func (p *lotStock) ResolveTaxLots(ctx context.Context, serverIDs []string) ([]go
 	return lots, sum, nil
 }
 
+// TaxLotsSize counts each lot as its buy order's fill, unless take took
+// it.
+func (p *lotStock) TaxLotsSize(ctx context.Context, lots []gobs.TaxLotID) (decimal.Decimal, error) {
+	p.lmu.Lock()
+	defer p.lmu.Unlock()
+	return p.lotsSizeLocked(lots), nil
+}
+
+func (p *lotStock) lotsSizeLocked(lots []gobs.TaxLotID) decimal.Decimal {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var sum decimal.Decimal
+	for _, l := range lots {
+		if p.taken[l] {
+			continue
+		}
+		if o := p.find(strings.TrimPrefix(string(l), "lot-")); o != nil {
+			sum = sum.Add(o.FilledSize)
+		}
+	}
+	return sum
+}
+
+// take empties a lot, like a sale by the account's lot method.
+func (p *lotStock) take(lot string) {
+	p.lmu.Lock()
+	defer p.lmu.Unlock()
+	p.taken[gobs.TaxLotID(lot)] = true
+}
+
 func (p *lotStock) LimitSellTaxLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []gobs.TaxLotID) (exchange.Order, error) {
 	p.lmu.Lock()
+	if len(lots) != 0 && !p.lotsSizeLocked(lots).Equal(size) {
+		p.lmu.Unlock()
+		return nil, fmt.Errorf("lots don't add up: %w", exchange.ErrTaxLotsMismatch)
+	}
 	p.sells = append(p.sells, slices.Clone(lots))
 	p.lmu.Unlock()
 	return p.place("SELL", clientID, size, price)
@@ -444,4 +480,54 @@ func TestPutAssignedSharesSellWithoutLots(t *testing.T) {
 	if ls.resolves != 0 {
 		t.Errorf("resolved lots %d times for assigned shares", ls.resolves)
 	}
+}
+
+// TestTakenLotsSellWithoutLots: lots another sale took leave the level's
+// sell to the account's default lot method, whether they were taken
+// before the sell or while it was working.
+func TestTakenLotsSellWithoutLots(t *testing.T) {
+	t.Run("before", func(t *testing.T) {
+		e, ls := newLotEnv(t)
+		v := e.newGreeler(testConfig())
+		r := e.runner(v)
+		buyLevel0(t, e, r)
+		ls.take("lot-order-0")
+		e.step(r, "100.5")
+		waitSellOrder(t, e)
+		checkSellLots(t, ls)
+		if got := v.current().limiters[0][1].TaxLotIDs(); len(got) != 0 {
+			t.Errorf("sell lots = %v, want none", got)
+		}
+	})
+
+	t.Run("while working", func(t *testing.T) {
+		e, ls := newLotEnv(t)
+		v := e.newGreeler(testConfig())
+		r := e.runner(v)
+		buyLevel0(t, e, r)
+
+		// Below the sell's cancel price it places nothing yet.
+		e.stock.setPrice("90")
+		e.step(r, "100.5")
+		sell := v.current().limiters[0][1]
+		if got := sell.TaxLotIDs(); len(got) != 1 {
+			t.Fatalf("sell lots = %v", got)
+		}
+		ls.take("lot-order-0")
+		e.stock.setPrice("100.5")
+		waitLevelDone(t, r, 0)
+		r.reap()
+		if got := sell.TaxLotIDs(); len(got) != 0 {
+			t.Fatalf("sell kept lots %v after they were taken", got)
+		}
+
+		e.clock.Add(retryDelay)
+		e.step(r, "100.5")
+		waitSellOrder(t, e)
+		checkSellLots(t, ls)
+		w := e.reload(v)
+		if got := w.epochs[0].limiters[0][1].TaxLotIDs(); len(got) != 0 {
+			t.Errorf("saved sell lots = %v, want none", got)
+		}
+	})
 }

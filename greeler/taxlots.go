@@ -140,12 +140,14 @@ func (v *Greeler) assignment(ei int, e *epoch) (*gobs.AssignmentFact, error) {
 	return nil, fmt.Errorf("greeler %s epoch %d position is assigned without a fact", v.uid, ei)
 }
 
-// sellLots is the tax lots level's next sell names, stop being the sell
-// when it is resumed. On a product that resolves tax lots, it first
-// resolves the lots of any source buy that lacks them, and reports false
-// if some are still missing: the level skips its sell this time. Shares
-// with no lots to name sell without any.
-func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter) ([]gobs.TaxLotID, bool) {
+// sellLots is the tax lots level's next sell of size names, stop being
+// the sell when it is resumed. On a product that resolves tax lots, it
+// first resolves the lots of any source buy that lacks them, and reports
+// false if some are still missing: the level skips its sell this time.
+// Shares with no lots to name sell without any, and so do lots that no
+// longer hold size shares (another sale, such as a call assignment by the
+// account's lot method, took some of them).
+func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter, size decimal.Decimal) ([]gobs.TaxLotID, bool) {
 	v := r.v
 	src, err := v.sellSources(level, stop)
 	if err != nil {
@@ -181,7 +183,32 @@ func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter)
 	if len(src.missing()) != 0 {
 		return nil, false
 	}
-	return src.lots(), true
+	lots := src.lots()
+	if checker, ok := r.rt.Product.(exchange.TaxLotChecker); ok && len(lots) != 0 {
+		held, err := checker.TaxLotsSize(ctx, lots)
+		if err != nil {
+			slog.Error("could not check a sell's tax lots (will retry)", "greeler", v, "level", level, "err", err)
+			return nil, false
+		}
+		if !held.Equal(size) {
+			r.lotsGone(ctx, level, size, &held)
+			return nil, true
+		}
+	}
+	return lots, true
+}
+
+// lotsGone reports that level's lots no longer hold its sell's size
+// shares (held, when known), so the sell goes by the account's default lot
+// method.
+func (r *runner) lotsGone(ctx context.Context, level int, size decimal.Decimal, held *decimal.Decimal) {
+	v := r.v
+	what := "no longer cover its sell"
+	if held != nil {
+		what = fmt.Sprintf("hold %s shares, not the %s its sell needs", held, size)
+	}
+	slog.Warn("level's tax lots no longer cover its sell; selling by the account's default lot method", "greeler", v, "level", level, "size", size, "lots-hold", held)
+	r.notify(ctx, v.now(), "Greeler %s level %d's tax lots %s; selling %s by the account's default lot method (%s).", v.uid, level, what, v.cfg.ProductID, v.cfg.AccountName)
 }
 
 // lotResumedSell gives level's unfinished limiter l the level's tax lots
@@ -194,7 +221,7 @@ func (r *runner) lotResumedSell(ctx context.Context, now time.Time, level int, l
 	if l.IsBuy() || len(l.TaxLotIDs()) != 0 || !l.FilledSize().IsZero() {
 		return true
 	}
-	lots, ok := r.sellLots(ctx, level, l)
+	lots, ok := r.sellLots(ctx, level, l, l.PendingSize())
 	if !ok {
 		r.retryAt[level] = now.Add(retryDelay)
 		return false

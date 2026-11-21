@@ -412,7 +412,7 @@ func (p *Product) PlaceLimitOrder(ctx context.Context, accountID string, clientO
 			sum = sum.Add(l.RemainingQty)
 		}
 		if !sum.Equal(size) {
-			return nil, fmt.Errorf("etrade: sell with lots size %s did not match lots quantity %s", size, sum)
+			return nil, fmt.Errorf("etrade: sell with lots size %s did not match lots quantity %s: %w", size, sum, exchange.ErrTaxLotsMismatch)
 		}
 	}
 
@@ -826,6 +826,20 @@ func (p *Product) AcknowledeReason() string {
 func (p *Product) AcknowledgeProduct(ctx context.Context, reason string) error {
 	p.productAckReason = "" // FIXME: This must be atomic
 	return nil
+}
+
+// TaxLotsSize is the shares the lots still hold, as PlaceLimitOrder counts
+// them.
+func (p *Product) TaxLotsSize(ctx context.Context, taxLotIDs []gobs.TaxLotID) (decimal.Decimal, error) {
+	lots, err := p.client.ResolveTaxLotIDs(ctx, taxLotIDs)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	var sum decimal.Decimal
+	for _, l := range lots {
+		sum = sum.Add(l.RemainingQty)
+	}
+	return sum, nil
 }
 
 func (p *Product) ResolveTaxLots(ctx context.Context, accountID string, serverIDs []string) ([]gobs.TaxLotID, decimal.Decimal, error) {

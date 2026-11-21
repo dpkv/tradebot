@@ -647,7 +647,7 @@ func (r *runner) armLevels(ctx context.Context, now time.Time, e *epoch, holding
 		var lots []gobs.TaxLotID
 		if pt.Side() == "SELL" {
 			var ok bool
-			if lots, ok = r.sellLots(ctx, i, nil); !ok {
+			if lots, ok = r.sellLots(ctx, i, nil, pt.Size); !ok {
 				r.retryAt[i] = now.Add(retryDelay)
 				continue
 			}
@@ -760,6 +760,13 @@ func (r *runner) finished(level int, rl *running) {
 	slog.Warn("limiter returned without confirming its order is done (will retry)", "greeler", r.v, "level", level, "limiter", rl.limiter, "err", rl.err)
 	r.retryAt[level] = r.v.now().Add(retryDelay)
 	delete(r.settled, rl.limiter)
+	if errors.Is(rl.err, exchange.ErrTaxLotsMismatch) && len(rl.limiter.TaxLotIDs()) != 0 {
+		// Another sale took some of the lots. The sell retries without them;
+		// if it hasn't filled, lotResumedSell names them again only if they
+		// cover it.
+		rl.limiter.SetTaxLotIDs(nil)
+		r.lotsGone(context.WithoutCancel(r.fctx), level, rl.limiter.PendingSize(), nil)
+	}
 	if err := kv.WithReadWriter(context.WithoutCancel(r.fctx), r.rt.Database, rl.limiter.Save); err != nil {
 		slog.Warn("could not save limiter after it failed (ignored)", "greeler", r.v, "level", level, "limiter", rl.limiter, "err", err)
 	}

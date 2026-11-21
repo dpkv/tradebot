@@ -69,6 +69,10 @@ func (ap *AccountProduct) ResolveTaxLots(ctx context.Context, serverIDs []string
 	return ap.product.ResolveTaxLots(ctx, ap.account.AccountID, serverIDs)
 }
 
+func (ap *AccountProduct) TaxLotsSize(ctx context.Context, lots []gobs.TaxLotID) (decimal.Decimal, error) {
+	return ap.product.TaxLotsSize(ctx, lots)
+}
+
 func (ap *AccountProduct) LimitSellTaxLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []gobs.TaxLotID) (exchange.Order, error) {
 	return ap.product.PlaceLimitOrder(ctx, ap.account.AccountID, clientID, "sell", size, price, lots)
 }
