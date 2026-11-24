@@ -5,7 +5,6 @@ package etrade
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -83,15 +82,8 @@ func (c *GetOrder) run(ctx context.Context, args []string) error {
 	}
 	defer client.Close()
 
-	// DescribeOrder shows a multi-instrument order (an option assignment's,
-	// say) by its legs, but can't represent a multi-leg OCA order and reports
-	// it as not found. Print that one as E*TRADE returned it.
-	var order any
-	if o, err := client.DescribeOrder(ctx, c.accountID, c.orderID); err == nil {
-		order = o
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("could not get order %d: %w", c.orderID, err)
-	} else if order, err = client.GetAPIOrder(ctx, c.accountID, c.orderID); err != nil {
+	order, err := client.DescribeOrder(ctx, c.accountID, c.orderID)
+	if err != nil {
 		return fmt.Errorf("could not get order %d: %w", c.orderID, err)
 	}
 

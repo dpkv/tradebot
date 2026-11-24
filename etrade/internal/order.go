@@ -127,16 +127,27 @@ type Order struct {
 	// E*TRADE API response and must be set by the caller.
 	ClientUUID uuid.UUID
 
-	// Legs holds each instrument of a multi-instrument order, such as the
-	// option and stock legs of the order E*TRADE creates for an option
-	// assignment. Only NewOrderLegsFromAPI fills it, for display; such an
-	// order has no single symbol, side or size, so its per-instrument fields
-	// above are zero and it must not be used as an exchange.Order.
+	// Legs holds each instrument of an order NewOrderFromAPI can't represent:
+	// a multi-instrument order, such as the option and stock legs of the
+	// order E*TRADE creates for an option assignment, or a multi-leg OCA
+	// order. Only NewOrderLegsFromAPI fills it, for display; such an order
+	// has no single symbol, side or size, so its per-instrument fields above
+	// are zero and it must not be used as an exchange.Order.
 	Legs []*OrderLeg `json:",omitempty"`
 }
 
-// OrderLeg is one instrument of a multi-instrument order.
+// OrderLeg is one instrument of an order with several. Status through
+// ExecutedTimeMilli come from the instrument's order detail: the legs of a
+// multi-instrument order share them, while each leg of an OCA order has its
+// own.
 type OrderLeg struct {
+	Status            string
+	PriceType         string
+	OrderTerm         string
+	LimitPrice        decimal.Decimal
+	PlacedTimeMilli   int64
+	ExecutedTimeMilli int64
+
 	Symbol       string
 	SecurityType string
 	Side         string
@@ -154,8 +165,15 @@ type OrderLeg struct {
 	CallPut     string
 }
 
-func newOrderLeg(inst *apiInstrument) *OrderLeg {
+func newOrderLeg(d *apiOrderDetail, inst *apiInstrument) *OrderLeg {
 	return &OrderLeg{
+		Status:            d.Status,
+		PriceType:         d.PriceType,
+		OrderTerm:         d.OrderTerm,
+		LimitPrice:        d.LimitPrice,
+		PlacedTimeMilli:   d.PlacedTime,
+		ExecutedTimeMilli: d.ExecutedTime,
+
 		Symbol:       inst.Product.Symbol,
 		SecurityType: inst.Product.SecurityType,
 		Side:         strings.ToUpper(inst.OrderAction),
@@ -216,7 +234,7 @@ func NewOrderFromAPI(accountID string, a *APIOrder) *Order {
 		return skip(a.OrderID, "multi-instrument spread orders are not supported")
 	}
 
-	leg := newOrderLeg(&d.Instrument[0])
+	leg := newOrderLeg(&d, &d.Instrument[0])
 	return &Order{
 		AccountID:         accountID,
 		OrderID:           a.OrderID,
@@ -242,32 +260,40 @@ func NewOrderFromAPI(accountID string, a *APIOrder) *Order {
 	}
 }
 
-// NewOrderLegsFromAPI converts a multi-instrument E*TRADE order, such as an
-// option assignment's, into an Order with one entry in Legs per instrument,
-// and its Commission the legs' total. It is for display only: the returned
-// Order must not be used as an exchange.Order. Returns nil unless the order
-// has a single detail with more than one instrument; NewOrderFromAPI handles
-// the rest.
+// NewOrderLegsFromAPI converts an E*TRADE order that NewOrderFromAPI can't
+// represent into an Order with one entry in Legs per instrument, across all
+// of its order details, and its Commission the legs' total. That covers a
+// multi-instrument order (an option assignment's, say) and a multi-leg OCA
+// order. The order-level detail fields (Status, LimitPrice and so on) are set
+// only when the order has a single detail; an OCA order's are on its legs.
+// It is for display only: the returned Order must not be used as an
+// exchange.Order. Returns nil for an order with at most one detail and one
+// instrument, which NewOrderFromAPI handles.
 func NewOrderLegsFromAPI(accountID string, a *APIOrder) *Order {
-	if len(a.OrderDetail) != 1 || len(a.OrderDetail[0].Instrument) < 2 {
+	if len(a.OrderDetail) == 0 || (len(a.OrderDetail) == 1 && len(a.OrderDetail[0].Instrument) < 2) {
 		return nil
 	}
-	d := a.OrderDetail[0]
 	o := &Order{
-		AccountID:         accountID,
-		OrderID:           a.OrderID,
-		ClientOrderID:     a.ClientOrderID,
-		Status:            d.Status,
-		PriceType:         d.PriceType,
-		OrderTerm:         d.OrderTerm,
-		PlacedTimeMilli:   d.PlacedTime,
-		ExecutedTimeMilli: d.ExecutedTime,
-		LimitPrice:        d.LimitPrice,
+		AccountID:     accountID,
+		OrderID:       a.OrderID,
+		ClientOrderID: a.ClientOrderID,
 	}
-	for i := range d.Instrument {
-		leg := newOrderLeg(&d.Instrument[i])
-		o.Commission = o.Commission.Add(leg.Commission)
-		o.Legs = append(o.Legs, leg)
+	if len(a.OrderDetail) == 1 {
+		d := &a.OrderDetail[0]
+		o.Status = d.Status
+		o.PriceType = d.PriceType
+		o.OrderTerm = d.OrderTerm
+		o.PlacedTimeMilli = d.PlacedTime
+		o.ExecutedTimeMilli = d.ExecutedTime
+		o.LimitPrice = d.LimitPrice
+	}
+	for i := range a.OrderDetail {
+		d := &a.OrderDetail[i]
+		for j := range d.Instrument {
+			leg := newOrderLeg(d, &d.Instrument[j])
+			o.Commission = o.Commission.Add(leg.Commission)
+			o.Legs = append(o.Legs, leg)
+		}
 	}
 	return o
 }

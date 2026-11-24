@@ -48,6 +48,11 @@ func TestNewOrderLegsFromAPI(t *testing.T) {
 	if o.OrderID != 743 || o.Status != "EXECUTED" || o.AccountID != "acct" {
 		t.Errorf("order = %+v", o)
 	}
+	for _, leg := range o.Legs {
+		if leg.Status != "EXECUTED" || leg.PriceType != "MARKET" {
+			t.Errorf("leg detail fields = %+v, want the order's", leg)
+		}
+	}
 	if o.Symbol != "" || !o.FilledQty.IsZero() {
 		t.Errorf("per-instrument fields set on a multi-instrument order: %+v", o)
 	}
@@ -86,5 +91,52 @@ func TestNewOrderLegsFromAPISingleInstrument(t *testing.T) {
 	}
 	if strings.Contains(string(js), "Legs") {
 		t.Errorf("single-instrument order JSON has Legs: %s", js)
+	}
+}
+
+// ocaOrder is a multi-leg OCA order: two details, each with its own status
+// and limit price.
+const ocaOrder = `{
+  "orderId": 800,
+  "OrderDetail": [
+    {"status": "EXECUTED", "priceType": "LIMIT", "limitPrice": 110, "executedTime": 1795410000000,
+     "Instrument": [{"Product": {"symbol": "NVDA", "securityType": "EQ"},
+       "orderAction": "SELL", "orderedQuantity": 10, "filledQuantity": 10,
+       "averageExecutionPrice": 110, "estimatedCommission": 0.1}]},
+    {"status": "CANCELLED", "priceType": "STOP", "limitPrice": 90,
+     "Instrument": [{"Product": {"symbol": "NVDA", "securityType": "EQ"},
+       "orderAction": "SELL", "orderedQuantity": 10}]}
+  ]
+}`
+
+func TestNewOrderLegsFromAPIOCA(t *testing.T) {
+	var a APIOrder
+	if err := json.Unmarshal([]byte(ocaOrder), &a); err != nil {
+		t.Fatal(err)
+	}
+
+	if o := NewOrderFromAPI("acct", &a); o != nil {
+		t.Fatalf("NewOrderFromAPI = %+v, want nil for an OCA order", o)
+	}
+
+	o := NewOrderLegsFromAPI("acct", &a)
+	if o == nil {
+		t.Fatal("NewOrderLegsFromAPI = nil")
+	}
+	if o.OrderID != 800 || o.Status != "" || !o.LimitPrice.IsZero() {
+		t.Errorf("order-level detail fields set on an OCA order: %+v", o)
+	}
+	if !o.Commission.Equal(decimal.RequireFromString("0.1")) {
+		t.Errorf("Commission = %s, want 0.1", o.Commission)
+	}
+	if len(o.Legs) != 2 {
+		t.Fatalf("len(Legs) = %d, want 2", len(o.Legs))
+	}
+	filled, cancelled := o.Legs[0], o.Legs[1]
+	if filled.Status != "EXECUTED" || !filled.LimitPrice.Equal(decimal.NewFromInt(110)) || filled.ExecutedTimeMilli == 0 || !filled.FilledQty.Equal(decimal.NewFromInt(10)) {
+		t.Errorf("first leg = %+v", filled)
+	}
+	if cancelled.Status != "CANCELLED" || cancelled.PriceType != "STOP" || !cancelled.LimitPrice.Equal(decimal.NewFromInt(90)) || !cancelled.FilledQty.IsZero() {
+		t.Errorf("second leg = %+v", cancelled)
 	}
 }

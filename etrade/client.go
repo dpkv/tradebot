@@ -942,7 +942,7 @@ func (c *Client) ListOrders(ctx context.Context, accountID string, filter *ListO
 // GetOrder fetches a single order by its E*TRADE order ID from
 // GET /v1/accounts/{accountIdKey}/orders/{orderId}.
 func (c *Client) GetOrder(ctx context.Context, accountID string, orderID int64) (*internal.Order, error) {
-	apiOrder, err := c.GetAPIOrder(ctx, accountID, orderID)
+	apiOrder, err := c.getAPIOrder(ctx, accountID, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -954,11 +954,11 @@ func (c *Client) GetOrder(ctx context.Context, accountID string, orderID int64) 
 }
 
 // DescribeOrder fetches a single order for display. Unlike GetOrder it also
-// returns a multi-instrument order, such as the one E*TRADE creates for an
-// option assignment, with its instruments in Legs; such an Order must not be
-// used as an exchange.Order.
+// returns orders with several instruments, such as the one E*TRADE creates
+// for an option assignment or a multi-leg OCA order, with their instruments
+// in Legs; such an Order must not be used as an exchange.Order.
 func (c *Client) DescribeOrder(ctx context.Context, accountID string, orderID int64) (*internal.Order, error) {
-	apiOrder, err := c.GetAPIOrder(ctx, accountID, orderID)
+	apiOrder, err := c.getAPIOrder(ctx, accountID, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -972,11 +972,11 @@ func (c *Client) DescribeOrder(ctx context.Context, accountID string, orderID in
 	return order, nil
 }
 
-// GetAPIOrder fetches a single order as E*TRADE returns it, without
+// getAPIOrder fetches a single order as E*TRADE returns it, without
 // converting it to an Order. Unlike GetOrder it works for orders that Order
 // can't represent, such as the multi-instrument order E*TRADE creates for an
 // option assignment.
-func (c *Client) GetAPIOrder(ctx context.Context, accountID string, orderID int64) (*internal.APIOrder, error) {
+func (c *Client) getAPIOrder(ctx context.Context, accountID string, orderID int64) (*internal.APIOrder, error) {
 	creds := c.creds.Load()
 	accountIDKey, err := creds.GetAccountIDKey(accountID)
 	if err != nil {
