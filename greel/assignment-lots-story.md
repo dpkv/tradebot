@@ -39,7 +39,18 @@ and look at that lot's `positionLotId`, `orderNo`, `originalQty`,
   say) or the day we wrote the put?
 - Is it one lot of 100 shares?
 
-Scenario 3's matching rule waits for these answers. Scenarios 2, 4 and 5
+Scenario 3's matching rule waits for these answers.
+
+**What the first assignment showed (2026-11-24).** An NVDA 167.5 put, sold
+for 1.90 with a 0.52 fee (order 742), was assigned on 2026-11-23. The
+portfolio showed one lot: `originalQty` 100, `acquiredDate` midnight New
+York time on 2026-11-23, `price` 165.6052, and `orderNo` 743. That price is
+the strike less the premium kept net of fees, per share: 167.5 − (190 −
+0.52) / 100. Order 743 is E*TRADE's assignment order, which `get-order`
+can't read (it skips it as a multi-instrument order), so it can't tie the
+lot to the position. The transactions were "Option Assigned" (OPTN, which
+`settlementKind` already reads as assigned) and "Bought" (EQ, 100 at
+167.5, described as "PUT ASN"). Scenarios 2, 4 and 5
 don't, and their code can go first.
 
 ### 2. Naming a lot without an order number, and part of a lot
@@ -89,12 +100,20 @@ type AssignedLotFinder interface {
 ```
 
 It refreshes the portfolio and looks among the symbol's lots for exactly
-one that matches the assignment: `originalQty` equal to the shares, an
-`acquiredDate` near the assignment's `at`, and a `price` matching the
-strike (or the strike less the premium, per scenario 1). It also leaves
-out every lot that an order number of ours already resolves to. If no lot
-or more than one lot matches, it returns an error and says why. The exact
-rule is filled in once scenario 1's answers are in.
+one that matches the assignment: `originalQty` equal to the shares, some
+still held, an `acquiredDate` within three days of the assignment's New
+York date, and a `price` within a cent of the expected basis. The greeler
+passes the basis, since it knows the position's premiums: the strike less
+the premium kept net of fees per share. If no lot or more than one lot
+matches, it returns an error and says why. The interface takes the basis
+in place of the fact:
+
+```go
+FindAssignedLot(ctx context.Context, shares decimal.Decimal, at time.Time, basis decimal.Decimal) (gobs.TaxLotID, error)
+```
+
+It names the lot by `PositionLotID`, which is exact even though this lot
+also has an `orderNo`.
 
 ### 4. Where the greeler keeps it
 

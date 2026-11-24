@@ -198,6 +198,14 @@ type TaxLotSeller interface {
 	LimitSellTaxLots(ctx context.Context, clientID uuid.UUID, size, price decimal.Decimal, lots []gobs.TaxLotID) (Order, error)
 }
 
+// AssignedLotFinder finds the lot a put assignment put into the account:
+// shares of the product acquired around at whose cost is basis per share
+// (the strike less the premium kept, net of fees). It returns an error when
+// no single lot matches.
+type AssignedLotFinder interface {
+	FindAssignedLot(ctx context.Context, shares decimal.Decimal, at time.Time, basis decimal.Decimal) (gobs.TaxLotID, error)
+}
+
 // TaxLotChecker reports how many shares the given lots still hold, so a
 // caller can tell before a sell whether the lots still cover it.
 type TaxLotChecker interface {
