@@ -953,6 +953,25 @@ func (c *Client) GetOrder(ctx context.Context, accountID string, orderID int64) 
 	return order, nil
 }
 
+// DescribeOrder fetches a single order for display. Unlike GetOrder it also
+// returns a multi-instrument order, such as the one E*TRADE creates for an
+// option assignment, with its instruments in Legs; such an Order must not be
+// used as an exchange.Order.
+func (c *Client) DescribeOrder(ctx context.Context, accountID string, orderID int64) (*internal.Order, error) {
+	apiOrder, err := c.GetAPIOrder(ctx, accountID, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if order := internal.NewOrderLegsFromAPI(accountID, apiOrder); order != nil {
+		return order, nil
+	}
+	order := internal.NewOrderFromAPI(accountID, apiOrder)
+	if order == nil {
+		return nil, os.ErrNotExist
+	}
+	return order, nil
+}
+
 // GetAPIOrder fetches a single order as E*TRADE returns it, without
 // converting it to an Order. Unlike GetOrder it works for orders that Order
 // can't represent, such as the multi-instrument order E*TRADE creates for an
