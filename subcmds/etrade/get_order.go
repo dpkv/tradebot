@@ -82,7 +82,7 @@ func (c *GetOrder) run(ctx context.Context, args []string) error {
 	}
 	defer client.Close()
 
-	order, err := client.DescribeOrder(ctx, c.accountID, c.orderID)
+	order, err := client.GetOrder(ctx, c.accountID, c.orderID)
 	if err != nil {
 		return fmt.Errorf("could not get order %d: %w", c.orderID, err)
 	}

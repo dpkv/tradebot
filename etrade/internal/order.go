@@ -130,9 +130,9 @@ type Order struct {
 	// Legs holds each instrument of an order NewOrderFromAPI can't represent:
 	// a multi-instrument order, such as the option and stock legs of the
 	// order E*TRADE creates for an option assignment, or a multi-leg OCA
-	// order. Only NewOrderLegsFromAPI fills it, for display; such an order
-	// has no single symbol, side or size, so its per-instrument fields above
-	// are zero and it must not be used as an exchange.Order.
+	// order. Only NewOrderLegsFromAPI fills it (Client.GetOrder returns such
+	// orders). Such an order has no single symbol, side or size, so its
+	// per-instrument fields above are zero.
 	Legs []*OrderLeg `json:",omitempty"`
 }
 
@@ -266,8 +266,8 @@ func NewOrderFromAPI(accountID string, a *APIOrder) *Order {
 // multi-instrument order (an option assignment's, say) and a multi-leg OCA
 // order. The order-level detail fields (Status, LimitPrice and so on) are set
 // only when the order has a single detail; an OCA order's are on its legs.
-// It is for display only: the returned Order must not be used as an
-// exchange.Order. Returns nil for an order with at most one detail and one
+// Its per-instrument fields are zero, so as an exchange.Order it reads as
+// unfilled. Returns nil for an order with at most one detail and one
 // instrument, which NewOrderFromAPI handles.
 func NewOrderLegsFromAPI(accountID string, a *APIOrder) *Order {
 	if len(a.OrderDetail) == 0 || (len(a.OrderDetail) == 1 && len(a.OrderDetail[0].Instrument) < 2) {
