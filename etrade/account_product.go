@@ -5,6 +5,7 @@ package etrade
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/bvk/tradebot/etrade/autologin"
 	"github.com/bvk/tradebot/exchange"
@@ -67,6 +68,10 @@ func (ap *AccountProduct) Cancel(ctx context.Context, serverID string) error {
 
 func (ap *AccountProduct) ResolveTaxLots(ctx context.Context, serverIDs []string) ([]gobs.TaxLotID, decimal.Decimal, error) {
 	return ap.product.ResolveTaxLots(ctx, ap.account.AccountID, serverIDs)
+}
+
+func (ap *AccountProduct) FindAssignedLot(ctx context.Context, shares decimal.Decimal, at time.Time, basis decimal.Decimal) (gobs.TaxLotID, error) {
+	return ap.product.FindAssignedLot(ctx, ap.account.AccountID, shares, at, basis)
 }
 
 func (ap *AccountProduct) TaxLotsSize(ctx context.Context, lots []gobs.TaxLotID) (decimal.Decimal, error) {
