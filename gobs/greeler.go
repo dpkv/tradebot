@@ -62,6 +62,10 @@ type GreelEpoch struct {
 
 	PositionID string // wheel epochs only
 
+	// AssignedLot is the tax lot a put assignment brought in, once the
+	// greeler has found it; wheel epochs whose put was assigned only.
+	AssignedLot TaxLotID
+
 	// The dwell clock changes only while this is the last epoch.
 	PendingFlip   string // "", "wheel-put", "wheel-call" or "grid"
 	PendingFlipAt time.Time

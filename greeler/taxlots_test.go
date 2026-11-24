@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"slices"
 	"strings"
@@ -97,14 +98,14 @@ func (b *lotsBuilder) assigned(shares string, loaded bool) {
 	b.v.epochs = append(b.v.epochs, e, b.v.newGridEpoch(b.v.now()))
 }
 
-func (b *lotsBuilder) check(what string, stop *limiter.Limiter, unlotted bool, buys []*limiter.Limiter, lots ...string) {
+func (b *lotsBuilder) check(what string, stop *limiter.Limiter, assigned bool, buys []*limiter.Limiter, lots ...string) {
 	b.t.Helper()
 	s, err := b.v.sellSources(0, stop)
 	if err != nil {
 		b.t.Fatalf("%s: %v", what, err)
 	}
-	if s.unlotted != unlotted {
-		b.t.Errorf("%s: unlotted = %v, want %v", what, s.unlotted, unlotted)
+	if got := len(s.assigned) != 0; got != assigned {
+		b.t.Errorf("%s: assigned = %v, want %v", what, got, assigned)
 	}
 	if !slices.Equal(s.buys, buys) {
 		b.t.Errorf("%s: buys = %v, want %v", what, s.buys, buys)
@@ -280,10 +281,12 @@ type lotStock struct {
 	resolves  int
 	sells     [][]gobs.TaxLotID // the lots of each sell placed
 	taken     map[gobs.TaxLotID]bool
+
+	assignedQty decimal.Decimal // what the assignment's lot still holds
 }
 
 func newLotStock(s *fakeStock) *lotStock {
-	return &lotStock{fakeStock: s, resolveOK: true, taken: make(map[gobs.TaxLotID]bool)}
+	return &lotStock{fakeStock: s, resolveOK: true, taken: make(map[gobs.TaxLotID]bool), assignedQty: decimal.NewFromInt(100)}
 }
 
 func (p *lotStock) ResolveTaxLots(ctx context.Context, serverIDs []string) ([]gobs.TaxLotID, decimal.Decimal, error) {
@@ -322,11 +325,59 @@ func (p *lotStock) lotsSizeLocked(lots []gobs.TaxLotID) decimal.Decimal {
 		if p.taken[l] {
 			continue
 		}
+		if strings.HasPrefix(string(l), gobs.ETradeTaxLotIDPrefix) {
+			// An assignment's lot, capped by its Qty.
+			u, _ := url.Parse(string(l))
+			size := p.assignedQty
+			if q := u.Query().Get("Qty"); q != "" {
+				size = decimal.Min(size, decimal.RequireFromString(q))
+			}
+			sum = sum.Add(size)
+			continue
+		}
 		if o := p.find(strings.TrimPrefix(string(l), "lot-")); o != nil {
 			sum = sum.Add(o.FilledSize)
 		}
 	}
 	return sum
+}
+
+// testAssignedLot is the lot finderStock finds.
+const testAssignedLot = gobs.ETradeTaxLotIDPrefix + "KEY/portfolio/42?AccountID=1&PositionLotID=9&Symbol=AAPL"
+
+// finderStock is a lotStock that also finds assignment lots, once found
+// is set.
+type finderStock struct {
+	*lotStock
+
+	fmu    sync.Mutex
+	found  bool
+	finds  int
+	shares decimal.Decimal
+	basis  decimal.Decimal
+}
+
+func (p *finderStock) FindAssignedLot(ctx context.Context, shares decimal.Decimal, at time.Time, basis decimal.Decimal) (gobs.TaxLotID, error) {
+	p.fmu.Lock()
+	defer p.fmu.Unlock()
+	p.finds++
+	p.shares, p.basis = shares, basis
+	if !p.found {
+		return "", errors.New("lot is not posted yet")
+	}
+	return testAssignedLot, nil
+}
+
+func (p *finderStock) setFound() {
+	p.fmu.Lock()
+	defer p.fmu.Unlock()
+	p.found = true
+}
+
+func (p *finderStock) numFinds() int {
+	p.fmu.Lock()
+	defer p.fmu.Unlock()
+	return p.finds
 }
 
 // take empties a lot, like a sale by the account's lot method.
@@ -589,4 +640,97 @@ func TestTakenLotsSellWithoutLots(t *testing.T) {
 			t.Errorf("saved sell lots = %v, want none", got)
 		}
 	})
+}
+
+// assignPut flips v to a put, assigns it with a premium of 150 less a fee
+// of 1, and steps back to grid mode with spot at 99.
+func assignPut(t *testing.T, e *testEnv, v *Greeler, r *runner) {
+	t.Helper()
+	pos := flipToPut(t, e, v, r)
+	pos.mu.Lock()
+	pos.premiums = []*optpos.Premium{{At: time.Now(), Value: d("150"), Fee: d("1")}}
+	pos.outcome, pos.outcomeAt = "assigned", e.clock.Now()
+	pos.assignment = &gobs.AssignmentFact{Key: "tx1", Shares: d("100"), Price: d("100")}
+	pos.mu.Unlock()
+	e.step(r, "99")
+	if v.Mode() != "grid" {
+		t.Fatalf("mode %s after assignment", v.Mode())
+	}
+	e.stock.setPrice("99")
+}
+
+func newFinderEnv(t *testing.T) (*testEnv, *finderStock) {
+	e := newTestEnv(t)
+	fs := &finderStock{lotStock: newLotStock(e.stock)}
+	e.rt.Product = fs
+	return e, fs
+}
+
+// TestAssignedSharesSellFromTheirLot: each level holding assigned shares
+// sells its part of the assignment's lot, found once and saved.
+func TestAssignedSharesSellFromTheirLot(t *testing.T) {
+	e, fs := newFinderEnv(t)
+	fs.setFound()
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	assignPut(t, e, v, r)
+
+	e.step(r, "99")
+	waitFor(t, "three sells", func() bool { return len(e.stock.live()) == 3 })
+	want := gobs.TaxLotID(testAssignedLot).WithQty(d("25"))
+	sells := fs.sellLots()
+	if len(sells) != 3 {
+		t.Fatalf("sells = %v", sells)
+	}
+	for _, s := range sells {
+		if len(s) != 1 || s[0] != want {
+			t.Errorf("sell lots = %v, want %s", s, want)
+		}
+	}
+	if fs.numFinds() != 1 || !fs.shares.Equal(d("100")) || !fs.basis.Equal(d("98.51")) {
+		t.Errorf("finds %d shares %s basis %s; want 1, 100 and 98.51", fs.numFinds(), fs.shares, fs.basis)
+	}
+	w := e.reload(v)
+	if got := w.epochs[1].AssignedLot; got != testAssignedLot {
+		t.Errorf("saved assigned lot = %q", got)
+	}
+}
+
+// TestAssignedSharesWaitForTheirLot: levels holding assigned shares wait
+// for the lot for a trading day, then sell by the default lot method.
+func TestAssignedSharesWaitForTheirLot(t *testing.T) {
+	e, fs := newFinderEnv(t)
+	v := e.newGreeler(testConfig())
+	r := e.runner(v)
+	assignPut(t, e, v, r)
+
+	e.step(r, "99")
+	if n := len(e.stock.live()); n != 0 {
+		t.Fatalf("%d orders placed before the lot was found", n)
+	}
+	if fs.numFinds() == 0 {
+		t.Fatal("never looked for the lot")
+	}
+
+	// The test clock starts on a Monday; a day and a retry later, the
+	// levels give up waiting.
+	e.clock.Add(25 * time.Hour)
+	e.step(r, "99")
+	waitFor(t, "three sells", func() bool { return len(e.stock.live()) == 3 })
+	for _, s := range fs.sellLots() {
+		if len(s) != 0 {
+			t.Errorf("sell lots = %v, want none", s)
+		}
+	}
+}
+
+func TestAssignedLotDeadline(t *testing.T) {
+	fri := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
+	if got := assignedLotDeadline(fri); got.Weekday() != time.Monday || got.Hour() != 16 {
+		t.Errorf("Friday deadline = %v", got)
+	}
+	mon := time.Date(2026, 11, 23, 16, 0, 0, 0, time.UTC)
+	if got := assignedLotDeadline(mon); !got.Equal(mon.Add(24 * time.Hour)) {
+		t.Errorf("Monday deadline = %v", got)
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/limiter"
+	"github.com/bvk/tradebot/optpos"
 	"github.com/bvkgo/kv"
 	"github.com/shopspring/decimal"
 )
@@ -19,15 +20,21 @@ import (
 // the broker lots of the buys the level took in since it was last flat.
 
 // sources is what one level's sell closes: the buys behind the level's
-// holding, whether part of that holding has no lots we can name (it came
-// from a put assignment), in which case the sell names none, and whether a
-// call assignment left the level partly held, in which case the broker
-// chose which of the buys' lots went and the sell names only what is left
-// of them (greel/assignment-lots-story.md scenario 5).
+// holding, its parts of put assignments, which sell from the assignment's
+// lot (greel/assignment-lots-story.md scenario 4), and whether a call
+// assignment left the level partly held, in which case the broker chose
+// which of the buys' lots went and the sell names only what is left of
+// them (scenario 5).
 type sources struct {
 	buys     []*limiter.Limiter
-	unlotted bool
+	assigned []*assignedShare
 	called   bool
+}
+
+// assignedShare is a level's part of a put assignment's shares.
+type assignedShare struct {
+	epoch *epoch
+	part  decimal.Decimal
 }
 
 // lots is every tax lot of the source buys, in order.
@@ -106,7 +113,7 @@ func (v *Greeler) sellSources(level int, stop *limiter.Limiter) (*sources, error
 			}
 			if fact.Shares.IsPositive() {
 				add(part)
-				s.unlotted = true
+				s.assigned = append(s.assigned, &assignedShare{epoch: e, part: part})
 			} else {
 				sub(part)
 				if held.IsPositive() {
@@ -157,13 +164,9 @@ func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter,
 		slog.Error("could not find the buys a sell closes (will retry)", "greeler", v, "level", level, "err", err)
 		return nil, false
 	}
-	if src.unlotted {
-		slog.Info("level holds shares with no tax lots to name; selling by the account's default lot method", "greeler", v, "level", level)
-		return nil, true
-	}
 	resolver, ok := r.rt.Product.(exchange.TaxLotResolver)
 	if !ok {
-		if src.called {
+		if src.called || len(src.assigned) != 0 {
 			return nil, true
 		}
 		return src.lots(), true
@@ -193,6 +196,16 @@ func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter,
 	if src.called {
 		return r.calledLots(ctx, level, lots, size)
 	}
+	if len(src.assigned) != 0 {
+		assigned, ok, found := r.assignedLots(ctx, level, src.assigned)
+		if !ok {
+			return nil, false
+		}
+		if !found {
+			return nil, true
+		}
+		lots = append(lots, assigned...)
+	}
 	if checker, ok := r.rt.Product.(exchange.TaxLotChecker); ok && len(lots) != 0 {
 		held, err := checker.TaxLotsSize(ctx, lots)
 		if err != nil {
@@ -205,6 +218,93 @@ func (r *runner) sellLots(ctx context.Context, level int, stop *limiter.Limiter,
 		}
 	}
 	return lots, true
+}
+
+// assignedLotDeadline is when a put assignment at at stops waiting for its
+// lot to show up in the portfolio and its levels sell by the account's
+// default lot method: one trading day later, skipping a weekend.
+func assignedLotDeadline(at time.Time) time.Time {
+	d := at.Add(24 * time.Hour)
+	for d.Weekday() == time.Saturday || d.Weekday() == time.Sunday {
+		d = d.Add(24 * time.Hour)
+	}
+	return d
+}
+
+// assignedLots is the tax lots level's parts of put assignments sell from:
+// each assignment's lot, capped to the level's part. It finds and saves an
+// assignment's lot the first time it is needed. ok is false when the level
+// should wait and try again; found is false when the sell should name no
+// lots, because the product can't find them or the wait ran out.
+func (r *runner) assignedLots(ctx context.Context, level int, shares []*assignedShare) (lots []gobs.TaxLotID, ok, found bool) {
+	v := r.v
+	finder, isFinder := r.rt.Product.(exchange.AssignedLotFinder)
+	for _, a := range shares {
+		v.mu.Lock()
+		lot := a.epoch.AssignedLot
+		v.mu.Unlock()
+		if lot == "" {
+			if !isFinder {
+				slog.Info("level holds assigned shares the product can't find lots for; selling by the account's default lot method", "greeler", v, "level", level)
+				return nil, true, false
+			}
+			var err error
+			if lot, err = r.findAssignedLot(ctx, finder, a.epoch); err != nil {
+				facts := v.epochFacts(a.epoch)
+				if deadline := assignedLotDeadline(facts.OutcomeAt); v.now().Before(deadline) {
+					slog.Warn("could not find an assignment's tax lot yet (will retry)", "greeler", v, "level", level, "position", a.epoch.PositionID, "until", deadline, "err", err)
+					return nil, false, false
+				}
+				slog.Warn("could not find an assignment's tax lot; selling by the account's default lot method", "greeler", v, "level", level, "position", a.epoch.PositionID, "err", err)
+				r.notify(ctx, v.now(), "Greeler %s could not find the tax lot of its assignment (%v); level %d sells %s by the account's default lot method (%s).", v.uid, err, level, v.cfg.ProductID, v.cfg.AccountName)
+				return nil, true, false
+			}
+		}
+		lots = append(lots, lot.WithQty(a.part))
+	}
+	return lots, true, true
+}
+
+// findAssignedLot looks up wheel epoch e's assignment lot and saves it on
+// the epoch.
+func (r *runner) findAssignedLot(ctx context.Context, finder exchange.AssignedLotFinder, e *epoch) (gobs.TaxLotID, error) {
+	v := r.v
+	facts := v.epochFacts(e)
+	if facts == nil || facts.Assignment == nil {
+		return "", fmt.Errorf("position %s has no assignment", e.PositionID)
+	}
+	shares := facts.Assignment.Shares
+	var kept decimal.Decimal
+	for _, p := range facts.Premiums {
+		kept = kept.Add(p.Value).Sub(p.Fee)
+	}
+	basis := facts.Assignment.Price.Sub(kept.Div(shares))
+	lot, err := finder.FindAssignedLot(ctx, shares, facts.OutcomeAt, basis)
+	if err != nil {
+		return "", err
+	}
+	v.mu.Lock()
+	e.AssignedLot = lot
+	v.mu.Unlock()
+	if err := kv.WithReadWriter(ctx, r.rt.Database, v.Save); err != nil {
+		v.mu.Lock()
+		e.AssignedLot = ""
+		v.mu.Unlock()
+		return "", err
+	}
+	slog.Info("found an assignment's tax lot", "greeler", v, "position", e.PositionID, "lot", lot, "basis", basis)
+	return lot, nil
+}
+
+// epochFacts is wheel epoch e's position facts: from the position once Run
+// has loaded it, else the saved ones.
+func (v *Greeler) epochFacts(e *epoch) *optpos.Facts {
+	if e.position != nil {
+		return e.position.Facts()
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return e.facts
 }
 
 // calledLots is the lots a level that a call assignment left partly held
