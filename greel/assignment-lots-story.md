@@ -156,6 +156,28 @@ greeler logs it, as today. This needs nothing from scenario 1.
 
 ---
 
+### 6. Future enhancement: claims kept for the whole account
+
+The lookup in scenario 3 is local: each greeler searches the portfolio on
+its own. Two greels whose puts are assigned on the same day with the same
+basis (the same strike and premium, in one ladder or two) see two lots that
+look the same. Today that is an error for both, and after the wait both
+sell by the default method. Worse, if only one of the two lots has posted,
+the first greeler to look takes it, and the other one then sees two
+matches.
+
+Lots with the same basis and acquired date are the same for tax, so it
+doesn't matter which greel gets which. What matters is that no two
+assignments claim the same shares. The robust version keeps claims for the
+whole account: a record in the E*TRADE product's database, kept per lot,
+of how many of its shares each position has claimed. The finder hands each
+assignment unclaimed shares, capped with `Qty`, and splits a lot between
+claimants when it holds several contracts' shares. A claimant that asks
+again gets its own claim back. Claims are pruned once their lot is gone.
+
+Not scheduled: Deepak chose (2026-11-24) to ship the local lookup first
+and do this as a later enhancement.
+
 ## Code
 
 Four units, each its own PR into greel-v1:
