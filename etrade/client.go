@@ -372,7 +372,7 @@ type Client struct {
 
 	// settlementAlerted holds the transaction IDs already alerted as unknown
 	// settlement types, so each alerts once per process.
-	settlementAlerted syncmap.Map[int64, bool]
+	settlementAlerted syncmap.Map[string, bool]
 
 	// portfolioMu serializes the read-modify-write updates to portfolioMap and
 	// lotDetailMap in updatePortfolio, which can run from both goTrackPortfolio

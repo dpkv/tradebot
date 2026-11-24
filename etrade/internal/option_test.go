@@ -104,11 +104,11 @@ func TestNewOptionQuoteFromAPI(t *testing.T) {
 
 const transactionsJSON = `{"TransactionListResponse": {
   "Transaction": [{
-    "transactionId": 26112100001, "accountId": "12345678", "transactionDate": 1766120400000,
-    "amount": 0, "description": "OPTION ASSIGNMENT PUT AAPL 12/18/26 200",
+    "transactionId": "26112100001", "accountId": "12345678", "transactionDate": "1766120400000",
+    "postDate": "", "amount": 0, "description": "OPTION ASSIGNMENT PUT AAPL 12/18/26 200",
     "transactionType": "Option Assignment",
     "brokerage": {"product": {"symbol": "AAPL", "securityType": "OPTN", "callPut": "PUT",
-      "expiryYear": 2026, "expiryMonth": 12, "expiryDay": 18, "strikePrice": 200},
+      "expiryYear": "2026", "expiryMonth": 12, "expiryDay": 18, "strikePrice": 200},
       "quantity": 1, "price": 0, "fee": 0.15}
   }, {
     "transactionId": 26112100002, "accountId": "12345678", "transactionDate": 1766120400000,
@@ -130,10 +130,10 @@ func TestNewTransactionFromAPI(t *testing.T) {
 		t.Fatalf("response = %+v", resp)
 	}
 	tx := NewTransactionFromAPI(resp.Transaction[0])
-	if tx.ID != 26112100001 || tx.Type != "Option Assignment" || tx.SecurityType != "OPTN" || tx.CallPut != "PUT" || tx.Year != 2026 || !tx.Strike.Equal(d("200")) || !tx.Quantity.Equal(d("1")) || !tx.Fee.Equal(d("0.15")) {
+	if tx.ID != "26112100001" || tx.DateMilli != 1766120400000 || tx.Type != "Option Assignment" || tx.SecurityType != "OPTN" || tx.CallPut != "PUT" || tx.Year != 2026 || !tx.Strike.Equal(d("200")) || !tx.Quantity.Equal(d("1")) || !tx.Fee.Equal(d("0.15")) {
 		t.Errorf("option transaction = %+v", tx)
 	}
-	if eq := NewTransactionFromAPI(resp.Transaction[1]); eq.SecurityType != "EQ" || eq.CallPut != "" || !eq.Quantity.Equal(d("100")) {
+	if eq := NewTransactionFromAPI(resp.Transaction[1]); eq.ID != "26112100002" || eq.SecurityType != "EQ" || eq.CallPut != "" || !eq.Quantity.Equal(d("100")) {
 		t.Errorf("equity transaction = %+v", eq)
 	}
 }
