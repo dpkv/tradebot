@@ -430,7 +430,7 @@ func TestListTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(txs) != 2 || txs[1].ID != 2 || txs[1].Type != "Option Assignment" || txs[1].SecurityType != "OPTN" || !txs[1].Strike.Equal(decimal.NewFromInt(200)) {
+	if len(txs) != 2 || txs[1].ID != "2" || txs[1].Type != "Option Assignment" || txs[1].SecurityType != "OPTN" || !txs[1].Strike.Equal(decimal.NewFromInt(200)) {
 		t.Fatalf("transactions = %+v", txs)
 	}
 }

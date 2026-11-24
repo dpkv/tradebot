@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -263,7 +262,7 @@ func (c *Client) getOptionsSettlement(ctx context.Context, account autologin.Acc
 		r.Contracts = r.Contracts.Add(tx.Quantity.Abs())
 		r.Fee = r.Fee.Add(tx.Fee)
 		if !at.Before(r.At) {
-			r.Key, r.At = strconv.FormatInt(tx.ID, 10), at
+			r.Key, r.At = tx.ID, at
 		}
 	}
 	if r, ok := results[settlementAssigned]; ok {
@@ -285,7 +284,7 @@ func (c *Client) alertUnknownSettlement(ctx context.Context, account autologin.A
 	slog.Warn("etrade: unknown transaction type on an option contract; settlement stays open until checked",
 		"account", account.AccountName, "contract", contractID, "transaction-id", tx.ID, "type", tx.Type, "description", tx.Description)
 	if c.opts.Messenger != nil {
-		c.opts.Messenger.SendMessage(ctx, time.Now(), "E*TRADE: unknown transaction type %q on option %s in account %s (transaction %d); its settlement stays open until checked",
+		c.opts.Messenger.SendMessage(ctx, time.Now(), "E*TRADE: unknown transaction type %q on option %s in account %s (transaction %s); its settlement stays open until checked",
 			tx.Type, contractID, account.AccountName, tx.ID)
 	}
 }

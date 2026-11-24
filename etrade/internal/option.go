@@ -232,9 +232,9 @@ type apiTransactionProduct struct {
 	Symbol       string          `json:"symbol"`
 	SecurityType string          `json:"securityType"`
 	CallPut      string          `json:"callPut"`
-	ExpiryYear   int             `json:"expiryYear"`
-	ExpiryMonth  int             `json:"expiryMonth"`
-	ExpiryDay    int             `json:"expiryDay"`
+	ExpiryYear   Int64           `json:"expiryYear"`
+	ExpiryMonth  Int64           `json:"expiryMonth"`
+	ExpiryDay    Int64           `json:"expiryDay"`
 	StrikePrice  decimal.Decimal `json:"strikePrice"`
 }
 
@@ -248,21 +248,23 @@ type apiTransactionBrokerage struct {
 	SettlementCurrency string `json:"settlementCurrency"`
 	PaymentCurrency    string `json:"paymentCurrency"`
 	DisplaySymbol      string `json:"displaySymbol"`
-	SettlementDate     int64  `json:"settlementDate"`
+	SettlementDate     Int64  `json:"settlementDate"`
 }
 
-// APITransaction is one entry of TransactionListResponse.
+// APITransaction is one entry of TransactionListResponse. E*TRADE documents
+// the integer fields as numbers but sends transactionId as a string, so all of
+// them accept either.
 type APITransaction struct {
-	TransactionID   int64                   `json:"transactionId"`
-	AccountID       string                  `json:"accountId"`
-	TransactionDate int64                   `json:"transactionDate"` // Unix milliseconds
+	TransactionID   NumberString            `json:"transactionId"`
+	AccountID       NumberString            `json:"accountId"`
+	TransactionDate Int64                   `json:"transactionDate"` // Unix milliseconds
 	TransactionType string                  `json:"transactionType"`
 	Description     string                  `json:"description"`
 	Amount          decimal.Decimal         `json:"amount"`
 	Brokerage       apiTransactionBrokerage `json:"brokerage"`
 
 	// Unused: post date, memo, image flag and institution type.
-	PostDate  int64  `json:"postDate"`
+	PostDate  Int64  `json:"postDate"`
 	Memo      string `json:"memo"`
 	ImageFlag bool   `json:"imageFlag"`
 	InstType  string `json:"instType"`
@@ -276,14 +278,14 @@ type APITransactionListResponse struct {
 	MoreTransactions bool              `json:"moreTransactions"`
 
 	// Unused: counts for this page and the whole range.
-	TransactionCount int64 `json:"transactionCount"`
-	TotalCount       int64 `json:"totalCount"`
+	TransactionCount Int64 `json:"transactionCount"`
+	TotalCount       Int64 `json:"totalCount"`
 }
 
 // Transaction is a flat account transaction. The product fields are set for
 // brokerage transactions; for an option they name the contract.
 type Transaction struct {
-	ID          int64
+	ID          string
 	AccountID   string
 	DateMilli   int64
 	Type        string // E*TRADE transaction type, e.g. "Bought", "Sold"
@@ -306,17 +308,17 @@ type Transaction struct {
 func NewTransactionFromAPI(a *APITransaction) *Transaction {
 	p := &a.Brokerage.Product
 	return &Transaction{
-		ID:           a.TransactionID,
-		AccountID:    a.AccountID,
-		DateMilli:    a.TransactionDate,
+		ID:           string(a.TransactionID),
+		AccountID:    string(a.AccountID),
+		DateMilli:    int64(a.TransactionDate),
 		Type:         a.TransactionType,
 		Description:  a.Description,
 		SecurityType: strings.ToUpper(p.SecurityType),
 		Symbol:       strings.ToUpper(p.Symbol),
 		CallPut:      strings.ToUpper(p.CallPut),
-		Year:         p.ExpiryYear,
-		Month:        p.ExpiryMonth,
-		Day:          p.ExpiryDay,
+		Year:         int(p.ExpiryYear),
+		Month:        int(p.ExpiryMonth),
+		Day:          int(p.ExpiryDay),
 		Strike:       p.StrikePrice,
 		Quantity:     a.Brokerage.Quantity,
 		Price:        a.Brokerage.Price,
