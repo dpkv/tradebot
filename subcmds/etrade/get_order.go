@@ -5,6 +5,7 @@ package etrade
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -82,8 +83,15 @@ func (c *GetOrder) run(ctx context.Context, args []string) error {
 	}
 	defer client.Close()
 
-	order, err := client.GetOrder(ctx, c.accountID, c.orderID)
-	if err != nil {
+	// GetOrder can't represent some orders, such as the multi-instrument
+	// order E*TRADE creates for an option assignment, and reports them as not
+	// found. Print those as E*TRADE returned them.
+	var order any
+	if o, err := client.GetOrder(ctx, c.accountID, c.orderID); err == nil {
+		order = o
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("could not get order %d: %w", c.orderID, err)
+	} else if order, err = client.GetAPIOrder(ctx, c.accountID, c.orderID); err != nil {
 		return fmt.Errorf("could not get order %d: %w", c.orderID, err)
 	}
 
