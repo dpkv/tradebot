@@ -925,9 +925,14 @@ func (c *Client) ListOrders(ctx context.Context, accountID string, filter *ListO
 			return nil, err
 		}
 		for _, apiOrder := range wrapper.OrdersResponse.Order {
-			if o := internal.NewOrderFromAPI(accountID, apiOrder); o != nil {
-				orders = append(orders, o)
+			o := internal.NewOrderFromAPI(accountID, apiOrder)
+			if o.HasLegs() {
+				// An OCA or multi-instrument order shares one orderId with no
+				// per-leg server ID, so it can't be tracked.
+				slog.Warn("etrade: skipping order with several instruments", "orderID", o.OrderID)
+				continue
 			}
+			orders = append(orders, o)
 		}
 
 		marker = wrapper.OrdersResponse.Marker
@@ -945,8 +950,8 @@ func (c *Client) ListOrders(ctx context.Context, accountID string, filter *ListO
 // An order with several instruments, such as the one E*TRADE creates for an
 // option assignment or a multi-leg OCA order, comes back with its
 // instruments in Legs and its per-instrument fields zero (see
-// internal.NewOrderLegsFromAPI). The bot only asks for orders it placed,
-// which have one instrument; ListOrders still skips these orders.
+// internal.NewOrderFromAPI). The bot only asks for orders it placed, which
+// have one instrument; ListOrders skips these orders.
 func (c *Client) GetOrder(ctx context.Context, accountID string, orderID int64) (*internal.Order, error) {
 	creds := c.creds.Load()
 	accountIDKey, err := creds.GetAccountIDKey(accountID)
@@ -964,15 +969,7 @@ func (c *Client) GetOrder(ctx context.Context, accountID string, orderID int64) 
 	if len(wrapper.OrdersResponse.Order) > 1 {
 		return nil, fmt.Errorf("etrade: GetOrder %d: API returned %d top-level orders, expected 1", orderID, len(wrapper.OrdersResponse.Order))
 	}
-	apiOrder := wrapper.OrdersResponse.Order[0]
-	if order := internal.NewOrderLegsFromAPI(accountID, apiOrder); order != nil {
-		return order, nil
-	}
-	order := internal.NewOrderFromAPI(accountID, apiOrder)
-	if order == nil {
-		return nil, os.ErrNotExist
-	}
-	return order, nil
+	return internal.NewOrderFromAPI(accountID, wrapper.OrdersResponse.Order[0]), nil
 }
 
 // PlaceLimitOrder submits a limit order via the two-step preview+place flow required

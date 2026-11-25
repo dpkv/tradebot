@@ -31,19 +31,15 @@ const assignmentOrder = `{
   }]
 }`
 
-func TestNewOrderLegsFromAPI(t *testing.T) {
+func TestNewOrderFromAPIMultiInstrument(t *testing.T) {
 	var a APIOrder
 	if err := json.Unmarshal([]byte(assignmentOrder), &a); err != nil {
 		t.Fatal(err)
 	}
 
-	if o := NewOrderFromAPI("acct", &a); o != nil {
-		t.Fatalf("NewOrderFromAPI = %+v, want nil for a multi-instrument order", o)
-	}
-
-	o := NewOrderLegsFromAPI("acct", &a)
-	if o == nil {
-		t.Fatal("NewOrderLegsFromAPI = nil")
+	o := NewOrderFromAPI("acct", &a)
+	if !o.HasLegs() {
+		t.Fatalf("HasLegs = false for a multi-instrument order: %+v", o)
 	}
 	if o.OrderID != 743 || o.Status != "EXECUTED" || o.AccountID != "acct" {
 		t.Errorf("order = %+v", o)
@@ -71,18 +67,15 @@ func TestNewOrderLegsFromAPI(t *testing.T) {
 	}
 }
 
-func TestNewOrderLegsFromAPISingleInstrument(t *testing.T) {
+func TestNewOrderFromAPISingleInstrument(t *testing.T) {
 	var a APIOrder
 	if err := json.Unmarshal([]byte(assignmentOrder), &a); err != nil {
 		t.Fatal(err)
 	}
 	a.OrderDetail[0].Instrument = a.OrderDetail[0].Instrument[1:]
 
-	if o := NewOrderLegsFromAPI("acct", &a); o != nil {
-		t.Errorf("NewOrderLegsFromAPI = %+v, want nil for a single-instrument order", o)
-	}
 	o := NewOrderFromAPI("acct", &a)
-	if o == nil || o.Symbol != "NVDA" || o.Side != "BUY" || len(o.Legs) != 0 {
+	if o.HasLegs() || o.Symbol != "NVDA" || o.Side != "BUY" || !o.FilledQty.Equal(decimal.NewFromInt(100)) || !o.Commission.Equal(decimal.RequireFromString("0.25")) || o.Status != "EXECUTED" {
 		t.Fatalf("NewOrderFromAPI = %+v", o)
 	}
 	js, err := json.Marshal(o)
@@ -109,19 +102,15 @@ const ocaOrder = `{
   ]
 }`
 
-func TestNewOrderLegsFromAPIOCA(t *testing.T) {
+func TestNewOrderFromAPIOCA(t *testing.T) {
 	var a APIOrder
 	if err := json.Unmarshal([]byte(ocaOrder), &a); err != nil {
 		t.Fatal(err)
 	}
 
-	if o := NewOrderFromAPI("acct", &a); o != nil {
-		t.Fatalf("NewOrderFromAPI = %+v, want nil for an OCA order", o)
-	}
-
-	o := NewOrderLegsFromAPI("acct", &a)
-	if o == nil {
-		t.Fatal("NewOrderLegsFromAPI = nil")
+	o := NewOrderFromAPI("acct", &a)
+	if !o.HasLegs() {
+		t.Fatalf("HasLegs = false for an OCA order: %+v", o)
 	}
 	if o.OrderID != 800 || o.Status != "" || !o.LimitPrice.IsZero() {
 		t.Errorf("order-level detail fields set on an OCA order: %+v", o)

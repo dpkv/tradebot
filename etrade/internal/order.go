@@ -3,7 +3,6 @@
 package internal
 
 import (
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -127,12 +126,12 @@ type Order struct {
 	// E*TRADE API response and must be set by the caller.
 	ClientUUID uuid.UUID
 
-	// Legs holds each instrument of an order NewOrderFromAPI can't represent:
-	// a multi-instrument order, such as the option and stock legs of the
-	// order E*TRADE creates for an option assignment, or a multi-leg OCA
-	// order. Only NewOrderLegsFromAPI fills it (Client.GetOrder returns such
-	// orders). Such an order has no single symbol, side or size, so its
-	// per-instrument fields above are zero.
+	// Legs holds each instrument of an order with several: a
+	// multi-instrument order, such as the option and stock legs of the order
+	// E*TRADE creates for an option assignment, or a multi-leg OCA order.
+	// Such an order has no single symbol, side or size, so its
+	// per-instrument fields above are zero and Commission is the legs'
+	// total. See NewOrderFromAPI.
 	Legs []*OrderLeg `json:",omitempty"`
 }
 
@@ -193,109 +192,77 @@ var _ exchange.Order = &Order{}
 var _ exchange.OrderUpdate = &Order{}
 var _ exchange.OrderDetail = &Order{}
 
-func skip(orderID int64, reason string) *Order {
-	slog.Warn("etrade: skipping order", "orderID", orderID, "reason", reason)
-	return nil
-}
-
-// NewOrderFromAPI converts an E*TRADE API order into a flat Order. Returns nil
-// if the order is unsupported (multi-leg OCA or multi-instrument spread): both
-// share a single orderId with no per-leg server ID, so they cannot be modeled
-// as independent orders. The ClientUUID field is left as uuid.Nil and must be
-// set by the caller.
+// NewOrderFromAPI converts an E*TRADE API order into an Order. The
+// ClientUUID field is left as uuid.Nil and must be set by the caller.
+//
+// An order with one instrument fills the flat per-instrument fields. An
+// order with several, across all its order details, has them in Legs
+// instead and its per-instrument fields zero: that covers a multi-instrument
+// order (the one E*TRADE creates for an option assignment, say) and a
+// multi-leg OCA order. Such an order shares one orderId with no per-leg
+// server ID, so it can't be tracked as an exchange.Order; callers that track
+// orders skip it (see HasLegs).
 func NewOrderFromAPI(accountID string, a *APIOrder) *Order {
-	if len(a.OrderDetail) == 0 {
-		return &Order{
-			AccountID:     accountID,
-			OrderID:       a.OrderID,
-			ClientOrderID: a.ClientOrderID,
-		}
-	}
-
-	if len(a.OrderDetail) > 1 {
-		return skip(a.OrderID, "multi-leg OCA orders are not supported")
-	}
-
-	d := a.OrderDetail[0]
-
-	if len(d.Instrument) == 0 {
-		return &Order{
-			AccountID:         accountID,
-			OrderID:           a.OrderID,
-			ClientOrderID:     a.ClientOrderID,
-			Status:            d.Status,
-			PlacedTimeMilli:   d.PlacedTime,
-			ExecutedTimeMilli: d.ExecutedTime,
-			LimitPrice:        d.LimitPrice,
-		}
-	}
-
-	if len(d.Instrument) > 1 {
-		return skip(a.OrderID, "multi-instrument spread orders are not supported")
-	}
-
-	leg := newOrderLeg(&d, &d.Instrument[0])
-	return &Order{
-		AccountID:         accountID,
-		OrderID:           a.OrderID,
-		ClientOrderID:     a.ClientOrderID,
-		Status:            d.Status,
-		PriceType:         d.PriceType,
-		OrderTerm:         d.OrderTerm,
-		PlacedTimeMilli:   d.PlacedTime,
-		ExecutedTimeMilli: d.ExecutedTime,
-		LimitPrice:        d.LimitPrice,
-		Symbol:            leg.Symbol,
-		SecurityType:      leg.SecurityType,
-		Side:              leg.Side,
-		OrderedQty:        leg.OrderedQty,
-		FilledQty:         leg.FilledQty,
-		AvgFillPrice:      leg.AvgFillPrice,
-		Commission:        leg.Commission,
-		ExpiryYear:        leg.ExpiryYear,
-		ExpiryMonth:       leg.ExpiryMonth,
-		ExpiryDay:         leg.ExpiryDay,
-		StrikePrice:       leg.StrikePrice,
-		CallPut:           leg.CallPut,
-	}
-}
-
-// NewOrderLegsFromAPI converts an E*TRADE order that NewOrderFromAPI can't
-// represent into an Order with one entry in Legs per instrument, across all
-// of its order details, and its Commission the legs' total. That covers a
-// multi-instrument order (an option assignment's, say) and a multi-leg OCA
-// order. The order-level detail fields (Status, LimitPrice and so on) are set
-// only when the order has a single detail; an OCA order's are on its legs.
-// Its per-instrument fields are zero, so as an exchange.Order it reads as
-// unfilled. Returns nil for an order with at most one detail and one
-// instrument, which NewOrderFromAPI handles.
-func NewOrderLegsFromAPI(accountID string, a *APIOrder) *Order {
-	if len(a.OrderDetail) == 0 || (len(a.OrderDetail) == 1 && len(a.OrderDetail[0].Instrument) < 2) {
-		return nil
-	}
 	o := &Order{
 		AccountID:     accountID,
 		OrderID:       a.OrderID,
 		ClientOrderID: a.ClientOrderID,
 	}
+	// An OCA order's details differ; their fields are on its legs.
 	if len(a.OrderDetail) == 1 {
-		d := &a.OrderDetail[0]
-		o.Status = d.Status
-		o.PriceType = d.PriceType
-		o.OrderTerm = d.OrderTerm
-		o.PlacedTimeMilli = d.PlacedTime
-		o.ExecutedTimeMilli = d.ExecutedTime
-		o.LimitPrice = d.LimitPrice
+		o.setDetail(&a.OrderDetail[0])
 	}
+
+	var legs []*OrderLeg
 	for i := range a.OrderDetail {
 		d := &a.OrderDetail[i]
 		for j := range d.Instrument {
-			leg := newOrderLeg(d, &d.Instrument[j])
-			o.Commission = o.Commission.Add(leg.Commission)
-			o.Legs = append(o.Legs, leg)
+			legs = append(legs, newOrderLeg(d, &d.Instrument[j]))
 		}
 	}
+	switch len(legs) {
+	case 0:
+	case 1:
+		o.setInstrument(legs[0])
+	default:
+		for _, leg := range legs {
+			o.Commission = o.Commission.Add(leg.Commission)
+		}
+		o.Legs = legs
+	}
 	return o
+}
+
+// setDetail copies the order-level fields of an order detail.
+func (o *Order) setDetail(d *apiOrderDetail) {
+	o.Status = d.Status
+	o.PriceType = d.PriceType
+	o.OrderTerm = d.OrderTerm
+	o.PlacedTimeMilli = d.PlacedTime
+	o.ExecutedTimeMilli = d.ExecutedTime
+	o.LimitPrice = d.LimitPrice
+}
+
+// setInstrument copies the per-instrument fields of an order's only leg.
+func (o *Order) setInstrument(leg *OrderLeg) {
+	o.Symbol = leg.Symbol
+	o.SecurityType = leg.SecurityType
+	o.Side = leg.Side
+	o.OrderedQty = leg.OrderedQty
+	o.FilledQty = leg.FilledQty
+	o.AvgFillPrice = leg.AvgFillPrice
+	o.Commission = leg.Commission
+	o.ExpiryYear = leg.ExpiryYear
+	o.ExpiryMonth = leg.ExpiryMonth
+	o.ExpiryDay = leg.ExpiryDay
+	o.StrikePrice = leg.StrikePrice
+	o.CallPut = leg.CallPut
+}
+
+// HasLegs reports whether the order has several instruments, held in Legs.
+// Such an order can't be tracked as an exchange.Order.
+func (o *Order) HasLegs() bool {
+	return len(o.Legs) > 0
 }
 
 func (o *Order) ServerID() string {
