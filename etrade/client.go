@@ -925,9 +925,14 @@ func (c *Client) ListOrders(ctx context.Context, accountID string, filter *ListO
 			return nil, err
 		}
 		for _, apiOrder := range wrapper.OrdersResponse.Order {
-			if o := internal.NewOrderFromAPI(accountID, apiOrder); o != nil {
-				orders = append(orders, o)
+			o := internal.NewOrderFromAPI(accountID, apiOrder)
+			if o.HasLegs() {
+				// An OCA or multi-instrument order shares one orderId with no
+				// per-leg server ID, so it can't be tracked.
+				slog.Warn("etrade: skipping order with several instruments", "orderID", o.OrderID)
+				continue
 			}
+			orders = append(orders, o)
 		}
 
 		marker = wrapper.OrdersResponse.Marker
@@ -941,23 +946,13 @@ func (c *Client) ListOrders(ctx context.Context, accountID string, filter *ListO
 
 // GetOrder fetches a single order by its E*TRADE order ID from
 // GET /v1/accounts/{accountIdKey}/orders/{orderId}.
+//
+// An order with several instruments, such as the one E*TRADE creates for an
+// option assignment or a multi-leg OCA order, comes back with its
+// instruments in Legs and its per-instrument fields zero (see
+// internal.NewOrderFromAPI). The bot only asks for orders it placed, which
+// have one instrument; ListOrders skips these orders.
 func (c *Client) GetOrder(ctx context.Context, accountID string, orderID int64) (*internal.Order, error) {
-	apiOrder, err := c.GetAPIOrder(ctx, accountID, orderID)
-	if err != nil {
-		return nil, err
-	}
-	order := internal.NewOrderFromAPI(accountID, apiOrder)
-	if order == nil {
-		return nil, os.ErrNotExist
-	}
-	return order, nil
-}
-
-// GetAPIOrder fetches a single order as E*TRADE returns it, without
-// converting it to an Order. Unlike GetOrder it works for orders that Order
-// can't represent, such as the multi-instrument order E*TRADE creates for an
-// option assignment.
-func (c *Client) GetAPIOrder(ctx context.Context, accountID string, orderID int64) (*internal.APIOrder, error) {
 	creds := c.creds.Load()
 	accountIDKey, err := creds.GetAccountIDKey(accountID)
 	if err != nil {
@@ -974,7 +969,7 @@ func (c *Client) GetAPIOrder(ctx context.Context, accountID string, orderID int6
 	if len(wrapper.OrdersResponse.Order) > 1 {
 		return nil, fmt.Errorf("etrade: GetOrder %d: API returned %d top-level orders, expected 1", orderID, len(wrapper.OrdersResponse.Order))
 	}
-	return wrapper.OrdersResponse.Order[0], nil
+	return internal.NewOrderFromAPI(accountID, wrapper.OrdersResponse.Order[0]), nil
 }
 
 // PlaceLimitOrder submits a limit order via the two-step preview+place flow required
