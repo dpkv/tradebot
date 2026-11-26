@@ -279,7 +279,10 @@ nothing was opened. optpos withdraws the request.
 
 ---
 
-## Decisions proposed at this checkpoint
+## Decisions made at this checkpoint
+
+All twelve were approved on 2026-11-25 (decision 6 after simplifying
+reject on a re-selection).
 
 1. **Approval is a job-agnostic service** (`approval`), not part of optpos
    or greeler; optpos is its first user (scenario 1).
