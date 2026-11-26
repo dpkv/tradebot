@@ -27,6 +27,8 @@ func NewByTypename(typename string) (any, error) {
 		v = new(GreelerState)
 	case "GreelLadderState":
 		v = new(GreelLadderState)
+	case "ApprovalState":
+		v = new(ApprovalState)
 	case "KeyValue":
 		v = new(KeyValue)
 	case "NameData":
