@@ -192,8 +192,7 @@ Each `Check` while a proposal is pending reads the request:
 |---|---|
 | pending | nothing; checks again next step |
 | approved | re-validates (scenario 8), then creates the attempt with the proposal's contract and min premium, and clears the proposal |
-| rejected | adds the contract to `Rejected`, clears the proposal, selects again and asks again |
-| rejected, final | scenario 7 |
+| rejected | scenario 7 |
 | expired | clears the proposal; the next session selects again and asks again |
 | withdrawn | only optpos withdraws; it has already cleared the proposal |
 
@@ -202,16 +201,24 @@ A selection that finds nothing (say every candidate was rejected) waits
 
 ### 7. Reject and reject --final for a position
 
-- **After a flip** (no attempt yet): reject tries the next contract.
-  `--final` abandons the position: outcome `unfilled`, as the back-to-grid
-  dwell does today, and the greeler starts a new grid epoch. If spot stays
-  far, the greeler flips again after the dwell time and asks again; to stop
-  that, pause the job and set `freeze=wheel`.
-- **On a re-selection** (an approved attempt is working): the current order
-  keeps working while the new contract waits. Reject tries the next
-  contract. `--final` keeps the current contract and stops re-selecting it
-  for the rest of the position. If the current order fills while the
-  request is pending, optpos withdraws it.
+What a reject means depends on whether an order is already working.
+
+- **First choice after a flip** (no order yet):
+  - reject: the contract goes into `Rejected`; optpos selects again and
+    asks again with the next contract.
+  - reject --final: optpos abandons the position: outcome `unfilled`, as
+    the back-to-grid dwell does today, and the greeler starts a new grid
+    epoch. If spot stays far, the greeler flips again after the dwell time
+    and asks again; to stop that, pause the job and set `freeze=wheel`.
+- **Re-selection** (an approved order for contract A hasn't filled, and the
+  new session's selection picks contract B): the request asks only "switch
+  from A to B?". The order for A keeps working while it waits.
+  - approve: optpos cancels A and starts selling B, as `reselect` does
+    today.
+  - reject (with or without `--final`, which means nothing here): optpos
+    keeps A and asks no more switch questions until the next session, which
+    may ask again. B doesn't go into `Rejected`.
+  - If A fills while the request is pending, optpos withdraws it.
 
 ### 8. Stale approvals: checking again before the order
 
@@ -285,7 +292,9 @@ nothing was opened. optpos withdraws the request.
 5. **Subcommands `tradebot approval list|approve|reject`**, with short IDs
    and decisions written to the database (scenario 3).
 6. **Two kinds of reject, plain and `--final`**, interpreted by the asker
-   (scenarios 4 and 7).
+   (scenario 4). For optpos they differ only on the first choice after a
+   flip (next contract, or abandon); on a re-selection any reject keeps the
+   working contract until the next session (scenario 7).
 7. **Greel option `wheel-approval=manual|auto`**, default `auto`, forwarded
    by ladders (scenario 5).
 8. **optpos asks in `newAttempt`**, covering the first selection and
