@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bvk/tradebot/api"
+	"github.com/bvk/tradebot/approval"
 	"github.com/bvk/tradebot/coinbase"
 	"github.com/bvk/tradebot/coinex"
 	"github.com/bvk/tradebot/ctxutil"
@@ -109,6 +110,8 @@ type Server struct {
 
 	runner *job.Runner
 
+	approvals *approval.Store
+
 	jobMap syncmap.Map[string, trader.Trader]
 
 	mu sync.Mutex
@@ -157,6 +160,7 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 		runner:                 job.NewRunner(db),
 		alertFreezeDeadlineMap: make(map[string]time.Time),
 	}
+	t.approvals = approval.New(db, t)
 
 	t.handlerMap[api.JobListPath] = httpPostJSONHandler(t.doList)
 	t.handlerMap[api.JobCancelPath] = httpPostJSONHandler(t.doCancel)
@@ -171,6 +175,9 @@ func New(newctx context.Context, secretsFilePath string, db kv.Database, opts *O
 	t.handlerMap[api.WatchPath] = httpPostJSONHandler(t.doWatch)
 	t.handlerMap[api.GreelPath] = httpPostJSONHandler(t.doGreel)
 	t.handlerMap[api.GreelLadderPath] = httpPostJSONHandler(t.doGreelLadder)
+
+	t.handlerMap[api.ApprovalListPath] = httpPostJSONHandler(t.doApprovalList)
+	t.handlerMap[api.ApprovalDecidePath] = httpPostJSONHandler(t.doApprovalDecide)
 
 	t.handlerMap[api.ExchangeGetOrderPath] = httpPostJSONHandler(t.doExchangeGetOrder)
 	t.handlerMap[api.ExchangeGetProductPath] = httpPostJSONHandler(t.doGetProduct)
@@ -234,6 +241,7 @@ func (s *Server) Runtime(product exchange.Product) *trader.Runtime {
 		Database:  s.db,
 		Product:   product,
 		Messenger: s,
+		Approver:  s.approvals,
 	}
 }
 
