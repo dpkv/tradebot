@@ -12,6 +12,7 @@ import (
 
 	"github.com/bvk/tradebot/envfile"
 	"github.com/bvk/tradebot/subcmds"
+	"github.com/bvk/tradebot/subcmds/approval"
 	"github.com/bvk/tradebot/subcmds/coinbase"
 	"github.com/bvk/tradebot/subcmds/coinex"
 	"github.com/bvk/tradebot/subcmds/configure/alerts"
@@ -141,6 +142,12 @@ func main() {
 		new(greel.LadderSummary),
 	}
 
+	approvalCmds := []cli.Command{
+		new(approval.List),
+		new(approval.Approve),
+		new(approval.Reject),
+	}
+
 	watcherCmds := []cli.Command{
 		new(watcher.Add),
 		new(watcher.Print),
@@ -197,6 +204,7 @@ func main() {
 		cli.NewGroup("watcher", "Simulate trades in a price range", watcherCmds...),
 		cli.NewGroup("greeler", "Manage greel jobs (grid plus option wheel)", greelerCmds...),
 		cli.NewGroup("greelladder", "Manage ladders of greel jobs", greelLadderCmds...),
+		cli.NewGroup("approval", "List and answer jobs' approval requests", approvalCmds...),
 		cli.NewGroup("exchange", "View/query exchange directly", exchangeCmds...),
 		cli.NewGroup("coinbase", "Coinbase exchange operations", coinbaseCmds...),
 		cli.NewGroup("coinex", "CoinEx exchange operations", coinexCmds...),
