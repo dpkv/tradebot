@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bvk/tradebot/approval"
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/job"
@@ -93,6 +94,23 @@ func (v *Greeler) Run(ctx context.Context, rt *trader.Runtime) (status error) {
 	}
 	if rt.Product == nil || rt.Product.ProductID() != v.cfg.ProductID {
 		return fmt.Errorf("greeler %s needs product %s: %w", v.uid, v.cfg.ProductID, os.ErrInvalid)
+	}
+	v.approver = nil
+	if v.manualApprovalOpt {
+		if rt.Approver == nil {
+			return fmt.Errorf("greeler %s has wheel-approval=manual but the runtime has no approver: %w", v.uid, os.ErrInvalid)
+		}
+		v.approver = rt.Approver
+	}
+	if v.loaded {
+		// A position loaded by an earlier Run was handed that Run's approver.
+		if last := v.current(); last.Mode == "wheel" && last.position != nil {
+			if p, ok := last.position.(interface {
+				SetApprover(approval.Approver, string)
+			}); ok {
+				p.SetApprover(v.approver, v.uid)
+			}
+		}
 	}
 	if err := v.loadChildren(ctx, rt.Database, optEx); err != nil {
 		return err
@@ -419,6 +437,14 @@ func (v *Greeler) hasLiveOrders(e *epoch) bool {
 	return false
 }
 
+// constraint is the greeler's constraint with the current spot, which
+// approval requests show.
+func (r *runner) constraint(optionType string) *optpos.Constraint {
+	c := r.v.constraint(optionType)
+	c.Spot = r.spot
+	return c
+}
+
 // optionType is the option a flip writes.
 func optionType(flip string) string {
 	if flip == "wheel-call" {
@@ -521,7 +547,7 @@ func (r *runner) flipToWheel(ctx context.Context, now time.Time, flip string) er
 	r.notify(ctx, now, "Greeler %s flipped to wheel mode; writing a %s on %s (%s).", v.uid, optionType, v.cfg.ProductID, v.cfg.AccountName)
 
 	// Check opens it later if this fails.
-	err = pos.Open(ctx, r.fctx, v.constraint(optionType))
+	err = pos.Open(ctx, r.fctx, r.constraint(optionType))
 	v.updateHeld(pos)
 	if err != nil {
 		slog.Warn("could not open option position (will retry)", "greeler", v, "position", uid, "err", err)
@@ -566,7 +592,7 @@ func (r *runner) stepWheel(ctx context.Context, now time.Time, holdings []decima
 		}
 
 		if pos.Outcome() == "" {
-			if err := pos.Check(ctx, r.fctx, v.constraint(optionType)); err != nil {
+			if err := pos.Check(ctx, r.fctx, r.constraint(optionType)); err != nil {
 				slog.Warn("could not check option position (will retry)", "greeler", v, "position", pos.UID(), "err", err)
 			}
 		}

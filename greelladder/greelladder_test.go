@@ -202,6 +202,15 @@ func TestSetOption(t *testing.T) {
 	if undo, err := v.SetOption("retire", "true"); err != nil || undo != "undo" {
 		t.Fatalf("retire = %q, %v", undo, err)
 	}
+	if undo, err := v.SetOption("wheel-approval", "manual"); err != nil || undo != "auto" {
+		t.Fatalf("wheel-approval = %q, %v", undo, err)
+	}
+	for _, g := range v.greelers {
+		// Setting it again returns the value it had.
+		if prev, err := g.SetOption("wheel-approval", "manual"); err != nil || prev != "manual" {
+			t.Errorf("greeler %s wheel-approval was %q (%v), want manual", g.UID(), prev, err)
+		}
+	}
 
 	// Greelers that disagree roll back. Setting a greeler's freeze to the
 	// value it already has changes nothing and returns no undo.
