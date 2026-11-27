@@ -378,6 +378,8 @@ func (c *Run) run(ctx context.Context, args []string) error {
 
 	if c.xvncDisplay != 0 {
 		trader.SetDisplayRunner(vncServer)
+	} else if r := defaultDisplayRunner(); r != nil {
+		trader.SetDisplayRunner(r)
 	}
 
 	// Add trader api handlers
