@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -133,9 +134,16 @@ func Run(ctx context.Context, opts Options) (accessToken, accessTokenSecret stri
 			"--disable-backgrounding-occluded-windows",
 			"--disable-background-timer-throttling",
 			"--disable-ipc-flooding-protection",
+			"--no-first-run", // Prevents welcoming popups that steal focus
+		)
+	}
+	// The remaining unattended flags fit the browser to an Xvnc canvas. On
+	// macOS the browser opens on the user's own desktop, so they are skipped
+	// and the login runs in a normal window instead of taking over the screen.
+	if opts.PromptForManualCompletion == nil && runtime.GOOS != "darwin" {
+		args = append(args,
 			"--kiosk", // Forces full screen root ownership
 			"--start-fullscreen",
-			"--no-first-run",        // Prevents welcoming popups that steal focus
 			"--start-maximized",     // Ensures the window matches the Xvnc size
 			"--window-position=0,0", // Forces alignment with the canvas grid
 			"--disable-gpu",         // Bypasses Xvnc GLX initialization checks
