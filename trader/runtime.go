@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/bvk/tradebot/approval"
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvkgo/kv"
 )
@@ -19,4 +20,8 @@ type Runtime struct {
 	Database  kv.Database
 	Product   exchange.Product
 	Messenger Messenger
+
+	// Approver keeps operator sign-off requests (greel/approval-story.md);
+	// nil when the runtime has none.
+	Approver approval.Approver
 }
