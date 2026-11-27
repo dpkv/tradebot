@@ -38,6 +38,35 @@ type OptPositionProgress struct {
 
 	// Assignment is set iff Outcome is "assigned".
 	Assignment *AssignmentFact
+
+	// Proposal is the selection waiting for an operator's approval; nil
+	// when none is (greel/approval-story.md).
+	Proposal *OptProposal
+
+	// Rejected are contracts the operator turned down for this position;
+	// selection skips them.
+	Rejected []string
+
+	// Asks counts the approval requests made so far; the next one's key
+	// ends in ask-<Asks>.
+	Asks int
+}
+
+// OptProposal is a selection waiting for approval. It is saved before it is
+// asked, so a restart asks again with the same key.
+type OptProposal struct {
+	Key       string // the approval request's idempotency key
+	RequestID string // empty until the request is made
+
+	Contract   *OptionContract
+	MinPremium decimal.Decimal
+	Spot       decimal.Decimal // at selection, for the summary; zero if unknown
+
+	// Switch is true when the proposal replaces the contract of an unfilled
+	// attempt that keeps working while it waits.
+	Switch bool
+
+	ExpiresAt time.Time
 }
 
 type AssignmentFact struct {

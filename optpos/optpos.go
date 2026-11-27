@@ -11,8 +11,10 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"slices"
 	"time"
 
+	"github.com/bvk/tradebot/approval"
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/job"
@@ -62,6 +64,10 @@ type Constraint struct {
 	// selecting, so two siblings never write the same contract series. Nil
 	// when the greeler runs standalone.
 	Exclude func(contractID string) bool
+
+	// Spot is the underlying's price when the constraint was built; it only
+	// goes into approval requests. Zero if unknown.
+	Spot decimal.Decimal
 }
 
 // Selection is the contract to open and the minimum per-share premium
@@ -118,6 +124,14 @@ type Position struct {
 	selectedFor         string    // session the contract was last selected for; in memory only
 	lastSettlementCheck time.Time // in memory only
 	retryAt             time.Time // no Open, re-selection, restart or Abandon retry before this; in memory only
+
+	// Approval gate (approval.go); approver nil never asks.
+	approver approval.Approver
+	owner    string
+	proposal *gobs.OptProposal
+	rejected []string // contracts the operator turned down
+	asks     int      // approval requests made so far
+	voided   string   // note for the next request after a voided approval; in memory only
 
 	// Held at construction (New/Load), not re-passed to every method.
 	optEx exchange.OptionsAccount
@@ -199,12 +213,12 @@ func (v *Position) Open(ctx context.Context, fctx context.Context, c *Constraint
 	if err := v.check(); err != nil {
 		return err
 	}
-	if v.outcome != "" || len(v.legIDs) != 0 {
+	if v.outcome != "" || len(v.legIDs) != 0 || v.proposal != nil {
 		return fmt.Errorf("optpos %s is already opened: %w", v.uid, os.ErrExist)
 	}
 	sel, err := v.selectContract(ctx, c)
 	if err == nil {
-		err = v.newAttempt(ctx, fctx, c, sel)
+		err = v.begin(ctx, fctx, c, sel, false)
 	}
 	if err != nil {
 		v.retryAt = v.now().Add(retryDelay)
@@ -224,6 +238,9 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 	}
 	now := v.now()
 	if len(v.legIDs) == 0 {
+		if v.proposal != nil {
+			return v.checkProposal(ctx, fctx, c)
+		}
 		if now.Before(v.retryAt) {
 			return nil
 		}
@@ -236,6 +253,19 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 	}
 
 	filled := v.leg.FilledSize().IsPositive()
+
+	if v.proposal != nil {
+		// A switch waiting for approval; the current attempt keeps working.
+		if filled {
+			if err := v.withdraw(ctx, "the current order filled"); err != nil {
+				slog.Warn("could not withdraw switch proposal (will retry)", "optpos", v, "err", err)
+			}
+		} else if err := v.checkProposal(ctx, fctx, c); err != nil {
+			v.retryAt = now.Add(retryDelay)
+			return err
+		}
+		filled = v.leg.FilledSize().IsPositive()
+	}
 
 	if filled && now.Sub(v.lastSettlementCheck) >= settlementInterval {
 		settled, err := v.checkSettlement(ctx, now)
@@ -259,7 +289,7 @@ func (v *Position) Check(ctx context.Context, fctx context.Context, c *Constrain
 		return nil
 	}
 
-	if !filled && !now.Before(v.retryAt) {
+	if !filled && v.proposal == nil && !now.Before(v.retryAt) {
 		if open, _ := v.session(now); open {
 			if key := v.sessionKey(now); key != v.selectedFor {
 				if err := v.reselect(ctx, fctx, c); err != nil {
@@ -312,7 +342,15 @@ func (v *Position) Abandon(ctx context.Context) error {
 	if v.leg != nil && v.leg.FilledSize().IsPositive() {
 		return fmt.Errorf("could not abandon optpos %s: %w", v.uid, ErrOpened)
 	}
+	if p := v.proposal; p != nil && p.RequestID != "" && v.approver != nil {
+		if err := v.approver.Withdraw(ctx, p.RequestID, "position abandoned"); err != nil {
+			return fmt.Errorf("could not withdraw optpos %s proposal: %w", v.uid, err)
+		}
+	}
+	prev := v.proposal
+	v.proposal = nil
 	if err := v.finish(ctx, "unfilled", v.now(), nil); err != nil {
+		v.proposal = prev
 		return err
 	}
 	slog.Info("abandoned option position that never opened", "optpos", v, "legs", len(v.legIDs))
@@ -326,18 +364,38 @@ func (v *Position) sessionKey(t time.Time) string {
 	return next.Format(time.DateOnly)
 }
 
+// errFetchChain marks a selection that failed fetching the chain, not
+// selecting from it.
+var errFetchChain = errors.New("could not fetch options chain")
+
 // selectContract fetches the chain and asks the selector, then checks the
 // answer against the constraint.
 func (v *Position) selectContract(ctx context.Context, c *Constraint) (*Selection, error) {
+	return v.selectFrom(ctx, c, "")
+}
+
+// selectFrom is selectContract over the chain without the contracts the
+// operator rejected, and only contract only when it isn't empty.
+func (v *Position) selectFrom(ctx context.Context, c *Constraint, only string) (*Selection, error) {
 	if c == nil {
 		return nil, fmt.Errorf("optpos %s: constraint is nil: %w", v.uid, os.ErrInvalid)
 	}
 	if c.Underlying != "" && c.Underlying != v.underlying {
 		return nil, fmt.Errorf("optpos %s: constraint is for %q, want %q: %w", v.uid, c.Underlying, v.underlying, os.ErrInvalid)
 	}
-	chain, err := v.optEx.GetOptionsChain(ctx, v.underlying)
+	all, err := v.optEx.GetOptionsChain(ctx, v.underlying)
 	if err != nil {
-		return nil, fmt.Errorf("could not fetch options chain for %s: %w", v.underlying, err)
+		return nil, fmt.Errorf("%w for %s: %w", errFetchChain, v.underlying, err)
+	}
+	chain := make([]*gobs.OptionContract, 0, len(all))
+	for _, contract := range all {
+		if contract == nil || slices.Contains(v.rejected, contract.ContractID) {
+			continue
+		}
+		if only != "" && contract.ContractID != only {
+			continue
+		}
+		chain = append(chain, contract)
 	}
 	sel, err := v.selector.Select(ctx, chain, c)
 	if err != nil {
@@ -372,6 +430,9 @@ func (v *Position) checkSelection(sel *Selection, c *Constraint) error {
 	if c.ContractSize.IsPositive() && !contract.ContractSize.Equal(c.ContractSize) {
 		return fmt.Errorf("optpos %s: selected %s covers %s shares, want %s", v.uid, id, contract.ContractSize, c.ContractSize)
 	}
+	if slices.Contains(v.rejected, id) {
+		return fmt.Errorf("optpos %s: selected %s was rejected by the operator", v.uid, id)
+	}
 	if c.Exclude != nil && c.Exclude(id) {
 		return fmt.Errorf("optpos %s: selected %s is held by a sibling", v.uid, id)
 	}
@@ -389,6 +450,9 @@ func (v *Position) reselect(ctx context.Context, fctx context.Context, c *Constr
 	}
 	if sel.Contract.ContractID == v.leg.ContractID() {
 		return nil
+	}
+	if v.approver != nil {
+		return v.propose(ctx, c, sel, true)
 	}
 	if err := v.stop(ctx); err != nil {
 		return err
@@ -628,6 +692,9 @@ func (v *Position) Save(ctx context.Context, rw kv.ReadWriter) error {
 				Outcome:    v.outcome,
 				OutcomeAt:  v.outcomeAt,
 				Assignment: v.assignment,
+				Proposal:   v.proposal,
+				Rejected:   append([]string(nil), v.rejected...),
+				Asks:       v.asks,
 			},
 		},
 	}
@@ -664,6 +731,9 @@ func Load(ctx context.Context, uid string, r kv.Reader, selector ContractSelecto
 	v.outcome = progress.Outcome
 	v.outcomeAt = progress.OutcomeAt
 	v.assignment = progress.Assignment
+	v.proposal = progress.Proposal
+	v.rejected = append([]string(nil), progress.Rejected...)
+	v.asks = progress.Asks
 	if err := v.check(); err != nil {
 		return nil, err
 	}
@@ -714,7 +784,14 @@ func HeldContractID(ctx context.Context, uid string, r kv.Reader) (string, error
 		return "", fmt.Errorf("optpos state at %q is incomplete", key)
 	}
 	progress := gv.V1.Progress
-	if progress.Outcome != "" || len(progress.Legs) == 0 {
+	if progress.Outcome != "" {
+		return "", nil
+	}
+	if len(progress.Legs) == 0 {
+		// A first contract waiting for approval is held like a working one.
+		if p := progress.Proposal; p != nil && p.Contract != nil {
+			return p.Contract.ContractID, nil
+		}
 		return "", nil
 	}
 	leg, err := optlimiter.Load(ctx, progress.Legs[len(progress.Legs)-1], r)
