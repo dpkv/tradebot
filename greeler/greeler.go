@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bvk/tradebot/approval"
 	"github.com/bvk/tradebot/exchange"
 	"github.com/bvk/tradebot/gobs"
 	"github.com/bvk/tradebot/kvutil"
@@ -89,6 +90,11 @@ type Greeler struct {
 
 	freezeGridOpt, freezeWheelOpt, retireOpt bool
 
+	// manualApprovalOpt is wheel-approval=manual; approver is the runtime's
+	// Approver while Run has it set, handed to every position.
+	manualApprovalOpt bool
+	approver          approval.Approver
+
 	// opened is true once Abandon reported the current position's opening
 	// order filled; in memory only.
 	opened bool
@@ -156,10 +162,17 @@ func (v *Greeler) setDefaults() {
 	v.now = time.Now
 	v.interval = 10 * time.Second
 	v.newPosition = func(uid string, optEx exchange.OptionsAccount, db kv.Database) position {
-		return optpos.New(uid, v.cfg.AccountName, v.cfg.ProductID, v.selector, v.cfg.WheelKnobs, optEx, db)
+		p := optpos.New(uid, v.cfg.AccountName, v.cfg.ProductID, v.selector, v.cfg.WheelKnobs, optEx, db)
+		p.SetApprover(v.approver, v.uid)
+		return p
 	}
 	v.loadPosition = func(ctx context.Context, uid string, r kv.Reader, optEx exchange.OptionsAccount, db kv.Database) (position, error) {
-		return optpos.Load(ctx, uid, r, v.selector, v.cfg.WheelKnobs, optEx, db)
+		p, err := optpos.Load(ctx, uid, r, v.selector, v.cfg.WheelKnobs, optEx, db)
+		if err != nil {
+			return nil, err
+		}
+		p.SetApprover(v.approver, v.uid)
+		return p, nil
 	}
 }
 
@@ -249,12 +262,23 @@ func (v *Greeler) HeldContract() (id string, known bool) {
 	return v.held, v.heldKnown
 }
 
-// updateHeld records pos's contract as held while pos hasn't ended.
+// proposer is a position that may hold a contract waiting for approval.
+type proposer interface {
+	Proposal() *gobs.OptProposal
+}
+
+// updateHeld records pos's contract as held while pos hasn't ended. A first
+// contract waiting for approval counts as held, so siblings don't propose it
+// too.
 func (v *Greeler) updateHeld(pos position) {
 	held := ""
 	if pos != nil && pos.Outcome() == "" {
 		if c := pos.Contract(); c != nil {
 			held = c.ContractID
+		} else if pp, ok := pos.(proposer); ok {
+			if p := pp.Proposal(); p != nil && p.Contract != nil {
+				held = p.Contract.ContractID
+			}
 		}
 	}
 	v.mu.Lock()

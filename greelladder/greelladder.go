@@ -296,14 +296,14 @@ func Summary(ctx context.Context, r kv.Reader, uid string, period *timerange.Ran
 }
 
 // SetOption sets the risk gate limits max-contracts and max-put-exposure
-// (zero means no limit), which the ladder keeps, or retire or freeze on
-// every greeler, as waller does on its loopers, rolling back on failure.
+// (zero means no limit), which the ladder keeps, or retire, freeze or
+// wheel-approval on every greeler, as waller does on its loopers, rolling back on failure.
 // The greelers keep those in their own records.
 func (v *GreelLadder) SetOption(opt, val string) (_ string, status error) {
 	switch key := strings.ToLower(opt); key {
 	case maxContractsOpt, maxPutExposureOpt:
 		return v.setLimitOption(key, val)
-	case "retire", "freeze":
+	case "retire", "freeze", "wheel-approval":
 	default:
 		return "", fmt.Errorf("invalid/unsupported greel ladder option %q", key)
 	}

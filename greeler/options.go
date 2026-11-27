@@ -12,20 +12,25 @@ import (
 var trues = []string{"true", "yes", "1"}
 var falses = []string{"false", "no", "0"}
 
-// SetOption sets retire or freeze. Like every trader.Trader option, it
-// changes only while the greeler isn't running.
+// SetOption sets retire, freeze or wheel-approval. Like every
+// trader.Trader option, it changes only while the greeler isn't running.
 //
 //   - retire=true: no new buys and no new wheel entries; the greeler ends
 //     once every level is flat and its position, if any, has ended.
 //   - freeze=grid: no new stock limiters; existing ones still finish.
 //   - freeze=wheel: no new positions; an open one still runs to its end.
 //   - freeze=all: both; freeze=none clears them.
+//   - wheel-approval=manual: every contract the wheel would sell waits for
+//     an operator's approval (greel/approval-story.md); auto, the default,
+//     doesn't ask.
 func (v *Greeler) SetOption(opt, val string) (string, error) {
 	switch key := strings.ToLower(opt); key {
 	case "retire":
 		return v.setRetireOption(val)
 	case "freeze":
 		return v.setFreezeOption(val)
+	case wheelApprovalOpt:
+		return v.setWheelApprovalOption(val)
 	default:
 		return "", fmt.Errorf("invalid/unsupported greeler option %q", key)
 	}
@@ -39,7 +44,30 @@ func (v *Greeler) options() map[string]string {
 	if v.freezeGridOpt || v.freezeWheelOpt {
 		opts["freeze"] = v.currentFreezeValue()
 	}
+	if v.manualApprovalOpt {
+		opts[wheelApprovalOpt] = "manual"
+	}
 	return opts
+}
+
+const wheelApprovalOpt = "wheel-approval"
+
+// setWheelApprovalOption sets wheel-approval to manual or auto and returns
+// the previous value, which undoes it.
+func (v *Greeler) setWheelApprovalOption(val string) (string, error) {
+	prev := "auto"
+	if v.manualApprovalOpt {
+		prev = "manual"
+	}
+	switch strings.ToLower(val) {
+	case "manual":
+		v.manualApprovalOpt = true
+	case "auto":
+		v.manualApprovalOpt = false
+	default:
+		return "", fmt.Errorf("invalid value %q for the %s option (want manual or auto)", val, wheelApprovalOpt)
+	}
+	return prev, nil
 }
 
 // setRetireOption mirrors looper's: retire can be set but not unset with
