@@ -43,6 +43,14 @@ new `limiter.Limiter` — the same BUY/SELL/STOP decision `Looper` makes.
 project.md already specifies the sequence; this scenario is about which
 persisted pieces each step touches:
 
+**Arming the dwell clock (grid mode).** Each iteration the clock is set to
+the side spot is past the far threshold for, but only if the levels qualify
+for that side right now (all-cash for a put, all-shares for a call);
+otherwise it is cleared. A flat greeler below its levels can only ever
+write a call it can't make, so arming that clock would only wait for
+nothing (decision 11). A saved clock that no longer qualifies, say from a
+record written before this rule, clears on the next iteration.
+
 **Flip to wheel (grid → wheel)**, once the dwell clock
 (`Epochs[last].PendingFlip`/`PendingFlipAt`, gobs-story.md decision #8) has
 fired:
@@ -153,8 +161,9 @@ options.go`):
   (existing ones still resolve normally) — the greeler can still flip to
   wheel mode if dwell/hysteresis fire, since that's not "grid activity."
 - `freeze=wheel`: scenario 2's flip-to-wheel step never fires (dwell clock
-  still accumulates and gets persisted — `PendingFlip`/`PendingFlipAt`
-  aren't gated by freeze, only the resulting action is); an *already open*
+  still accumulates and gets persisted for a flip the levels qualify for —
+  `PendingFlip`/`PendingFlipAt` aren't gated by freeze, only the resulting
+  action is); an *already open*
   position keeps running its own lifecycle (`Check` still gets called —
   freezing new wheel entries isn't the same as abandoning an open one).
 - `freeze=all`: both, plus the greeler simply stops iterating meaningfully
@@ -361,3 +370,16 @@ var _ trader.Trader = (*Greeler)(nil)
     decided.** `Abandon` ends it `unfilled`; an `unfilled` (or `expired`)
     wheel epoch contributes nothing to the fold (scenario 2). In v1, open
     positions end only by broker settlement.
+11. **The dwell clock arms only for a flip the levels qualify for —
+    revised after running a pure-wheel greeler.** The first rule armed it
+    from spot alone and checked qualification only when it fired, so a
+    flat greeler with spot far below its levels showed a pending
+    `wheel-call` it could never make. Now `PendingFlip` names a side only
+    while spot is past the threshold and the levels qualify (scenario 2).
+    In the far zone no new limiters start, so holdings change there only
+    when a limiter already running fills; if that fill makes the levels
+    qualify, the dwell time counts from the fill rather than from when spot
+    crossed. Qualification is still re-checked at the flip and after the
+    cancels (step 1 and step 3). Spot below the levels with every level
+    flat still writes nothing: puts stay at or below the levels and are
+    written only while spot is far above them, never in the money.

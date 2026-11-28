@@ -91,7 +91,8 @@ greelladder.GreelLadder (job)      ladder of greelers across price bands;
     there; existing orders/positions drift through untouched.
 - **Mode flips are gated** by hysteresis `h` and dwell `d` (per greeler): spot
   must stay past the threshold for `d` before a flip. The dwell clock is
-  persisted on the current epoch.
+  persisted on the current epoch, and runs only while the levels qualify for
+  that flip (greeler-story.md decision 11).
 - **When an option position is open, all stock limiters are dark** (canceled),
   including levels holding spillover shares. No resting spillover sells.
 - Far-away greelers (spot moved multiples away) write near-zero-premium
